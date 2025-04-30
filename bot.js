@@ -14,6 +14,7 @@ const client = new Client({
 
 // Configurações
 const ITEMS_PER_PAGE = 5;
+const ALLOWED_CHANNEL_ID = '1256287757135908884'; // Canal permitido
 const dbConfig = {
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
@@ -58,6 +59,13 @@ client.on('ready', () => {
 
 // Quando uma mensagem é recebida
 client.on('messageCreate', async message => {
+  // Verifica se a mensagem foi enviada no canal permitido
+  if (message.channel.id !== ALLOWED_CHANNEL_ID) {
+    return message.reply('Este comando só pode ser usado no canal de inscrições.').then(msg => {
+      setTimeout(() => msg.delete(), 5000);
+    });
+  }
+  
   if (message.author.bot || !message.content.startsWith('!')) return;
 
   const args = message.content.slice(1).trim().split(/ +/);
@@ -288,6 +296,14 @@ function showHelp(message) {
 // Interações com botões
 client.on('interactionCreate', async interaction => {
   if (!interaction.isButton()) return;
+  
+  // Verifica se a interação foi no canal permitido
+  if (interaction.channel?.id !== ALLOWED_CHANNEL_ID) {
+    return interaction.reply({ 
+      content: 'Este comando só pode ser usado no canal de inscrições.', 
+      ephemeral: true 
+    });
+  }
 
   try {
     // Navegação de páginas
@@ -349,6 +365,14 @@ client.on('interactionCreate', async interaction => {
 // Interações com modais (para motivo de rejeição)
 client.on('interactionCreate', async interaction => {
   if (!interaction.isModalSubmit()) return;
+  
+  // Verifica se a interação foi no canal permitido
+  if (interaction.channel?.id !== ALLOWED_CHANNEL_ID) {
+    return interaction.reply({ 
+      content: 'Este comando só pode ser usado no canal de inscrições.', 
+      ephemeral: true 
+    });
+  }
 
   try {
     if (interaction.customId.startsWith('reject_reason_')) {
@@ -368,6 +392,9 @@ client.on('interactionCreate', async interaction => {
 client.on('messageReactionAdd', async (reaction, user) => {
   if (user.bot) return;
   if (reaction.message.author.id !== client.user.id) return;
+  
+  // Verifica se a reação foi adicionada no canal permitido
+  if (reaction.message.channel.id !== ALLOWED_CHANNEL_ID) return;
 
   try {
     const message = reaction.message;
@@ -564,7 +591,6 @@ async function notifyWebhook(action, applicationId, applicationName, discordTag,
     console.error('Erro ao enviar para o webhook:', error);
   }
 }
-
 
 // Inicia o bot
 async function startBot() {
