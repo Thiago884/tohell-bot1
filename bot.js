@@ -10,6 +10,18 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
+
+// Rota raiz
+app.get('/', (_, res) => {
+  res.status(200).json({ 
+    message: 'ToHeLL Guild Bot is running',
+    status: 'operational',
+    routes: {
+      healthCheck: '/health'
+    }
+  });
+});
+
 app.get('/health', (_, res) => {
   res.status(200).json({ 
     status: 'healthy',
