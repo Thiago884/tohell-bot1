@@ -1,0 +1,17 @@
+{
+    "name": "tohell-bot",
+    "version": "1.0.0",
+    "main": "bot.js",
+    "scripts": {
+      "start": "node bot.js"
+    },
+    "dependencies": {
+      "discord.js": "^14.12.1",
+      "mysql2": "^3.6.0",
+      "dotenv": "^16.3.1",
+      "axios": "^1.5.0"
+    },
+    "engines": {
+      "node": "18.x"
+    }
+  }
