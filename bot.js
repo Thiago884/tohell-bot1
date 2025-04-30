@@ -262,8 +262,8 @@ async function parallelGuildSearch(name, nameLower) {
         if (cells.length >= 4) {
           const charName = cells[1].textContent.trim();
           if (charName.toLowerCase() === nameLower) {
-            const level = parseInt(cells[2].textContent.trim());
-            const resets = parseInt(cells[3].textContent.trim());
+            const level = parseInt(cells[2].textContent.trim()) || 0;
+            const resets = parseInt(cells[3].textContent.trim()) || 0;
             
             results.push({
               name: charName,
@@ -431,41 +431,56 @@ class CharacterTracker {
 
 const tracker = new CharacterTracker();
 
-// Função para buscar personagem no banco ou nas guildas
+// Função para buscar personagem no banco ou nas guildas (versão corrigida)
 async function searchCharacterInDatabaseOrGuilds(name) {
   const nameLower = name.toLowerCase();
   
-  // Verificar no banco de dados primeiro
-  const [dbRows] = await dbConnection.execute(
-    'SELECT * FROM characters WHERE name = ? LIMIT 1',
-    [name]
-  );
-  
-  let character = dbRows[0];
-  
-  // Se não encontrado ou dados desatualizados (mais de 5 minutos)
-  if (!character || new Date(character.last_seen) < new Date(Date.now() - 300000)) {
-    // Buscar nas guildas
-    const guildData = await parallelGuildSearch(name, nameLower);
+  try {
+    // Verificar no banco de dados primeiro
+    const [dbRows] = await dbConnection.execute(
+      'SELECT * FROM characters WHERE name = ? LIMIT 1',
+      [name]
+    );
     
-    if (guildData) {
-      // Atualizar ou inserir no banco de dados
-      if (dbRows.length > 0) {
-        await dbConnection.execute(
-          'UPDATE characters SET last_level = ?, last_resets = ?, guild = ?, last_seen = NOW() WHERE id = ?',
-          [guildData.level, guildData.resets, guildData.guild, dbRows[0].id]
-        );
-      } else {
-        await dbConnection.execute(
-          'INSERT INTO characters (name, guild, last_level, last_resets, last_seen) VALUES (?, ?, ?, ?, NOW())',
-          [guildData.name, guildData.guild, guildData.level, guildData.resets]
-        );
+    let character = dbRows[0];
+    
+    // Se não encontrado ou dados desatualizados (mais de 5 minutos)
+    if (!character || new Date(character.last_seen) < new Date(Date.now() - 300000)) {
+      // Buscar nas guildas
+      const guildData = await parallelGuildSearch(name, nameLower);
+      
+      if (guildData) {
+        // Garantir que todos os campos existam
+        const level = guildData.level || null;
+        const resets = guildData.resets || null;
+        const guild = guildData.guild || null;
+        
+        // Atualizar ou inserir no banco de dados
+        if (dbRows.length > 0) {
+          await dbConnection.execute(
+            'UPDATE characters SET last_level = ?, last_resets = ?, guild = ?, last_seen = NOW() WHERE id = ?',
+            [level, resets, guild, dbRows[0].id]
+          );
+        } else {
+          await dbConnection.execute(
+            'INSERT INTO characters (name, guild, last_level, last_resets, last_seen) VALUES (?, ?, ?, ?, NOW())',
+            [guildData.name, guild, level, resets]
+          );
+        }
+        character = {
+          ...guildData,
+          level,
+          resets,
+          guild
+        };
       }
-      character = guildData;
     }
+    
+    return character || null;
+  } catch (error) {
+    console.error('❌ Erro em searchCharacterInDatabaseOrGuilds:', error);
+    return null;
   }
-  
-  return character;
 }
 
 // Quando o bot está pronto
@@ -1231,6 +1246,16 @@ async function notifyWebhook(action, applicationId, applicationName, discordTag,
     }).catch(e => console.error('❌ Erro no webhook:', e.response?.data || e.message));
   } catch (error) {
     console.error('❌ Erro grave no webhook:', error);
+  }
+}
+
+// Função auxiliar para envio seguro de mensagens
+async function safeSend(channel, content) {
+  try {
+    return await channel.send(content);
+  } catch (error) {
+    console.error('❌ Erro ao enviar mensagem:', error);
+    return null;
   }
 }
 
