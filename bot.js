@@ -204,6 +204,18 @@ async function createTables() {
       )
     `);
     
+    // Tabela para histórico de personagens
+    await dbConnection.execute(`
+      CREATE TABLE IF NOT EXISTS character_history (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        character_id INT NOT NULL,
+        level INT NOT NULL,
+        resets INT NOT NULL,
+        recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE CASCADE
+      )
+    `);
+    
     console.log('✅ Tabelas verificadas/criadas com sucesso');
   } catch (error) {
     console.error('❌ Erro ao criar tabelas:', error);
@@ -227,13 +239,13 @@ async function reconnectDB() {
 }
 
 // Implementação completa do parallelGuildSearch
-async function parallelGuildSearch(name, nameLower) {
+async function parallelGuildSearch(name, nameLower, guilds = GUILDS_TO_CHECK) {
   const baseUrl = 'https://www.mucabrasil.com.br/?go=guild&n=';
   const results = [];
   
   try {
     // Criar um array de promessas para todas as requisições
-    const requests = GUILDS_TO_CHECK.flatMap(guild => {
+    const requests = guilds.flatMap(guild => {
       return [1, 2].map(page => { // Verifica as 2 primeiras páginas
         const url = `${baseUrl}${guild}${page > 1 ? `&p=${page}` : ''}`;
         return axios.get(url, { timeout: 5000 })
@@ -431,7 +443,7 @@ class CharacterTracker {
 
 const tracker = new CharacterTracker();
 
-// Função para buscar personagem no banco ou nas guildas (versão corrigida)
+// Função para buscar personagem no banco ou nas guildas (versão corrigida e melhorada)
 async function searchCharacterInDatabaseOrGuilds(name) {
   const nameLower = name.toLowerCase();
   
@@ -446,8 +458,13 @@ async function searchCharacterInDatabaseOrGuilds(name) {
     
     // Se não encontrado ou dados desatualizados (mais de 5 minutos)
     if (!character || new Date(character.last_seen) < new Date(Date.now() - 300000)) {
-      // Buscar nas guildas
-      const guildData = await parallelGuildSearch(name, nameLower);
+      // Buscar nas guildas principais primeiro (ToHeLL_, ToHeLL2, ToHeLL3)
+      let guildData = await parallelGuildSearch(name, nameLower, ['ToHeLL_', 'ToHeLL2', 'ToHeLL3']);
+      
+      // Se não encontrado nas principais, buscar nas demais guildas
+      if (!guildData) {
+        guildData = await parallelGuildSearch(name, nameLower, GUILDS_TO_CHECK);
+      }
       
       if (guildData) {
         // Garantir que todos os campos existam
@@ -467,8 +484,16 @@ async function searchCharacterInDatabaseOrGuilds(name) {
             [guildData.name, guild, level, resets]
           );
         }
+        
+        // Adicionar ao histórico
+        await dbConnection.execute(
+          'INSERT INTO character_history (character_id, level, resets) VALUES (?, ?, ?)',
+          [dbRows[0]?.id || guildData.id, level, resets]
+        );
+        
         character = {
           ...guildData,
+          id: dbRows[0]?.id || guildData.id,
           level,
           resets,
           guild
@@ -483,236 +508,177 @@ async function searchCharacterInDatabaseOrGuilds(name) {
   }
 }
 
-// Quando o bot está pronto
-client.on('ready', async () => {
-  console.log(`🤖 Bot conectado como ${client.user.tag}`);
-  console.log(`📌 Canal permitido: ${ALLOWED_CHANNEL_ID}`);
-  client.user.setActivity('/ajuda para comandos', { type: 'WATCHING' });
-
-  // Registrar comandos slash
+// Função para calcular estatísticas avançadas (similar ao monitor.php)
+async function calculateAdvancedStats(characterId) {
   try {
-    await client.application.commands.set(slashCommands);
-    console.log('✅ Comandos slash registrados com sucesso');
-  } catch (error) {
-    console.error('❌ Erro ao registrar comandos slash:', error);
-  }
-
-  // Iniciar sistema de tracking
-  await tracker.startTracking();
-});
-
-// Handler para comandos slash
-client.on('interactionCreate', async interaction => {
-  if (isShuttingDown) return;
-
-  // Comandos slash
-  if (interaction.isCommand()) {
-    console.log(`🔍 Comando slash detectado: ${interaction.commandName}`, interaction.options.data);
-
-    try {
-      switch (interaction.commandName) {
-        case 'pendentes':
-          const page = interaction.options.getInteger('página') || 1;
-          await listPendingApplications(interaction, [page.toString()]);
-          break;
-          
-        case 'buscar':
-          const term = interaction.options.getString('termo');
-          const searchPage = interaction.options.getInteger('página') || 1;
-          await searchApplications(interaction, [term, searchPage.toString()]);
-          break;
-          
-        case 'char':
-          const charName = interaction.options.getString('nome');
-          await searchCharacter(interaction, charName);
-          break;
-          
-        case 'ranking':
-          const period = interaction.options.getString('período');
-          await showRanking(interaction, period);
-          break;
-          
-        case 'monitorar':
-          const charToTrack = interaction.options.getString('nome');
-          const channel = interaction.options.getChannel('canal');
-          
-          await interaction.deferReply({ ephemeral: true });
-          
-          try {
-            await tracker.addTracking(
-              charToTrack, 
-              interaction.user.id, 
-              channel?.id
-            );
-            
-            await interaction.editReply({
-              content: `✅ Personagem "${charToTrack}" está sendo monitorado${channel ? ` no canal ${channel.name}` : ''}.`
-            });
-          } catch (error) {
-            await interaction.editReply({
-              content: `❌ Erro ao monitorar personagem: ${error.message}`
-            });
-          }
-          break;
-          
-        case 'parar-monitorar':
-          const charToStop = interaction.options.getString('nome');
-          
-          await interaction.deferReply({ ephemeral: true });
-          
-          try {
-            const removed = await tracker.removeTracking(charToStop, interaction.user.id);
-            
-            await interaction.editReply({
-              content: removed ? 
-                `✅ Personagem "${charToStop}" não será mais monitorado.` :
-                `❌ Personagem "${charToStop}" não estava sendo monitorado.`
-            });
-          } catch (error) {
-            await interaction.editReply({
-              content: `❌ Erro ao parar de monitorar: ${error.message}`
-            });
-          }
-          break;
-          
-        case 'listar-monitorados':
-          await interaction.deferReply({ ephemeral: true });
-          
-          try {
-            const tracked = await tracker.listTracked(interaction.user.id);
-            
-            if (tracked.length === 0) {
-              await interaction.editReply({
-                content: 'Você não está monitorando nenhum personagem no momento.'
-              });
-              return;
-            }
-            
-            const embed = new EmbedBuilder()
-              .setColor('#FFA500')
-              .setTitle('Personagens Monitorados')
-              .setDescription('Lista de personagens que você está monitorando:');
-              
-            tracked.forEach(char => {
-              embed.addFields({
-                name: char.name,
-                value: `Último level: ${char.last_level || 'N/A'}\n` +
-                       `Últimos resets: ${char.last_resets || 'N/A'}`,
-                inline: true
-              });
-            });
-            
-            await interaction.editReply({ embeds: [embed] });
-          } catch (error) {
-            await interaction.editReply({
-              content: `❌ Erro ao listar personagens monitorados: ${error.message}`
-            });
-          }
-          break;
-          
-        case 'ajuda':
-          await showHelp(interaction);
-          break;
-      }
-    } catch (error) {
-      console.error(`❌ Erro ao executar comando ${interaction.commandName}:`, error);
-      await interaction.reply({
-        content: 'Ocorreu um erro ao processar seu comando.',
-        ephemeral: true
-      }).catch(console.error);
+    const [history] = await dbConnection.execute(`
+      SELECT level, resets, UNIX_TIMESTAMP(recorded_at) as timestamp 
+      FROM character_history 
+      WHERE character_id = ? 
+      AND recorded_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+      ORDER BY recorded_at ASC
+    `, [characterId]);
+    
+    if (history.length < 2) {
+      return null;
     }
+    
+    const stats = {};
+    const levelChanges = [];
+    const resetChanges = [];
+    const timeDeltas = [];
+    const timeBetweenResets = [];
+    const timeTo400 = [];
+    
+    for (let i = 1; i < history.length; i++) {
+      const prev = history[i-1];
+      const current = history[i];
+      
+      const timeDelta = (current.timestamp - prev.timestamp) / 3600; // em horas
+      const levelDelta = current.level - prev.level;
+      const resetDelta = current.resets - prev.resets;
+      
+      if (timeDelta > 0) {
+        levelChanges.push(levelDelta / timeDelta);
+        if (resetDelta > 0) {
+          resetChanges.push(resetDelta);
+          timeDeltas.push(timeDelta / 24); // em dias
+        }
+        
+        // Calcular tempo entre resets
+        if (resetDelta > 0) {
+          timeBetweenResets.push(timeDelta / resetDelta);
+        }
+        
+        // Calcular tempo para level 400
+        if (prev.level < 400 && levelDelta > 0) {
+          timeTo400.push((400 - prev.level) / (levelDelta / timeDelta));
+        }
+      }
+    }
+    
+    // Média de level/hora
+    stats.levelPerHour = levelChanges.length > 0 ? 
+      levelChanges.reduce((a, b) => a + b, 0) / levelChanges.length : 0;
+    
+    // Média de tempo entre resets
+    stats.avgTimePerReset = resetChanges.length > 0 ? 
+      timeDeltas.reduce((a, b) => a + b, 0) / resetChanges.length : null;
+    
+    // Previsão para próximo level
+    stats.nextLevelPrediction = stats.levelPerHour > 0 ? 
+      1 / stats.levelPerHour : null;
+    
+    // Previsão para próximo reset
+    stats.nextResetPrediction = stats.avgTimePerReset;
+    
+    // Projeção para level 400
+    const latest = history[history.length - 1];
+    if (latest.level < 400 && timeTo400.length > 0) {
+      stats.projectionTo400 = timeTo400.reduce((a, b) => a + b, 0) / timeTo400.length;
+    } else if (latest.level >= 400) {
+      stats.projectionTo400 = 'Já atingiu level 400';
+    } else {
+      stats.projectionTo400 = null;
+    }
+    
+    // Projeção para próximo reset baseado na média
+    if (timeBetweenResets.length > 0 && stats.levelPerHour > 0) {
+      const avgTimeBetweenResets = timeBetweenResets.reduce((a, b) => a + b, 0) / timeBetweenResets.length;
+      stats.projectionNextReset = avgTimeBetweenResets;
+      
+      if (latest.level < 400 && stats.projectionTo400 !== null) {
+        stats.projectionNextReset = stats.projectionTo400 + avgTimeBetweenResets;
+      }
+    } else {
+      stats.projectionNextReset = null;
+    }
+    
+    return stats;
+  } catch (error) {
+    console.error('❌ Erro ao calcular estatísticas avançadas:', error);
+    return null;
   }
+}
 
-  // Botões
-  if (interaction.isButton()) {
-    if (interaction.channel?.id !== ALLOWED_CHANNEL_ID) {
-      return interaction.reply({ 
-        content: 'Este comando só pode ser usado no canal de inscrições.', 
-        ephemeral: true 
-      }).catch(() => {
-        interaction.channel.send({
-          content: 'Este comando só pode ser usado no canal de inscrições.',
-          ephemeral: true
-        }).catch(console.error);
+// Função para criar embed de personagem (atualizada com estatísticas)
+function createCharEmbed({ name, level, resets, guild, found, lastSeen, history, stats }) {
+  const embed = new EmbedBuilder()
+    .setColor(found ? '#00FF00' : '#FF0000')
+    .setTitle(`Personagem: ${name}`)
+    .addFields(
+      { name: '⚔️ Level', value: level?.toString() || 'Desconhecido', inline: true },
+      { name: '🔄 Resets', value: resets?.toString() || '0', inline: true },
+      { name: '🏰 Guilda', value: guild || 'Nenhuma', inline: true }
+    );
+    
+  if (!found) {
+    embed.setDescription('❗ Personagem não encontrado atualmente em nenhuma guilda');
+    if (lastSeen) {
+      embed.addFields({ 
+        name: 'Última vez visto', 
+        value: new Date(lastSeen).toLocaleString(), 
+        inline: false 
       });
     }
-
-    try {
-      if (interaction.customId.startsWith('prev_page_') || interaction.customId.startsWith('next_page_')) {
-        const [direction, pageStr] = interaction.customId.split('_').slice(1);
-        let page = parseInt(pageStr);
-        
-        page = direction === 'prev' ? page - 1 : page + 1;
-        
-        await interaction.deferUpdate();
-        await interaction.message.delete().catch(() => {});
-        await listPendingApplications(interaction, [page.toString()]);
-        return;
-      }
-
-      if (interaction.customId.startsWith('search_prev_') || interaction.customId.startsWith('search_next_')) {
-        const [direction, searchTerm, pageStr] = interaction.customId.split('_').slice(1);
-        let page = parseInt(pageStr);
-        
-        page = direction === 'prev' ? page - 1 : page + 1;
-        
-        await interaction.deferUpdate();
-        await interaction.message.delete().catch(() => {});
-        await searchApplications(interaction, [searchTerm, page.toString()]);
-        return;
-      }
-
-      const [action, id] = interaction.customId.split('_');
+  }
+  
+  if (history && history.length > 0) {
+    const historyText = history.map(entry => 
+      `📅 ${new Date(entry.recorded_at).toLocaleDateString()}: Level ${entry.level} | Resets ${entry.resets}`
+    ).join('\n');
+    
+    embed.addFields({
+      name: '📜 Histórico Recente',
+      value: historyText,
+      inline: false
+    });
+  }
+  
+  if (stats) {
+    const statsFields = [];
+    
+    if (stats.levelPerHour > 0) {
+      statsFields.push({
+        name: '📊 Progresso',
+        value: `Média: ${stats.levelPerHour.toFixed(2)} levels/hora`,
+        inline: true
+      });
       
-      if (action === 'approve') {
-        await approveApplication(interaction, id);
-      } else if (action === 'reject') {
-        const modal = new ModalBuilder()
-          .setCustomId(`reject_reason_${id}`)
-          .setTitle('Motivo da Rejeição');
-        
-        const reasonInput = new TextInputBuilder()
-          .setCustomId('reject_reason')
-          .setLabel('Por que esta inscrição está sendo rejeitada?')
-          .setStyle(TextInputStyle.Paragraph)
-          .setRequired(true)
-          .setMinLength(10)
-          .setMaxLength(500);
-        
-        const actionRow = new ActionRowBuilder().addComponents(reasonInput);
-        modal.addComponents(actionRow);
-        
-        await interaction.showModal(modal);
+      if (stats.nextLevelPrediction) {
+        statsFields.push({
+          name: '⏱️ Próximo Level',
+          value: `~${stats.nextLevelPrediction.toFixed(2)} horas`,
+          inline: true
+        });
       }
-    } catch (error) {
-      console.error('❌ Erro ao processar interação:', error);
-      interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', ephemeral: true }).catch(console.error);
+    }
+    
+    if (stats.projectionTo400) {
+      statsFields.push({
+        name: '🎯 Projeção para 400',
+        value: typeof stats.projectionTo400 === 'string' ? 
+          stats.projectionTo400 : 
+          `~${(stats.projectionTo400 / 24).toFixed(2)} dias`,
+        inline: true
+      });
+    }
+    
+    if (stats.projectionNextReset) {
+      statsFields.push({
+        name: '🔄 Próximo Reset',
+        value: `~${(stats.projectionNextReset / 24).toFixed(2)} dias`,
+        inline: true
+      });
+    }
+    
+    if (statsFields.length > 0) {
+      embed.addFields(statsFields);
     }
   }
-
-  // Modais
-  if (interaction.isModalSubmit()) {
-    if (interaction.channel?.id !== ALLOWED_CHANNEL_ID) {
-      return interaction.reply({ 
-        content: 'Este comando só pode ser usado no canal de inscrições.', 
-        ephemeral: true 
-      }).catch(console.error);
-    }
-
-    try {
-      if (interaction.customId.startsWith('reject_reason_')) {
-        const id = interaction.customId.split('_')[2];
-        const reason = interaction.fields.getTextInputValue('reject_reason');
-        
-        await interaction.deferReply({ ephemeral: true });
-        await rejectApplication(interaction, id, reason);
-      }
-    } catch (error) {
-      console.error('❌ Erro ao processar modal:', error);
-      interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', ephemeral: true }).catch(console.error);
-    }
-  }
-});
+  
+  return embed;
+}
 
 // Função para buscar personagem
 async function searchCharacter(interaction, charName) {
@@ -753,6 +719,9 @@ async function searchCharacter(interaction, charName) {
       [charData.id]
     );
     
+    // Obter estatísticas avançadas
+    const advancedStats = await calculateAdvancedStats(charData.id);
+    
     // Criar embed de resposta
     const embed = createCharEmbed({
       name: charData.name,
@@ -760,7 +729,8 @@ async function searchCharacter(interaction, charName) {
       resets: charData.resets,
       guild: charData.guild,
       found: true,
-      history: history
+      history: history,
+      stats: advancedStats
     });
     
     await interaction.editReply({ embeds: [embed] });
@@ -771,43 +741,6 @@ async function searchCharacter(interaction, charName) {
       content: 'Ocorreu um erro ao buscar o personagem. Por favor, tente novamente mais tarde.'
     });
   }
-}
-
-// Função para criar embed de personagem
-function createCharEmbed({ name, level, resets, guild, found, lastSeen, history }) {
-  const embed = new EmbedBuilder()
-    .setColor(found ? '#00FF00' : '#FF0000')
-    .setTitle(`Personagem: ${name}`)
-    .addFields(
-      { name: '⚔️ Level', value: level?.toString() || 'Desconhecido', inline: true },
-      { name: '🔄 Resets', value: resets?.toString() || '0', inline: true },
-      { name: '🏰 Guilda', value: guild || 'Nenhuma', inline: true }
-    );
-    
-  if (!found) {
-    embed.setDescription('❗ Personagem não encontrado atualmente em nenhuma guilda');
-    if (lastSeen) {
-      embed.addFields({ 
-        name: 'Última vez visto', 
-        value: new Date(lastSeen).toLocaleString(), 
-        inline: false 
-      });
-    }
-  }
-  
-  if (history && history.length > 0) {
-    const historyText = history.map(entry => 
-      `📅 ${new Date(entry.recorded_at).toLocaleDateString()}: Level ${entry.level} | Resets ${entry.resets}`
-    ).join('\n');
-    
-    embed.addFields({
-      name: '📜 Histórico Recente',
-      value: historyText,
-      inline: false
-    });
-  }
-  
-  return embed;
 }
 
 // Função para mostrar ranking
@@ -1258,6 +1191,237 @@ async function safeSend(channel, content) {
     return null;
   }
 }
+
+// Quando o bot está pronto
+client.on('ready', async () => {
+  console.log(`🤖 Bot conectado como ${client.user.tag}`);
+  console.log(`📌 Canal permitido: ${ALLOWED_CHANNEL_ID}`);
+  client.user.setActivity('/ajuda para comandos', { type: 'WATCHING' });
+
+  // Registrar comandos slash
+  try {
+    await client.application.commands.set(slashCommands);
+    console.log('✅ Comandos slash registrados com sucesso');
+  } catch (error) {
+    console.error('❌ Erro ao registrar comandos slash:', error);
+  }
+
+  // Iniciar sistema de tracking
+  await tracker.startTracking();
+});
+
+// Handler para comandos slash
+client.on('interactionCreate', async interaction => {
+  if (isShuttingDown) return;
+
+  // Comandos slash
+  if (interaction.isCommand()) {
+    console.log(`🔍 Comando slash detectado: ${interaction.commandName}`, interaction.options.data);
+
+    try {
+      switch (interaction.commandName) {
+        case 'pendentes':
+          const page = interaction.options.getInteger('página') || 1;
+          await listPendingApplications(interaction, [page.toString()]);
+          break;
+          
+        case 'buscar':
+          const term = interaction.options.getString('termo');
+          const searchPage = interaction.options.getInteger('página') || 1;
+          await searchApplications(interaction, [term, searchPage.toString()]);
+          break;
+          
+        case 'char':
+          const charName = interaction.options.getString('nome');
+          await searchCharacter(interaction, charName);
+          break;
+          
+        case 'ranking':
+          const period = interaction.options.getString('período');
+          await showRanking(interaction, period);
+          break;
+          
+        case 'monitorar':
+          const charToTrack = interaction.options.getString('nome');
+          const channel = interaction.options.getChannel('canal');
+          
+          await interaction.deferReply({ ephemeral: true });
+          
+          try {
+            await tracker.addTracking(
+              charToTrack, 
+              interaction.user.id, 
+              channel?.id
+            );
+            
+            await interaction.editReply({
+              content: `✅ Personagem "${charToTrack}" está sendo monitorado${channel ? ` no canal ${channel.name}` : ''}.`
+            });
+          } catch (error) {
+            await interaction.editReply({
+              content: `❌ Erro ao monitorar personagem: ${error.message}`
+            });
+          }
+          break;
+          
+        case 'parar-monitorar':
+          const charToStop = interaction.options.getString('nome');
+          
+          await interaction.deferReply({ ephemeral: true });
+          
+          try {
+            const removed = await tracker.removeTracking(charToStop, interaction.user.id);
+            
+            await interaction.editReply({
+              content: removed ? 
+                `✅ Personagem "${charToStop}" não será mais monitorado.` :
+                `❌ Personagem "${charToStop}" não estava sendo monitorado.`
+            });
+          } catch (error) {
+            await interaction.editReply({
+              content: `❌ Erro ao parar de monitorar: ${error.message}`
+            });
+          }
+          break;
+          
+        case 'listar-monitorados':
+          await interaction.deferReply({ ephemeral: true });
+          
+          try {
+            const tracked = await tracker.listTracked(interaction.user.id);
+            
+            if (tracked.length === 0) {
+              await interaction.editReply({
+                content: 'Você não está monitorando nenhum personagem no momento.'
+              });
+              return;
+            }
+            
+            const embed = new EmbedBuilder()
+              .setColor('#FFA500')
+              .setTitle('Personagens Monitorados')
+              .setDescription('Lista de personagens que você está monitorando:');
+              
+            tracked.forEach(char => {
+              embed.addFields({
+                name: char.name,
+                value: `Último level: ${char.last_level || 'N/A'}\n` +
+                       `Últimos resets: ${char.last_resets || 'N/A'}`,
+                inline: true
+              });
+            });
+            
+            await interaction.editReply({ embeds: [embed] });
+          } catch (error) {
+            await interaction.editReply({
+              content: `❌ Erro ao listar personagens monitorados: ${error.message}`
+            });
+          }
+          break;
+          
+        case 'ajuda':
+          await showHelp(interaction);
+          break;
+      }
+    } catch (error) {
+      console.error(`❌ Erro ao executar comando ${interaction.commandName}:`, error);
+      await interaction.reply({
+        content: 'Ocorreu um erro ao processar seu comando.',
+        ephemeral: true
+      }).catch(console.error);
+    }
+  }
+
+  // Botões
+  if (interaction.isButton()) {
+    if (interaction.channel?.id !== ALLOWED_CHANNEL_ID) {
+      return interaction.reply({ 
+        content: 'Este comando só pode ser usado no canal de inscrições.', 
+        ephemeral: true 
+      }).catch(() => {
+        interaction.channel.send({
+          content: 'Este comando só pode ser usado no canal de inscrições.',
+          ephemeral: true
+        }).catch(console.error);
+      });
+    }
+
+    try {
+      if (interaction.customId.startsWith('prev_page_') || interaction.customId.startsWith('next_page_')) {
+        const [direction, pageStr] = interaction.customId.split('_').slice(1);
+        let page = parseInt(pageStr);
+        
+        page = direction === 'prev' ? page - 1 : page + 1;
+        
+        await interaction.deferUpdate();
+        await interaction.message.delete().catch(() => {});
+        await listPendingApplications(interaction, [page.toString()]);
+        return;
+      }
+
+      if (interaction.customId.startsWith('search_prev_') || interaction.customId.startsWith('search_next_')) {
+        const [direction, searchTerm, pageStr] = interaction.customId.split('_').slice(1);
+        let page = parseInt(pageStr);
+        
+        page = direction === 'prev' ? page - 1 : page + 1;
+        
+        await interaction.deferUpdate();
+        await interaction.message.delete().catch(() => {});
+        await searchApplications(interaction, [searchTerm, page.toString()]);
+        return;
+      }
+
+      const [action, id] = interaction.customId.split('_');
+      
+      if (action === 'approve') {
+        await approveApplication(interaction, id);
+      } else if (action === 'reject') {
+        const modal = new ModalBuilder()
+          .setCustomId(`reject_reason_${id}`)
+          .setTitle('Motivo da Rejeição');
+        
+        const reasonInput = new TextInputBuilder()
+          .setCustomId('reject_reason')
+          .setLabel('Por que esta inscrição está sendo rejeitada?')
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true)
+          .setMinLength(10)
+          .setMaxLength(500);
+        
+        const actionRow = new ActionRowBuilder().addComponents(reasonInput);
+        modal.addComponents(actionRow);
+        
+        await interaction.showModal(modal);
+      }
+    } catch (error) {
+      console.error('❌ Erro ao processar interação:', error);
+      interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', ephemeral: true }).catch(console.error);
+    }
+  }
+
+  // Modais
+  if (interaction.isModalSubmit()) {
+    if (interaction.channel?.id !== ALLOWED_CHANNEL_ID) {
+      return interaction.reply({ 
+        content: 'Este comando só pode ser usado no canal de inscrições.', 
+        ephemeral: true 
+      }).catch(console.error);
+    }
+
+    try {
+      if (interaction.customId.startsWith('reject_reason_')) {
+        const id = interaction.customId.split('_')[2];
+        const reason = interaction.fields.getTextInputValue('reject_reason');
+        
+        await interaction.deferReply({ ephemeral: true });
+        await rejectApplication(interaction, id, reason);
+      }
+    } catch (error) {
+      console.error('❌ Erro ao processar modal:', error);
+      interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', ephemeral: true }).catch(console.error);
+    }
+  }
+});
 
 // Inicia o servidor e o bot
 async function startApp() {
