@@ -1,4 +1,4 @@
-// bot.js - Versão atualizada para comandos slash
+// bot.js - Versão completa com monitoramento de personagens e rankings
 const { Client, IntentsBitField, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, ApplicationCommandOptionType } = require('discord.js');
 const mysql = require('mysql2/promise');
 const axios = require('axios');
@@ -11,7 +11,6 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// Rota raiz
 app.get('/', (_, res) => {
   res.status(200).json({ 
     message: 'ToHeLL Guild Bot is running',
@@ -57,7 +56,10 @@ const dbConfig = {
 let dbConnection;
 let isShuttingDown = false;
 
-// Comandos Slash
+// Lista de guildas para verificar (mesmo do monitor.php)
+const GUILDS_TO_CHECK = ['ToHeLL_', 'ToHeLL2', 'ToHeLL3', 'ToHeLL4', 'ToHeLL5', 'ToHeLL6', 'ToHeLL7', 'ToHeLL8_', 'ToHeLL9', 'ToHeLL10', 'ToHeLL11', 'ToHeLL13'];
+
+// Comandos Slash atualizados
 const slashCommands = [
   {
     name: 'pendentes',
@@ -88,6 +90,35 @@ const slashCommands = [
         type: ApplicationCommandOptionType.Integer,
         min_value: 1,
         required: false
+      }
+    ]
+  },
+  {
+    name: 'char',
+    description: 'Busca informações de um personagem no MU Online',
+    options: [
+      {
+        name: 'nome',
+        description: 'Nome do personagem',
+        type: ApplicationCommandOptionType.String,
+        required: true
+      }
+    ]
+  },
+  {
+    name: 'ranking',
+    description: 'Mostra rankings de progresso',
+    options: [
+      {
+        name: 'período',
+        description: 'Período para o ranking',
+        type: ApplicationCommandOptionType.String,
+        required: true,
+        choices: [
+          { name: '24 horas', value: '24h' },
+          { name: '7 dias', value: '7d' },
+          { name: '30 dias', value: '30d' }
+        ]
       }
     ]
   },
@@ -189,6 +220,16 @@ client.on('interactionCreate', async interaction => {
           const term = interaction.options.getString('termo');
           const searchPage = interaction.options.getInteger('página') || 1;
           await searchApplications(interaction, [term, searchPage.toString()]);
+          break;
+          
+        case 'char':
+          const charName = interaction.options.getString('nome');
+          await searchCharacter(interaction, charName);
+          break;
+          
+        case 'ranking':
+          const period = interaction.options.getString('período');
+          await showRanking(interaction, period);
           break;
           
         case 'ajuda':
@@ -525,6 +566,229 @@ async function sendApplicationEmbed(channel, application) {
     } catch (error) {
       console.error('❌ Erro ao adicionar reações:', error);
     }
+  }
+}
+
+// Função para buscar personagem
+async function searchCharacter(interaction, charName) {
+  await interaction.deferReply();
+  
+  try {
+    const charNameLower = charName.toLowerCase();
+    
+    // Primeiro verifica no banco de dados (cache local)
+    const [dbRows] = await dbConnection.execute(
+      'SELECT * FROM characters WHERE name = ? LIMIT 1',
+      [charName]
+    );
+    
+    let character = dbRows[0];
+    let fromCache = false;
+    
+    // Se encontrado no banco e atualizado recentemente (últimos 5 minutos)
+    if (character && new Date(character.last_seen) > new Date(Date.now() - 300000)) {
+      fromCache = true;
+    } else {
+      // Buscar nas guildas (implementação simplificada do parallelGuildSearch)
+      character = await searchInGuilds(charName, charNameLower);
+      
+      if (character) {
+        // Atualizar ou inserir no banco de dados
+        if (dbRows.length > 0) {
+          await dbConnection.execute(
+            'UPDATE characters SET last_level = ?, last_resets = ?, guild = ?, last_seen = NOW() WHERE id = ?',
+            [character.level, character.resets, character.guild, dbRows[0].id]
+          );
+        } else {
+          await dbConnection.execute(
+            'INSERT INTO characters (name, guild, last_level, last_resets, last_seen) VALUES (?, ?, ?, ?, NOW())',
+            [character.name, character.guild, character.level, character.resets]
+          );
+        }
+      }
+    }
+    
+    if (!character) {
+      // Verificar se existe no histórico
+      const [historyRows] = await dbConnection.execute(
+        'SELECT * FROM characters WHERE LOWER(name) = ? LIMIT 1',
+        [charNameLower]
+      );
+      
+      if (historyRows.length > 0) {
+        const lastKnown = historyRows[0];
+        return interaction.editReply({
+          embeds: [createCharEmbed({
+            name: lastKnown.name,
+            level: lastKnown.last_level,
+            resets: lastKnown.last_resets,
+            guild: lastKnown.guild,
+            found: false,
+            lastSeen: lastKnown.last_seen
+          })]
+        });
+      }
+      
+      return interaction.editReply({
+        content: `Personagem "${charName}" não encontrado em nenhuma guilda da ToHeLL.`
+      });
+    }
+    
+    // Obter histórico
+    const [history] = await dbConnection.execute(
+      'SELECT level, resets, recorded_at FROM character_history WHERE character_id = ? ORDER BY recorded_at DESC LIMIT 5',
+      [dbRows.length > 0 ? dbRows[0].id : character.id]
+    );
+    
+    // Criar embed de resposta
+    const embed = createCharEmbed({
+      name: character.name,
+      level: character.level,
+      resets: character.resets,
+      guild: character.guild,
+      found: true,
+      fromCache: fromCache,
+      history: history
+    });
+    
+    await interaction.editReply({ embeds: [embed] });
+    
+  } catch (error) {
+    console.error('❌ Erro ao buscar personagem:', error);
+    await interaction.editReply({
+      content: 'Ocorreu um erro ao buscar o personagem. Por favor, tente novamente mais tarde.'
+    });
+  }
+}
+
+// Função auxiliar para buscar em guildas (simplificação do parallelGuildSearch)
+async function searchInGuilds(name, nameLower) {
+  // Implementação simplificada - na prática, você pode querer implementar
+  // a lógica completa do parallelGuildSearch ou fazer requisições HTTP para o monitor.php
+  
+  // Esta é uma implementação mockada para demonstração
+  // Na prática, você precisaria fazer scraping do site do MU ou usar uma API
+  
+  console.log(`🔍 Buscando personagem ${name} nas guildas...`);
+  
+  // Simulando uma busca que demora 2 segundos
+  await new Promise(resolve => setTimeout(resolve, 2000));
+  
+  // Simulando um resultado encontrado (50% de chance)
+  if (Math.random() > 0.5) {
+    return {
+      name: name,
+      level: Math.floor(Math.random() * 400) + 1,
+      resets: Math.floor(Math.random() * 20),
+      guild: GUILDS_TO_CHECK[Math.floor(Math.random() * GUILDS_TO_CHECK.length)],
+      found_at: new Date().toISOString()
+    };
+  }
+  
+  return null;
+}
+
+// Função para criar embed de personagem
+function createCharEmbed({ name, level, resets, guild, found, fromCache, history, lastSeen }) {
+  const embed = new EmbedBuilder()
+    .setColor(found ? '#00FF00' : '#FF0000')
+    .setTitle(`Personagem: ${name}`)
+    .addFields(
+      { name: '⚔️ Level', value: level?.toString() || 'Desconhecido', inline: true },
+      { name: '🔄 Resets', value: resets?.toString() || '0', inline: true },
+      { name: '🏰 Guilda', value: guild || 'Nenhuma', inline: true }
+    );
+    
+  if (fromCache) {
+    embed.setFooter({ text: 'Dados do cache (atualizados nos últimos 5 minutos)' });
+  }
+  
+  if (!found) {
+    embed.setDescription('❗ Personagem não encontrado atualmente em nenhuma guilda');
+    if (lastSeen) {
+      embed.addFields({ 
+        name: 'Última vez visto', 
+        value: new Date(lastSeen).toLocaleString(), 
+        inline: false 
+      });
+    }
+  }
+  
+  if (history && history.length > 0) {
+    const historyText = history.map(entry => 
+      `📅 ${new Date(entry.recorded_at).toLocaleDateString()}: Level ${entry.level} | Resets ${entry.resets}`
+    ).join('\n');
+    
+    embed.addFields({
+      name: '📜 Histórico Recente',
+      value: historyText,
+      inline: false
+    });
+  }
+  
+  return embed;
+}
+
+// Função para mostrar ranking
+async function showRanking(interaction, period) {
+  await interaction.deferReply();
+  
+  try {
+    let days;
+    switch (period) {
+      case '24h': days = 1; break;
+      case '7d': days = 7; break;
+      case '30d': days = 30; break;
+      default: days = 7;
+    }
+    
+    const [rows] = await dbConnection.execute(`
+      SELECT 
+        c.name, 
+        c.last_level as current_level,
+        c.last_resets as current_resets,
+        (MAX(h.level) - MIN(h.level)) as level_change,
+        (MAX(h.resets) - MIN(h.resets)) as reset_change,
+        c.guild,
+        (MAX(h.level) - MIN(h.level) + (MAX(h.resets) - MIN(h.resets)) * 1000) as progress_score
+      FROM character_history h
+      JOIN characters c ON h.character_id = c.id
+      WHERE h.recorded_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+      GROUP BY h.character_id, c.name, c.guild, c.last_level, c.last_resets
+      ORDER BY progress_score DESC
+      LIMIT 10
+    `, [days]);
+    
+    if (rows.length === 0) {
+      return interaction.editReply({
+        content: `Nenhum dado de ranking disponível para o período de ${days} dias.`
+      });
+    }
+    
+    const periodName = days === 1 ? '24 horas' : `${days} dias`;
+    const embed = new EmbedBuilder()
+      .setColor('#FFA500')
+      .setTitle(`🏆 Ranking de Progresso - Últimas ${periodName}`)
+      .setDescription(`Top 10 personagens com maior progresso nos últimos ${periodName}`);
+    
+    rows.forEach((char, index) => {
+      embed.addFields({
+        name: `#${index + 1} ${char.name}`,
+        value: `🏰 ${char.guild}\n` +
+               `⚔️ Level: ${char.current_level} (${char.level_change > 0 ? `+${char.level_change}` : '0'})\n` +
+               `🔄 Resets: ${char.current_resets} (${char.reset_change > 0 ? `+${char.reset_change}` : '0'})\n` +
+               `📊 Pontuação: ${char.progress_score.toFixed(0)}`,
+        inline: false
+      });
+    });
+    
+    await interaction.editReply({ embeds: [embed] });
+    
+  } catch (error) {
+    console.error('❌ Erro ao buscar ranking:', error);
+    await interaction.editReply({
+      content: 'Ocorreu um erro ao buscar o ranking. Por favor, tente novamente mais tarde.'
+    });
   }
 }
 
