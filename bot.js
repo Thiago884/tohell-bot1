@@ -57,13 +57,27 @@ client.on('ready', () => {
   console.log(`Bot conectado como ${client.user.tag}`);
 });
 
+// Função segura para enviar mensagens
+async function safeSend(channel, content, options = {}) {
+  try {
+    return await channel.send(content, options);
+  } catch (error) {
+    console.error('Erro ao enviar mensagem:', error);
+    return null;
+  }
+}
+
 // Quando uma mensagem é recebida
 client.on('messageCreate', async message => {
   // Verifica se a mensagem foi enviada no canal permitido
   if (message.channel.id !== ALLOWED_CHANNEL_ID) {
-    return message.reply('Este comando só pode ser usado no canal de inscrições.').then(msg => {
-      setTimeout(() => msg.delete(), 5000);
-    });
+    try {
+      await message.author.send('Este comando só pode ser usado no canal de inscrições.').catch(() => {});
+      await message.delete().catch(() => {});
+    } catch (error) {
+      console.error('Erro ao processar mensagem em canal não permitido:', error);
+    }
+    return;
   }
   
   if (message.author.bot || !message.content.startsWith('!')) return;
@@ -76,7 +90,7 @@ client.on('messageCreate', async message => {
       await commands[command].execute(message, args);
     } catch (error) {
       console.error('Erro ao executar comando:', error);
-      message.reply('Ocorreu um erro ao processar seu comando.');
+      await safeSend(message.channel, 'Ocorreu um erro ao processar seu comando.');
     }
   }
 });
@@ -86,7 +100,7 @@ async function listPendingApplications(message, args) {
   const page = args[0] ? parseInt(args[0]) : 1;
   
   if (isNaN(page) || page < 1) {
-    return message.reply('Por favor, especifique um número de página válido.');
+    return safeSend(message.channel, 'Por favor, especifique um número de página válido.');
   }
 
   try {
@@ -100,11 +114,11 @@ async function listPendingApplications(message, args) {
     const totalPages = Math.ceil(total / ITEMS_PER_PAGE);
 
     if (total === 0) {
-      return message.reply('Não há inscrições pendentes no momento.');
+      return safeSend(message.channel, 'Não há inscrições pendentes no momento.');
     }
 
     if (page > totalPages) {
-      return message.reply(`Apenas ${totalPages} páginas disponíveis.`);
+      return safeSend(message.channel, `Apenas ${totalPages} páginas disponíveis.`);
     }
 
     // Obtém as inscrições da página atual
@@ -119,7 +133,7 @@ async function listPendingApplications(message, args) {
       .setTitle(`Inscrições Pendentes - Página ${page}/${totalPages}`)
       .setFooter({ text: `Total de inscrições pendentes: ${total}` });
 
-    await message.reply({ embeds: [embed] });
+    await safeSend(message.channel, { embeds: [embed] });
 
     // Envia cada inscrição como uma mensagem separada
     for (const application of rows) {
@@ -141,7 +155,7 @@ async function listPendingApplications(message, args) {
           .setDisabled(page >= totalPages)
       );
 
-      await message.channel.send({
+      await safeSend(message.channel, {
         content: `Navegação - Página ${page}/${totalPages}`,
         components: [navRow]
       });
@@ -149,21 +163,21 @@ async function listPendingApplications(message, args) {
 
   } catch (error) {
     console.error('Erro ao listar inscrições pendentes:', error);
-    message.reply('Ocorreu um erro ao listar as inscrições pendentes.');
+    await safeSend(message.channel, 'Ocorreu um erro ao listar as inscrições pendentes.');
   }
 }
 
 // Função para buscar inscrições
 async function searchApplications(message, args) {
   if (args.length === 0) {
-    return message.reply('Por favor, especifique um termo de busca.');
+    return safeSend(message.channel, 'Por favor, especifique um termo de busca.');
   }
 
   const searchTerm = args[0];
   const page = args[1] ? parseInt(args[1]) : 1;
   
   if (isNaN(page) || page < 1) {
-    return message.reply('Por favor, especifique um número de página válido.');
+    return safeSend(message.channel, 'Por favor, especifique um número de página válido.');
   }
 
   try {
@@ -179,11 +193,11 @@ async function searchApplications(message, args) {
     const totalPages = Math.ceil(total / ITEMS_PER_PAGE);
 
     if (total === 0) {
-      return message.reply('Nenhuma inscrição encontrada com esse termo de busca.');
+      return safeSend(message.channel, 'Nenhuma inscrição encontrada com esse termo de busca.');
     }
 
     if (page > totalPages) {
-      return message.reply(`Apenas ${totalPages} páginas disponíveis para esta busca.`);
+      return safeSend(message.channel, `Apenas ${totalPages} páginas disponíveis para esta busca.`);
     }
 
     // Obtém os resultados da busca
@@ -198,7 +212,7 @@ async function searchApplications(message, args) {
       .setTitle(`Resultados da busca por "${searchTerm}" - Página ${page}/${totalPages}`)
       .setFooter({ text: `Total de resultados: ${total}` });
 
-    await message.reply({ embeds: [embed] });
+    await safeSend(message.channel, { embeds: [embed] });
 
     // Envia cada inscrição encontrada
     for (const application of rows) {
@@ -220,7 +234,7 @@ async function searchApplications(message, args) {
           .setDisabled(page >= totalPages)
       );
 
-      await message.channel.send({
+      await safeSend(message.channel, {
         content: `Navegação - Página ${page}/${totalPages}`,
         components: [navRow]
       });
@@ -228,7 +242,7 @@ async function searchApplications(message, args) {
 
   } catch (error) {
     console.error('Erro ao buscar inscrições:', error);
-    message.reply('Ocorreu um erro ao buscar inscrições.');
+    await safeSend(message.channel, 'Ocorreu um erro ao buscar inscrições.');
   }
 }
 
@@ -265,18 +279,23 @@ async function sendApplicationEmbed(channel, application) {
       .setStyle(ButtonStyle.Danger)
   );
 
-  const msg = await channel.send({ 
+  const msg = await safeSend(channel, { 
     embeds: [embed],
     components: [row]
   });
 
-  // Adiciona reações para aprovação/rejeição
-  await msg.react('👍');
-  await msg.react('👎');
+  if (msg) {
+    try {
+      await msg.react('👍');
+      await msg.react('👎');
+    } catch (error) {
+      console.error('Erro ao adicionar reações:', error);
+    }
+  }
 }
 
 // Função para mostrar ajuda
-function showHelp(message) {
+async function showHelp(message) {
   const embed = new EmbedBuilder()
     .setColor('#FF4500')
     .setTitle('Comandos do Bot de Inscrições')
@@ -290,18 +309,23 @@ function showHelp(message) {
     )
     .setFooter({ text: 'ToHeLL Guild - Sistema de Inscrições' });
 
-  message.reply({ embeds: [embed] });
+  await safeSend(message.channel, { embeds: [embed] });
 }
 
 // Interações com botões
 client.on('interactionCreate', async interaction => {
   if (!interaction.isButton()) return;
   
-  // Verifica se a interação foi no canal permitido
+  // Verificação segura do canal
   if (interaction.channel?.id !== ALLOWED_CHANNEL_ID) {
     return interaction.reply({ 
       content: 'Este comando só pode ser usado no canal de inscrições.', 
       ephemeral: true 
+    }).catch(() => {
+      interaction.channel.send({
+        content: 'Este comando só pode ser usado no canal de inscrições.',
+        ephemeral: true
+      }).catch(console.error);
     });
   }
 
@@ -314,7 +338,7 @@ client.on('interactionCreate', async interaction => {
       page = direction === 'prev' ? page - 1 : page + 1;
       
       await interaction.deferUpdate();
-      await interaction.message.delete();
+      await interaction.message.delete().catch(() => {});
       await listPendingApplications(interaction, [page.toString()]);
       return;
     }
@@ -327,7 +351,7 @@ client.on('interactionCreate', async interaction => {
       page = direction === 'prev' ? page - 1 : page + 1;
       
       await interaction.deferUpdate();
-      await interaction.message.delete();
+      await interaction.message.delete().catch(() => {});
       await searchApplications(interaction, [searchTerm, page.toString()]);
       return;
     }
@@ -358,7 +382,7 @@ client.on('interactionCreate', async interaction => {
     }
   } catch (error) {
     console.error('Erro ao processar interação:', error);
-    interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', ephemeral: true });
+    interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', ephemeral: true }).catch(console.error);
   }
 });
 
@@ -366,12 +390,12 @@ client.on('interactionCreate', async interaction => {
 client.on('interactionCreate', async interaction => {
   if (!interaction.isModalSubmit()) return;
   
-  // Verifica se a interação foi no canal permitido
+  // Verificação segura do canal
   if (interaction.channel?.id !== ALLOWED_CHANNEL_ID) {
     return interaction.reply({ 
       content: 'Este comando só pode ser usado no canal de inscrições.', 
       ephemeral: true 
-    });
+    }).catch(console.error);
   }
 
   try {
@@ -384,7 +408,7 @@ client.on('interactionCreate', async interaction => {
     }
   } catch (error) {
     console.error('Erro ao processar modal:', error);
-    interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', ephemeral: true });
+    interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', ephemeral: true }).catch(console.error);
   }
 });
 
@@ -411,17 +435,21 @@ client.on('messageReactionAdd', async (reaction, user) => {
       // Para reações, pedimos o motivo via DM
       try {
         const dmChannel = await user.createDM();
-        await dmChannel.send(`Por favor, envie o motivo para rejeitar a inscrição #${applicationId} em uma única mensagem:`);
+        await dmChannel.send(`Por favor, envie o motivo para rejeitar a inscrição #${applicationId} em uma única mensagem:`).catch(console.error);
         
         const filter = m => m.author.id === user.id;
-        const collected = await dmChannel.awaitMessages({ filter, max: 1, time: 60000, errors: ['time'] });
-        const reason = collected.first().content;
+        const collected = await dmChannel.awaitMessages({ filter, max: 1, time: 60000, errors: ['time'] }).catch(console.error);
         
-        await rejectApplication(message, applicationId, user, reason);
-        await dmChannel.send('Inscrição rejeitada com sucesso!');
+        if (collected && collected.first()) {
+          const reason = collected.first().content;
+          await rejectApplication(message, applicationId, user, reason);
+          await dmChannel.send('Inscrição rejeitada com sucesso!').catch(console.error);
+        } else {
+          await message.channel.send(`${user} Você não forneceu um motivo para a rejeição a tempo.`).catch(console.error);
+        }
       } catch (error) {
         console.error('Erro ao coletar motivo:', error);
-        await message.channel.send(`${user} Você não forneceu um motivo para a rejeição a tempo.`);
+        await message.channel.send(`${user} Você não forneceu um motivo para a rejeição a tempo.`).catch(console.error);
       }
     }
   } catch (error) {
@@ -474,28 +502,37 @@ async function approveApplication(context, applicationId, user = null) {
       await context.reply({ 
         content: `Inscrição #${applicationId} aprovada com sucesso!`,
         ephemeral: true 
-      });
+      }).catch(console.error);
     }
 
     // Atualiza a mensagem original
-    const embed = context.message.embeds[0];
-    embed.setColor('#00FF00');
-    embed.setFooter({ text: `✅ Aprovado por ${user?.username || context.user?.username || 'Sistema'}` });
-    
-    await context.message.edit({ 
-      embeds: [embed],
-      components: [] // Remove os botões
-    });
+    try {
+      const embed = context.message.embeds[0];
+      embed.setColor('#00FF00');
+      embed.setFooter({ text: `✅ Aprovado por ${user?.username || context.user?.username || 'Sistema'}` });
+      
+      await context.message.edit({ 
+        embeds: [embed],
+        components: [] // Remove os botões
+      }).catch(console.error);
+    } catch (editError) {
+      console.error('Erro ao editar mensagem:', editError);
+    }
 
     // Remove todas as reações
     try {
-      await context.message.reactions.removeAll();
+      await context.message.reactions.removeAll().catch(console.error);
     } catch (error) {
       console.error('Erro ao remover reações:', error);
     }
   } catch (error) {
     console.error('Erro ao aprovar inscrição:', error);
-    throw error;
+    if (context.reply) {
+      await context.reply({ 
+        content: `Ocorreu um erro ao aprovar a inscrição #${applicationId}`,
+        ephemeral: true 
+      }).catch(console.error);
+    }
   }
 }
 
@@ -528,34 +565,43 @@ async function rejectApplication(context, applicationId, reason, user = null) {
       await context.reply({ 
         content: `Inscrição #${applicationId} rejeitada com sucesso!`,
         ephemeral: true 
-      });
+      }).catch(console.error);
     }
 
     // Atualiza a mensagem original
-    const embed = context.message.embeds[0];
-    embed.setColor('#FF0000');
-    
-    // Adiciona o motivo da rejeição ao embed se existir
-    if (reason) {
-      embed.addFields({ name: 'Motivo da Rejeição', value: reason });
+    try {
+      const embed = context.message.embeds[0];
+      embed.setColor('#FF0000');
+      
+      // Adiciona o motivo da rejeição ao embed se existir
+      if (reason) {
+        embed.addFields({ name: 'Motivo da Rejeição', value: reason });
+      }
+      
+      embed.setFooter({ text: `❌ Rejeitado por ${user?.username || context.user?.username || 'Sistema'}` });
+      
+      await context.message.edit({ 
+        embeds: [embed],
+        components: [] // Remove os botões
+      }).catch(console.error);
+    } catch (editError) {
+      console.error('Erro ao editar mensagem:', editError);
     }
-    
-    embed.setFooter({ text: `❌ Rejeitado por ${user?.username || context.user?.username || 'Sistema'}` });
-    
-    await context.message.edit({ 
-      embeds: [embed],
-      components: [] // Remove os botões
-    });
 
     // Remove todas as reações
     try {
-      await context.message.reactions.removeAll();
+      await context.message.reactions.removeAll().catch(console.error);
     } catch (error) {
       console.error('Erro ao remover reações:', error);
     }
   } catch (error) {
     console.error('Erro ao rejeitar inscrição:', error);
-    throw error;
+    if (context.reply) {
+      await context.reply({ 
+        content: `Ocorreu um erro ao rejeitar a inscrição #${applicationId}`,
+        ephemeral: true 
+      }).catch(console.error);
+    }
   }
 }
 
@@ -586,16 +632,21 @@ async function notifyWebhook(action, applicationId, applicationName, discordTag,
   try {
     await axios.post(process.env.DISCORD_WEBHOOK_URL, {
       embeds: [embed]
-    });
+    }).catch(e => console.error('Erro no webhook:', e.response?.data || e.message));
   } catch (error) {
-    console.error('Erro ao enviar para o webhook:', error);
+    console.error('Erro grave no webhook:', error);
   }
 }
 
 // Inicia o bot
 async function startBot() {
-  await connectDB();
-  await client.login(process.env.DISCORD_TOKEN);
+  try {
+    await connectDB();
+    await client.login(process.env.DISCORD_TOKEN);
+  } catch (error) {
+    console.error('Erro ao iniciar o bot:', error);
+    process.exit(1);
+  }
 }
 
 startBot();
