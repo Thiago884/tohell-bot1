@@ -69,23 +69,30 @@ async function safeSend(channel, content, options = {}) {
 
 // Quando uma mensagem é recebida
 client.on('messageCreate', async message => {
-  // Verifica se a mensagem foi enviada no canal permitido
-  if (message.channel.id !== ALLOWED_CHANNEL_ID) {
-    try {
-      await message.author.send('Este comando só pode ser usado no canal de inscrições.').catch(() => {});
-      await message.delete().catch(() => {});
-    } catch (error) {
-      console.error('Erro ao processar mensagem em canal não permitido:', error);
-    }
-    return;
-  }
-  
+  // Ignora mensagens de bots e que não começam com !
   if (message.author.bot || !message.content.startsWith('!')) return;
 
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args.shift().toLowerCase();
 
+  // Verifica se o comando existe
   if (commands[command]) {
+    // Verifica se está no canal permitido
+    if (message.channel.id !== ALLOWED_CHANNEL_ID) {
+      try {
+        await message.author.send('Este comando só pode ser usado no canal de inscrições.').catch(() => {});
+        await message.delete().catch(() => {});
+      } catch (error) {
+        console.error('Erro ao processar mensagem em canal não permitido:', error);
+      }
+      return;
+    }
+
+    // Verifica permissões do bot
+    if (!message.channel.permissionsFor(client.user).has('SendMessages')) {
+      return console.error('Bot não tem permissão para enviar mensagens neste canal');
+    }
+
     try {
       await commands[command].execute(message, args);
     } catch (error) {
@@ -309,7 +316,19 @@ async function showHelp(message) {
     )
     .setFooter({ text: 'ToHeLL Guild - Sistema de Inscrições' });
 
-  await safeSend(message.channel, { embeds: [embed] });
+  const helpMessage = await safeSend(message.channel, { embeds: [embed] });
+  
+  if (helpMessage) {
+    try {
+      await helpMessage.react('✅');
+      // Deleta a mensagem após 30 segundos
+      setTimeout(() => {
+        helpMessage.delete().catch(() => {});
+      }, 30000);
+    } catch (error) {
+      console.error('Erro ao adicionar reação:', error);
+    }
+  }
 }
 
 // Interações com botões
