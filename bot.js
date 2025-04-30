@@ -1,8 +1,9 @@
-// bot.js - Versão completa com monitoramento de personagens e rankings
+// bot.js - Versão completa com todas funcionalidades originais e novas melhorias
 const { Client, IntentsBitField, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, ApplicationCommandOptionType } = require('discord.js');
 const mysql = require('mysql2/promise');
 const axios = require('axios');
 const express = require('express');
+const { JSDOM } = require('jsdom');
 require('dotenv').config();
 
 // Configuração do servidor Express para health checks
@@ -123,6 +124,40 @@ const slashCommands = [
     ]
   },
   {
+    name: 'monitorar',
+    description: 'Monitora um personagem para receber notificações de progresso',
+    options: [
+      {
+        name: 'nome',
+        description: 'Nome do personagem para monitorar',
+        type: ApplicationCommandOptionType.String,
+        required: true
+      },
+      {
+        name: 'canal',
+        description: 'Canal para enviar notificações (opcional)',
+        type: ApplicationCommandOptionType.Channel,
+        required: false
+      }
+    ]
+  },
+  {
+    name: 'parar-monitorar',
+    description: 'Para de monitorar um personagem',
+    options: [
+      {
+        name: 'nome',
+        description: 'Nome do personagem para parar de monitorar',
+        type: ApplicationCommandOptionType.String,
+        required: true
+      }
+    ]
+  },
+  {
+    name: 'listar-monitorados',
+    description: 'Lista todos os personagens sendo monitorados'
+  },
+  {
     name: 'ajuda',
     description: 'Mostra todos os comandos disponíveis'
   }
@@ -133,6 +168,9 @@ async function connectDB() {
   try {
     dbConnection = await mysql.createPool(dbConfig);
     console.log('✅ Conectado ao banco de dados MySQL');
+    
+    // Criar tabelas necessárias
+    await createTables();
     
     setInterval(async () => {
       try {
@@ -147,6 +185,28 @@ async function connectDB() {
   } catch (error) {
     console.error('❌ Erro ao conectar ao banco de dados:', error);
     await reconnectDB();
+  }
+}
+
+async function createTables() {
+  try {
+    // Tabela para personagens monitorados
+    await dbConnection.execute(`
+      CREATE TABLE IF NOT EXISTS tracked_characters (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        discord_user_id VARCHAR(255) NOT NULL,
+        channel_id VARCHAR(255),
+        last_level INT,
+        last_resets INT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY unique_tracking (name, discord_user_id)
+      )
+    `);
+    
+    console.log('✅ Tabelas verificadas/criadas com sucesso');
+  } catch (error) {
+    console.error('❌ Erro ao criar tabelas:', error);
   }
 }
 
@@ -166,6 +226,248 @@ async function reconnectDB() {
   }
 }
 
+// Implementação completa do parallelGuildSearch
+async function parallelGuildSearch(name, nameLower) {
+  const baseUrl = 'https://www.mucabrasil.com.br/?go=guild&n=';
+  const results = [];
+  
+  try {
+    // Criar um array de promessas para todas as requisições
+    const requests = GUILDS_TO_CHECK.flatMap(guild => {
+      return [1, 2].map(page => { // Verifica as 2 primeiras páginas
+        const url = `${baseUrl}${guild}${page > 1 ? `&p=${page}` : ''}`;
+        return axios.get(url, { timeout: 5000 })
+          .then(response => ({ html: response.data, guild, page }))
+          .catch(error => {
+            console.error(`❌ Erro ao buscar guilda ${guild} página ${page}:`, error.message);
+            return null;
+          });
+      });
+    });
+
+    // Executar todas as requisições em paralelo
+    const responses = await Promise.all(requests);
+    
+    // Processar as respostas
+    for (const response of responses) {
+      if (!response) continue;
+      
+      const { html, guild, page } = response;
+      const dom = new JSDOM(html);
+      const doc = dom.window.document;
+      
+      const rows = doc.querySelectorAll('tr');
+      for (const row of rows) {
+        const cells = row.querySelectorAll('td');
+        if (cells.length >= 4) {
+          const charName = cells[1].textContent.trim();
+          if (charName.toLowerCase() === nameLower) {
+            const level = parseInt(cells[2].textContent.trim());
+            const resets = parseInt(cells[3].textContent.trim());
+            
+            results.push({
+              name: charName,
+              level,
+              resets,
+              guild,
+              found_at: new Date().toISOString()
+            });
+          }
+        }
+      }
+    }
+    
+    return results[0] || null;
+  } catch (error) {
+    console.error('❌ Erro no parallelGuildSearch:', error);
+    return null;
+  }
+}
+
+// Sistema de tracking de personagens
+class CharacterTracker {
+  constructor() {
+    this.trackedCharacters = new Map();
+    this.trackingInterval = null;
+  }
+
+  async startTracking() {
+    // Carregar personagens monitorados do banco de dados
+    await this.loadTrackedCharacters();
+    
+    // Iniciar intervalo de verificação (a cada 5 minutos)
+    this.trackingInterval = setInterval(() => this.checkTrackedCharacters(), 5 * 60 * 1000);
+    console.log('✅ Sistema de tracking iniciado');
+  }
+
+  async loadTrackedCharacters() {
+    try {
+      const [rows] = await dbConnection.execute('SELECT * FROM tracked_characters');
+      this.trackedCharacters = new Map(rows.map(row => [row.name.toLowerCase(), row]));
+      console.log(`✅ Carregados ${rows.length} personagens monitorados`);
+    } catch (error) {
+      console.error('❌ Erro ao carregar personagens monitorados:', error);
+    }
+  }
+
+  async checkTrackedCharacters() {
+    console.log('🔍 Verificando personagens monitorados...');
+    const notifications = [];
+    
+    for (const [nameLower, trackingData] of this.trackedCharacters) {
+      try {
+        const charName = trackingData.name;
+        const charData = await searchCharacterInDatabaseOrGuilds(charName);
+        
+        if (charData) {
+          const changes = [];
+          
+          if (charData.level !== trackingData.last_level) {
+            changes.push(`Level: ${trackingData.last_level || 'N/A'} → ${charData.level}`);
+          }
+          
+          if (charData.resets !== trackingData.last_resets) {
+            changes.push(`Resets: ${trackingData.last_resets || 'N/A'} → ${charData.resets}`);
+          }
+          
+          if (changes.length > 0) {
+            notifications.push({
+              trackingData,
+              charData,
+              changes
+            });
+            
+            // Atualizar no banco de dados
+            await dbConnection.execute(
+              'UPDATE tracked_characters SET last_level = ?, last_resets = ? WHERE id = ?',
+              [charData.level, charData.resets, trackingData.id]
+            );
+          }
+        }
+      } catch (error) {
+        console.error(`❌ Erro ao verificar personagem ${trackingData.name}:`, error);
+      }
+    }
+    
+    // Enviar notificações
+    await this.sendNotifications(notifications);
+  }
+
+  async sendNotifications(notifications) {
+    for (const { trackingData, charData, changes } of notifications) {
+      try {
+        const channel = trackingData.channel_id ? 
+          await client.channels.fetch(trackingData.channel_id) : 
+          await client.users.fetch(trackingData.discord_user_id).createDM();
+          
+        const embed = new EmbedBuilder()
+          .setColor('#00FF00')
+          .setTitle(`📢 Progresso de ${charData.name}`)
+          .setDescription(`O personagem ${charData.name} teve mudanças!`)
+          .addFields(
+            { name: '🏰 Guilda', value: charData.guild || 'Nenhuma', inline: true },
+            { name: 'Mudanças', value: changes.join('\n'), inline: false }
+          )
+          .setTimestamp();
+          
+        await channel.send({ embeds: [embed] });
+        console.log(`✅ Notificação enviada para ${trackingData.name}`);
+      } catch (error) {
+        console.error(`❌ Erro ao enviar notificação para ${trackingData.name}:`, error);
+      }
+    }
+  }
+
+  async addTracking(name, userId, channelId = null) {
+    try {
+      // Verificar se o personagem existe
+      const charData = await searchCharacterInDatabaseOrGuilds(name);
+      if (!charData) {
+        throw new Error('Personagem não encontrado');
+      }
+      
+      await dbConnection.execute(
+        'INSERT INTO tracked_characters (name, discord_user_id, channel_id, last_level, last_resets) VALUES (?, ?, ?, ?, ?) ' +
+        'ON DUPLICATE KEY UPDATE channel_id = VALUES(channel_id), last_level = VALUES(last_level), last_resets = VALUES(last_resets)',
+        [name, userId, channelId, charData.level, charData.resets]
+      );
+      
+      await this.loadTrackedCharacters();
+      return true;
+    } catch (error) {
+      console.error('❌ Erro ao adicionar tracking:', error);
+      throw error;
+    }
+  }
+
+  async removeTracking(name, userId) {
+    try {
+      const [result] = await dbConnection.execute(
+        'DELETE FROM tracked_characters WHERE name = ? AND discord_user_id = ?',
+        [name, userId]
+      );
+      
+      await this.loadTrackedCharacters();
+      return result.affectedRows > 0;
+    } catch (error) {
+      console.error('❌ Erro ao remover tracking:', error);
+      throw error;
+    }
+  }
+
+  async listTracked(userId) {
+    try {
+      const [rows] = await dbConnection.execute(
+        'SELECT * FROM tracked_characters WHERE discord_user_id = ?',
+        [userId]
+      );
+      return rows;
+    } catch (error) {
+      console.error('❌ Erro ao listar personagens monitorados:', error);
+      throw error;
+    }
+  }
+}
+
+const tracker = new CharacterTracker();
+
+// Função para buscar personagem no banco ou nas guildas
+async function searchCharacterInDatabaseOrGuilds(name) {
+  const nameLower = name.toLowerCase();
+  
+  // Verificar no banco de dados primeiro
+  const [dbRows] = await dbConnection.execute(
+    'SELECT * FROM characters WHERE name = ? LIMIT 1',
+    [name]
+  );
+  
+  let character = dbRows[0];
+  
+  // Se não encontrado ou dados desatualizados (mais de 5 minutos)
+  if (!character || new Date(character.last_seen) < new Date(Date.now() - 300000)) {
+    // Buscar nas guildas
+    const guildData = await parallelGuildSearch(name, nameLower);
+    
+    if (guildData) {
+      // Atualizar ou inserir no banco de dados
+      if (dbRows.length > 0) {
+        await dbConnection.execute(
+          'UPDATE characters SET last_level = ?, last_resets = ?, guild = ?, last_seen = NOW() WHERE id = ?',
+          [guildData.level, guildData.resets, guildData.guild, dbRows[0].id]
+        );
+      } else {
+        await dbConnection.execute(
+          'INSERT INTO characters (name, guild, last_level, last_resets, last_seen) VALUES (?, ?, ?, ?, NOW())',
+          [guildData.name, guildData.guild, guildData.level, guildData.resets]
+        );
+      }
+      character = guildData;
+    }
+  }
+  
+  return character;
+}
+
 // Quando o bot está pronto
 client.on('ready', async () => {
   console.log(`🤖 Bot conectado como ${client.user.tag}`);
@@ -179,19 +481,10 @@ client.on('ready', async () => {
   } catch (error) {
     console.error('❌ Erro ao registrar comandos slash:', error);
   }
-});
 
-// Função segura para enviar mensagens
-async function safeSend(channel, content, options = {}) {
-  if (isShuttingDown) return null;
-  
-  try {
-    return await channel.send(content, options);
-  } catch (error) {
-    console.error('❌ Erro ao enviar mensagem:', error);
-    return null;
-  }
-}
+  // Iniciar sistema de tracking
+  await tracker.startTracking();
+});
 
 // Handler para comandos slash
 client.on('interactionCreate', async interaction => {
@@ -200,14 +493,6 @@ client.on('interactionCreate', async interaction => {
   // Comandos slash
   if (interaction.isCommand()) {
     console.log(`🔍 Comando slash detectado: ${interaction.commandName}`, interaction.options.data);
-
-    if (interaction.channel.id !== ALLOWED_CHANNEL_ID) {
-      console.log(`🚫 Comando em canal não permitido: ${interaction.channel.id}`);
-      return interaction.reply({
-        content: 'Este comando só pode ser usado no canal de inscrições.',
-        ephemeral: true
-      }).catch(console.error);
-    }
 
     try {
       switch (interaction.commandName) {
@@ -230,6 +515,84 @@ client.on('interactionCreate', async interaction => {
         case 'ranking':
           const period = interaction.options.getString('período');
           await showRanking(interaction, period);
+          break;
+          
+        case 'monitorar':
+          const charToTrack = interaction.options.getString('nome');
+          const channel = interaction.options.getChannel('canal');
+          
+          await interaction.deferReply({ ephemeral: true });
+          
+          try {
+            await tracker.addTracking(
+              charToTrack, 
+              interaction.user.id, 
+              channel?.id
+            );
+            
+            await interaction.editReply({
+              content: `✅ Personagem "${charToTrack}" está sendo monitorado${channel ? ` no canal ${channel.name}` : ''}.`
+            });
+          } catch (error) {
+            await interaction.editReply({
+              content: `❌ Erro ao monitorar personagem: ${error.message}`
+            });
+          }
+          break;
+          
+        case 'parar-monitorar':
+          const charToStop = interaction.options.getString('nome');
+          
+          await interaction.deferReply({ ephemeral: true });
+          
+          try {
+            const removed = await tracker.removeTracking(charToStop, interaction.user.id);
+            
+            await interaction.editReply({
+              content: removed ? 
+                `✅ Personagem "${charToStop}" não será mais monitorado.` :
+                `❌ Personagem "${charToStop}" não estava sendo monitorado.`
+            });
+          } catch (error) {
+            await interaction.editReply({
+              content: `❌ Erro ao parar de monitorar: ${error.message}`
+            });
+          }
+          break;
+          
+        case 'listar-monitorados':
+          await interaction.deferReply({ ephemeral: true });
+          
+          try {
+            const tracked = await tracker.listTracked(interaction.user.id);
+            
+            if (tracked.length === 0) {
+              await interaction.editReply({
+                content: 'Você não está monitorando nenhum personagem no momento.'
+              });
+              return;
+            }
+            
+            const embed = new EmbedBuilder()
+              .setColor('#FFA500')
+              .setTitle('Personagens Monitorados')
+              .setDescription('Lista de personagens que você está monitorando:');
+              
+            tracked.forEach(char => {
+              embed.addFields({
+                name: char.name,
+                value: `Último level: ${char.last_level || 'N/A'}\n` +
+                       `Últimos resets: ${char.last_resets || 'N/A'}`,
+                inline: true
+              });
+            });
+            
+            await interaction.editReply({ embeds: [embed] });
+          } catch (error) {
+            await interaction.editReply({
+              content: `❌ Erro ao listar personagens monitorados: ${error.message}`
+            });
+          }
           break;
           
         case 'ajuda':
@@ -336,47 +699,164 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-// Interações com reações (mantido para compatibilidade)
-client.on('messageReactionAdd', async (reaction, user) => {
-  if (user.bot) return;
-  if (reaction.message.author.id !== client.user.id) return;
-  if (reaction.message.channel.id !== ALLOWED_CHANNEL_ID) return;
-
+// Função para buscar personagem
+async function searchCharacter(interaction, charName) {
+  await interaction.deferReply();
+  
   try {
-    const message = reaction.message;
-    if (message.embeds.length === 0) return;
+    const charData = await searchCharacterInDatabaseOrGuilds(charName);
     
-    const embed = message.embeds[0];
-    const applicationId = embed.title?.match(/#(\d+)/)?.[1];
-    
-    if (!applicationId) return;
-
-    if (reaction.emoji.name === '👍') {
-      await approveApplication(message, applicationId, user);
-    } else if (reaction.emoji.name === '👎') {
-      try {
-        const dmChannel = await user.createDM();
-        await dmChannel.send(`Por favor, envie o motivo para rejeitar a inscrição #${applicationId} em uma única mensagem:`).catch(console.error);
-        
-        const filter = m => m.author.id === user.id;
-        const collected = await dmChannel.awaitMessages({ filter, max: 1, time: 60000, errors: ['time'] }).catch(console.error);
-        
-        if (collected && collected.first()) {
-          const reason = collected.first().content;
-          await rejectApplication(message, applicationId, user, reason);
-          await dmChannel.send('Inscrição rejeitada com sucesso!').catch(console.error);
-        } else {
-          await message.channel.send(`${user} Você não forneceu um motivo para a rejeição a tempo.`).catch(console.error);
-        }
-      } catch (error) {
-        console.error('❌ Erro ao coletar motivo:', error);
-        await message.channel.send(`${user} Você não forneceu um motivo para a rejeição a tempo.`).catch(console.error);
+    if (!charData) {
+      // Verificar se existe no histórico
+      const [historyRows] = await dbConnection.execute(
+        'SELECT * FROM characters WHERE LOWER(name) = ? LIMIT 1',
+        [charName.toLowerCase()]
+      );
+      
+      if (historyRows.length > 0) {
+        const lastKnown = historyRows[0];
+        return interaction.editReply({
+          embeds: [createCharEmbed({
+            name: lastKnown.name,
+            level: lastKnown.last_level,
+            resets: lastKnown.last_resets,
+            guild: lastKnown.guild,
+            found: false,
+            lastSeen: lastKnown.last_seen
+          })]
+        });
       }
+      
+      return interaction.editReply({
+        content: `Personagem "${charName}" não encontrado em nenhuma guilda da ToHeLL.`
+      });
     }
+    
+    // Obter histórico
+    const [history] = await dbConnection.execute(
+      'SELECT level, resets, recorded_at FROM character_history WHERE character_id = ? ORDER BY recorded_at DESC LIMIT 5',
+      [charData.id]
+    );
+    
+    // Criar embed de resposta
+    const embed = createCharEmbed({
+      name: charData.name,
+      level: charData.level,
+      resets: charData.resets,
+      guild: charData.guild,
+      found: true,
+      history: history
+    });
+    
+    await interaction.editReply({ embeds: [embed] });
+    
   } catch (error) {
-    console.error('❌ Erro ao processar reação:', error);
+    console.error('❌ Erro ao buscar personagem:', error);
+    await interaction.editReply({
+      content: 'Ocorreu um erro ao buscar o personagem. Por favor, tente novamente mais tarde.'
+    });
   }
-});
+}
+
+// Função para criar embed de personagem
+function createCharEmbed({ name, level, resets, guild, found, lastSeen, history }) {
+  const embed = new EmbedBuilder()
+    .setColor(found ? '#00FF00' : '#FF0000')
+    .setTitle(`Personagem: ${name}`)
+    .addFields(
+      { name: '⚔️ Level', value: level?.toString() || 'Desconhecido', inline: true },
+      { name: '🔄 Resets', value: resets?.toString() || '0', inline: true },
+      { name: '🏰 Guilda', value: guild || 'Nenhuma', inline: true }
+    );
+    
+  if (!found) {
+    embed.setDescription('❗ Personagem não encontrado atualmente em nenhuma guilda');
+    if (lastSeen) {
+      embed.addFields({ 
+        name: 'Última vez visto', 
+        value: new Date(lastSeen).toLocaleString(), 
+        inline: false 
+      });
+    }
+  }
+  
+  if (history && history.length > 0) {
+    const historyText = history.map(entry => 
+      `📅 ${new Date(entry.recorded_at).toLocaleDateString()}: Level ${entry.level} | Resets ${entry.resets}`
+    ).join('\n');
+    
+    embed.addFields({
+      name: '📜 Histórico Recente',
+      value: historyText,
+      inline: false
+    });
+  }
+  
+  return embed;
+}
+
+// Função para mostrar ranking
+async function showRanking(interaction, period) {
+  await interaction.deferReply();
+  
+  try {
+    let days;
+    switch (period) {
+      case '24h': days = 1; break;
+      case '7d': days = 7; break;
+      case '30d': days = 30; break;
+      default: days = 7;
+    }
+    
+    const [rows] = await dbConnection.execute(`
+      SELECT 
+        c.name, 
+        c.last_level as current_level,
+        c.last_resets as current_resets,
+        (MAX(h.level) - MIN(h.level)) as level_change,
+        (MAX(h.resets) - MIN(h.resets)) as reset_change,
+        c.guild,
+        (MAX(h.level) - MIN(h.level) + (MAX(h.resets) - MIN(h.resets)) * 1000) as progress_score
+      FROM character_history h
+      JOIN characters c ON h.character_id = c.id
+      WHERE h.recorded_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+      GROUP BY h.character_id, c.name, c.guild, c.last_level, c.last_resets
+      ORDER BY progress_score DESC
+      LIMIT 10
+    `, [days]);
+    
+    if (rows.length === 0) {
+      return interaction.editReply({
+        content: `Nenhum dado de ranking disponível para o período de ${days} dias.`
+      });
+    }
+    
+    const periodName = days === 1 ? '24 horas' : `${days} dias`;
+    const embed = new EmbedBuilder()
+      .setColor('#FFA500')
+      .setTitle(`🏆 Ranking de Progresso - Últimas ${periodName}`)
+      .setDescription(`Top 10 personagens com maior progresso nos últimos ${periodName}`);
+    
+    rows.forEach((char, index) => {
+      embed.addFields({
+        name: `#${index + 1} ${char.name}`,
+        value: `🏰 ${char.guild}\n` +
+               `⚔️ Level: ${char.current_level} (${char.level_change > 0 ? `+${char.level_change}` : '0'})\n` +
+               `🔄 Resets: ${char.current_resets} (${char.reset_change > 0 ? `+${char.reset_change}` : '0'})\n` +
+               `📊 Pontuação: ${char.progress_score.toFixed(0)}`,
+        inline: false
+      });
+    });
+    
+    await interaction.editReply({ embeds: [embed] });
+    
+  } catch (error) {
+    console.error('❌ Erro ao buscar ranking:', error);
+    await interaction.editReply({
+      content: 'Ocorreu um erro ao buscar o ranking. Por favor, tente novamente mais tarde.'
+    });
+  }
+}
 
 // Função para listar inscrições pendentes com paginação
 async function listPendingApplications(context, args) {
@@ -566,229 +1046,6 @@ async function sendApplicationEmbed(channel, application) {
     } catch (error) {
       console.error('❌ Erro ao adicionar reações:', error);
     }
-  }
-}
-
-// Função para buscar personagem
-async function searchCharacter(interaction, charName) {
-  await interaction.deferReply();
-  
-  try {
-    const charNameLower = charName.toLowerCase();
-    
-    // Primeiro verifica no banco de dados (cache local)
-    const [dbRows] = await dbConnection.execute(
-      'SELECT * FROM characters WHERE name = ? LIMIT 1',
-      [charName]
-    );
-    
-    let character = dbRows[0];
-    let fromCache = false;
-    
-    // Se encontrado no banco e atualizado recentemente (últimos 5 minutos)
-    if (character && new Date(character.last_seen) > new Date(Date.now() - 300000)) {
-      fromCache = true;
-    } else {
-      // Buscar nas guildas (implementação simplificada do parallelGuildSearch)
-      character = await searchInGuilds(charName, charNameLower);
-      
-      if (character) {
-        // Atualizar ou inserir no banco de dados
-        if (dbRows.length > 0) {
-          await dbConnection.execute(
-            'UPDATE characters SET last_level = ?, last_resets = ?, guild = ?, last_seen = NOW() WHERE id = ?',
-            [character.level, character.resets, character.guild, dbRows[0].id]
-          );
-        } else {
-          await dbConnection.execute(
-            'INSERT INTO characters (name, guild, last_level, last_resets, last_seen) VALUES (?, ?, ?, ?, NOW())',
-            [character.name, character.guild, character.level, character.resets]
-          );
-        }
-      }
-    }
-    
-    if (!character) {
-      // Verificar se existe no histórico
-      const [historyRows] = await dbConnection.execute(
-        'SELECT * FROM characters WHERE LOWER(name) = ? LIMIT 1',
-        [charNameLower]
-      );
-      
-      if (historyRows.length > 0) {
-        const lastKnown = historyRows[0];
-        return interaction.editReply({
-          embeds: [createCharEmbed({
-            name: lastKnown.name,
-            level: lastKnown.last_level,
-            resets: lastKnown.last_resets,
-            guild: lastKnown.guild,
-            found: false,
-            lastSeen: lastKnown.last_seen
-          })]
-        });
-      }
-      
-      return interaction.editReply({
-        content: `Personagem "${charName}" não encontrado em nenhuma guilda da ToHeLL.`
-      });
-    }
-    
-    // Obter histórico
-    const [history] = await dbConnection.execute(
-      'SELECT level, resets, recorded_at FROM character_history WHERE character_id = ? ORDER BY recorded_at DESC LIMIT 5',
-      [dbRows.length > 0 ? dbRows[0].id : character.id]
-    );
-    
-    // Criar embed de resposta
-    const embed = createCharEmbed({
-      name: character.name,
-      level: character.level,
-      resets: character.resets,
-      guild: character.guild,
-      found: true,
-      fromCache: fromCache,
-      history: history
-    });
-    
-    await interaction.editReply({ embeds: [embed] });
-    
-  } catch (error) {
-    console.error('❌ Erro ao buscar personagem:', error);
-    await interaction.editReply({
-      content: 'Ocorreu um erro ao buscar o personagem. Por favor, tente novamente mais tarde.'
-    });
-  }
-}
-
-// Função auxiliar para buscar em guildas (simplificação do parallelGuildSearch)
-async function searchInGuilds(name, nameLower) {
-  // Implementação simplificada - na prática, você pode querer implementar
-  // a lógica completa do parallelGuildSearch ou fazer requisições HTTP para o monitor.php
-  
-  // Esta é uma implementação mockada para demonstração
-  // Na prática, você precisaria fazer scraping do site do MU ou usar uma API
-  
-  console.log(`🔍 Buscando personagem ${name} nas guildas...`);
-  
-  // Simulando uma busca que demora 2 segundos
-  await new Promise(resolve => setTimeout(resolve, 2000));
-  
-  // Simulando um resultado encontrado (50% de chance)
-  if (Math.random() > 0.5) {
-    return {
-      name: name,
-      level: Math.floor(Math.random() * 400) + 1,
-      resets: Math.floor(Math.random() * 20),
-      guild: GUILDS_TO_CHECK[Math.floor(Math.random() * GUILDS_TO_CHECK.length)],
-      found_at: new Date().toISOString()
-    };
-  }
-  
-  return null;
-}
-
-// Função para criar embed de personagem
-function createCharEmbed({ name, level, resets, guild, found, fromCache, history, lastSeen }) {
-  const embed = new EmbedBuilder()
-    .setColor(found ? '#00FF00' : '#FF0000')
-    .setTitle(`Personagem: ${name}`)
-    .addFields(
-      { name: '⚔️ Level', value: level?.toString() || 'Desconhecido', inline: true },
-      { name: '🔄 Resets', value: resets?.toString() || '0', inline: true },
-      { name: '🏰 Guilda', value: guild || 'Nenhuma', inline: true }
-    );
-    
-  if (fromCache) {
-    embed.setFooter({ text: 'Dados do cache (atualizados nos últimos 5 minutos)' });
-  }
-  
-  if (!found) {
-    embed.setDescription('❗ Personagem não encontrado atualmente em nenhuma guilda');
-    if (lastSeen) {
-      embed.addFields({ 
-        name: 'Última vez visto', 
-        value: new Date(lastSeen).toLocaleString(), 
-        inline: false 
-      });
-    }
-  }
-  
-  if (history && history.length > 0) {
-    const historyText = history.map(entry => 
-      `📅 ${new Date(entry.recorded_at).toLocaleDateString()}: Level ${entry.level} | Resets ${entry.resets}`
-    ).join('\n');
-    
-    embed.addFields({
-      name: '📜 Histórico Recente',
-      value: historyText,
-      inline: false
-    });
-  }
-  
-  return embed;
-}
-
-// Função para mostrar ranking
-async function showRanking(interaction, period) {
-  await interaction.deferReply();
-  
-  try {
-    let days;
-    switch (period) {
-      case '24h': days = 1; break;
-      case '7d': days = 7; break;
-      case '30d': days = 30; break;
-      default: days = 7;
-    }
-    
-    const [rows] = await dbConnection.execute(`
-      SELECT 
-        c.name, 
-        c.last_level as current_level,
-        c.last_resets as current_resets,
-        (MAX(h.level) - MIN(h.level)) as level_change,
-        (MAX(h.resets) - MIN(h.resets)) as reset_change,
-        c.guild,
-        (MAX(h.level) - MIN(h.level) + (MAX(h.resets) - MIN(h.resets)) * 1000) as progress_score
-      FROM character_history h
-      JOIN characters c ON h.character_id = c.id
-      WHERE h.recorded_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
-      GROUP BY h.character_id, c.name, c.guild, c.last_level, c.last_resets
-      ORDER BY progress_score DESC
-      LIMIT 10
-    `, [days]);
-    
-    if (rows.length === 0) {
-      return interaction.editReply({
-        content: `Nenhum dado de ranking disponível para o período de ${days} dias.`
-      });
-    }
-    
-    const periodName = days === 1 ? '24 horas' : `${days} dias`;
-    const embed = new EmbedBuilder()
-      .setColor('#FFA500')
-      .setTitle(`🏆 Ranking de Progresso - Últimas ${periodName}`)
-      .setDescription(`Top 10 personagens com maior progresso nos últimos ${periodName}`);
-    
-    rows.forEach((char, index) => {
-      embed.addFields({
-        name: `#${index + 1} ${char.name}`,
-        value: `🏰 ${char.guild}\n` +
-               `⚔️ Level: ${char.current_level} (${char.level_change > 0 ? `+${char.level_change}` : '0'})\n` +
-               `🔄 Resets: ${char.current_resets} (${char.reset_change > 0 ? `+${char.reset_change}` : '0'})\n` +
-               `📊 Pontuação: ${char.progress_score.toFixed(0)}`,
-        inline: false
-      });
-    });
-    
-    await interaction.editReply({ embeds: [embed] });
-    
-  } catch (error) {
-    console.error('❌ Erro ao buscar ranking:', error);
-    await interaction.editReply({
-      content: 'Ocorreu um erro ao buscar o ranking. Por favor, tente novamente mais tarde.'
-    });
   }
 }
 
