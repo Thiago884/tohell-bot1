@@ -1,5 +1,5 @@
-// bot.js - Versão completa para Render
-const { Client, IntentsBitField, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+// bot.js - Versão atualizada para comandos slash
+const { Client, IntentsBitField, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, ApplicationCommandOptionType } = require('discord.js');
 const mysql = require('mysql2/promise');
 const axios = require('axios');
 const express = require('express');
@@ -57,6 +57,46 @@ const dbConfig = {
 let dbConnection;
 let isShuttingDown = false;
 
+// Comandos Slash
+const slashCommands = [
+  {
+    name: 'pendentes',
+    description: 'Lista inscrições pendentes de aprovação',
+    options: [
+      {
+        name: 'página',
+        description: 'Número da página (1 por padrão)',
+        type: ApplicationCommandOptionType.Integer,
+        min_value: 1,
+        required: false
+      }
+    ]
+  },
+  {
+    name: 'buscar',
+    description: 'Busca inscrições por nome, Discord ou telefone',
+    options: [
+      {
+        name: 'termo',
+        description: 'Termo para busca',
+        type: ApplicationCommandOptionType.String,
+        required: true
+      },
+      {
+        name: 'página',
+        description: 'Número da página (1 por padrão)',
+        type: ApplicationCommandOptionType.Integer,
+        min_value: 1,
+        required: false
+      }
+    ]
+  },
+  {
+    name: 'ajuda',
+    description: 'Mostra todos os comandos disponíveis'
+  }
+];
+
 // Conexão com o banco de dados com reconexão automática
 async function connectDB() {
   try {
@@ -95,27 +135,19 @@ async function reconnectDB() {
   }
 }
 
-// Comandos do bot
-const commands = {
-  '!pendentes': {
-    description: 'Lista inscrições pendentes (use !pendentes [página] para navegar)',
-    execute: listPendingApplications
-  },
-  '!buscar': {
-    description: 'Busca inscrições por nome, Discord ou telefone (!buscar termo [página])',
-    execute: searchApplications
-  },
-  '!ajuda': {
-    description: 'Mostra todos os comandos disponíveis',
-    execute: showHelp
-  }
-};
-
 // Quando o bot está pronto
-client.on('ready', () => {
+client.on('ready', async () => {
   console.log(`🤖 Bot conectado como ${client.user.tag}`);
   console.log(`📌 Canal permitido: ${ALLOWED_CHANNEL_ID}`);
-  client.user.setActivity('!ajuda para comandos', { type: 'WATCHING' });
+  client.user.setActivity('/ajuda para comandos', { type: 'WATCHING' });
+
+  // Registrar comandos slash
+  try {
+    await client.application.commands.set(slashCommands);
+    console.log('✅ Comandos slash registrados com sucesso');
+  } catch (error) {
+    console.error('❌ Erro ao registrar comandos slash:', error);
+  }
 });
 
 // Função segura para enviar mensagens
@@ -130,52 +162,187 @@ async function safeSend(channel, content, options = {}) {
   }
 }
 
-// Quando uma mensagem é recebida
-client.on('messageCreate', async message => {
+// Handler para comandos slash
+client.on('interactionCreate', async interaction => {
   if (isShuttingDown) return;
-  
-  console.log(`📩 Mensagem recebida de ${message.author.tag} em #${message.channel.name}: ${message.content}`);
-  
-  if (message.author.bot || !message.content.startsWith('!')) return;
 
-  const args = message.content.slice(1).trim().split(/ +/);
-  const command = args.shift().toLowerCase();
+  // Comandos slash
+  if (interaction.isCommand()) {
+    console.log(`🔍 Comando slash detectado: ${interaction.commandName}`, interaction.options.data);
 
-  if (commands[command]) {
-    console.log(`🔍 Comando detectado: ${command}`, args);
-    
-    if (message.channel.id !== ALLOWED_CHANNEL_ID) {
-      console.log(`🚫 Comando em canal não permitido: ${message.channel.id}`);
-      try {
-        await message.author.send('Este comando só pode ser usado no canal de inscrições.').catch(() => {});
-        await message.delete().catch(() => {});
-      } catch (error) {
-        console.error('❌ Erro ao processar mensagem em canal não permitido:', error);
-      }
-      return;
-    }
-
-    const botPermissions = message.channel.permissionsFor(client.user);
-    if (!botPermissions.has('SendMessages')) {
-      console.error('❌ Bot não tem permissão para enviar mensagens neste canal');
-      return;
+    if (interaction.channel.id !== ALLOWED_CHANNEL_ID) {
+      console.log(`🚫 Comando em canal não permitido: ${interaction.channel.id}`);
+      return interaction.reply({
+        content: 'Este comando só pode ser usado no canal de inscrições.',
+        ephemeral: true
+      }).catch(console.error);
     }
 
     try {
-      await commands[command].execute(message, args);
+      switch (interaction.commandName) {
+        case 'pendentes':
+          const page = interaction.options.getInteger('página') || 1;
+          await listPendingApplications(interaction, [page.toString()]);
+          break;
+          
+        case 'buscar':
+          const term = interaction.options.getString('termo');
+          const searchPage = interaction.options.getInteger('página') || 1;
+          await searchApplications(interaction, [term, searchPage.toString()]);
+          break;
+          
+        case 'ajuda':
+          await showHelp(interaction);
+          break;
+      }
     } catch (error) {
-      console.error(`❌ Erro ao executar comando ${command}:`, error);
-      await safeSend(message.channel, 'Ocorreu um erro ao processar seu comando.');
+      console.error(`❌ Erro ao executar comando ${interaction.commandName}:`, error);
+      await interaction.reply({
+        content: 'Ocorreu um erro ao processar seu comando.',
+        ephemeral: true
+      }).catch(console.error);
+    }
+  }
+
+  // Botões
+  if (interaction.isButton()) {
+    if (interaction.channel?.id !== ALLOWED_CHANNEL_ID) {
+      return interaction.reply({ 
+        content: 'Este comando só pode ser usado no canal de inscrições.', 
+        ephemeral: true 
+      }).catch(() => {
+        interaction.channel.send({
+          content: 'Este comando só pode ser usado no canal de inscrições.',
+          ephemeral: true
+        }).catch(console.error);
+      });
+    }
+
+    try {
+      if (interaction.customId.startsWith('prev_page_') || interaction.customId.startsWith('next_page_')) {
+        const [direction, pageStr] = interaction.customId.split('_').slice(1);
+        let page = parseInt(pageStr);
+        
+        page = direction === 'prev' ? page - 1 : page + 1;
+        
+        await interaction.deferUpdate();
+        await interaction.message.delete().catch(() => {});
+        await listPendingApplications(interaction, [page.toString()]);
+        return;
+      }
+
+      if (interaction.customId.startsWith('search_prev_') || interaction.customId.startsWith('search_next_')) {
+        const [direction, searchTerm, pageStr] = interaction.customId.split('_').slice(1);
+        let page = parseInt(pageStr);
+        
+        page = direction === 'prev' ? page - 1 : page + 1;
+        
+        await interaction.deferUpdate();
+        await interaction.message.delete().catch(() => {});
+        await searchApplications(interaction, [searchTerm, page.toString()]);
+        return;
+      }
+
+      const [action, id] = interaction.customId.split('_');
+      
+      if (action === 'approve') {
+        await approveApplication(interaction, id);
+      } else if (action === 'reject') {
+        const modal = new ModalBuilder()
+          .setCustomId(`reject_reason_${id}`)
+          .setTitle('Motivo da Rejeição');
+        
+        const reasonInput = new TextInputBuilder()
+          .setCustomId('reject_reason')
+          .setLabel('Por que esta inscrição está sendo rejeitada?')
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true)
+          .setMinLength(10)
+          .setMaxLength(500);
+        
+        const actionRow = new ActionRowBuilder().addComponents(reasonInput);
+        modal.addComponents(actionRow);
+        
+        await interaction.showModal(modal);
+      }
+    } catch (error) {
+      console.error('❌ Erro ao processar interação:', error);
+      interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', ephemeral: true }).catch(console.error);
+    }
+  }
+
+  // Modais
+  if (interaction.isModalSubmit()) {
+    if (interaction.channel?.id !== ALLOWED_CHANNEL_ID) {
+      return interaction.reply({ 
+        content: 'Este comando só pode ser usado no canal de inscrições.', 
+        ephemeral: true 
+      }).catch(console.error);
+    }
+
+    try {
+      if (interaction.customId.startsWith('reject_reason_')) {
+        const id = interaction.customId.split('_')[2];
+        const reason = interaction.fields.getTextInputValue('reject_reason');
+        
+        await interaction.deferReply({ ephemeral: true });
+        await rejectApplication(interaction, id, reason);
+      }
+    } catch (error) {
+      console.error('❌ Erro ao processar modal:', error);
+      interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', ephemeral: true }).catch(console.error);
     }
   }
 });
 
+// Interações com reações (mantido para compatibilidade)
+client.on('messageReactionAdd', async (reaction, user) => {
+  if (user.bot) return;
+  if (reaction.message.author.id !== client.user.id) return;
+  if (reaction.message.channel.id !== ALLOWED_CHANNEL_ID) return;
+
+  try {
+    const message = reaction.message;
+    if (message.embeds.length === 0) return;
+    
+    const embed = message.embeds[0];
+    const applicationId = embed.title?.match(/#(\d+)/)?.[1];
+    
+    if (!applicationId) return;
+
+    if (reaction.emoji.name === '👍') {
+      await approveApplication(message, applicationId, user);
+    } else if (reaction.emoji.name === '👎') {
+      try {
+        const dmChannel = await user.createDM();
+        await dmChannel.send(`Por favor, envie o motivo para rejeitar a inscrição #${applicationId} em uma única mensagem:`).catch(console.error);
+        
+        const filter = m => m.author.id === user.id;
+        const collected = await dmChannel.awaitMessages({ filter, max: 1, time: 60000, errors: ['time'] }).catch(console.error);
+        
+        if (collected && collected.first()) {
+          const reason = collected.first().content;
+          await rejectApplication(message, applicationId, user, reason);
+          await dmChannel.send('Inscrição rejeitada com sucesso!').catch(console.error);
+        } else {
+          await message.channel.send(`${user} Você não forneceu um motivo para a rejeição a tempo.`).catch(console.error);
+        }
+      } catch (error) {
+        console.error('❌ Erro ao coletar motivo:', error);
+        await message.channel.send(`${user} Você não forneceu um motivo para a rejeição a tempo.`).catch(console.error);
+      }
+    }
+  } catch (error) {
+    console.error('❌ Erro ao processar reação:', error);
+  }
+});
+
 // Função para listar inscrições pendentes com paginação
-async function listPendingApplications(message, args) {
+async function listPendingApplications(context, args) {
   const page = args[0] ? parseInt(args[0]) : 1;
   
   if (isNaN(page) || page < 1) {
-    return safeSend(message.channel, 'Por favor, especifique um número de página válido.');
+    return context.reply({ content: 'Por favor, especifique um número de página válido.', ephemeral: true });
   }
 
   try {
@@ -188,11 +355,11 @@ async function listPendingApplications(message, args) {
     const totalPages = Math.ceil(total / ITEMS_PER_PAGE);
 
     if (total === 0) {
-      return safeSend(message.channel, 'Não há inscrições pendentes no momento.');
+      return context.reply({ content: 'Não há inscrições pendentes no momento.', ephemeral: true });
     }
 
     if (page > totalPages) {
-      return safeSend(message.channel, `Apenas ${totalPages} páginas disponíveis.`);
+      return context.reply({ content: `Apenas ${totalPages} páginas disponíveis.`, ephemeral: true });
     }
 
     const [rows] = await dbConnection.execute(
@@ -205,10 +372,11 @@ async function listPendingApplications(message, args) {
       .setTitle(`Inscrições Pendentes - Página ${page}/${totalPages}`)
       .setFooter({ text: `Total de inscrições pendentes: ${total}` });
 
-    await safeSend(message.channel, { embeds: [embed] });
+    await context.deferReply();
+    await context.editReply({ embeds: [embed] });
 
     for (const application of rows) {
-      await sendApplicationEmbed(message.channel, application);
+      await sendApplicationEmbed(context.channel, application);
     }
 
     if (totalPages > 1) {
@@ -225,7 +393,7 @@ async function listPendingApplications(message, args) {
           .setDisabled(page >= totalPages)
       );
 
-      await safeSend(message.channel, {
+      await safeSend(context.channel, {
         content: `Navegação - Página ${page}/${totalPages}`,
         components: [navRow]
       });
@@ -233,21 +401,21 @@ async function listPendingApplications(message, args) {
 
   } catch (error) {
     console.error('❌ Erro ao listar inscrições pendentes:', error);
-    await safeSend(message.channel, 'Ocorreu um erro ao listar as inscrições pendentes.');
+    await context.reply({ content: 'Ocorreu um erro ao listar as inscrições pendentes.', ephemeral: true });
   }
 }
 
 // Função para buscar inscrições
-async function searchApplications(message, args) {
+async function searchApplications(context, args) {
   if (args.length === 0) {
-    return safeSend(message.channel, 'Por favor, especifique um termo de busca.');
+    return context.reply({ content: 'Por favor, especifique um termo de busca.', ephemeral: true });
   }
 
   const searchTerm = args[0];
   const page = args[1] ? parseInt(args[1]) : 1;
   
   if (isNaN(page) || page < 1) {
-    return safeSend(message.channel, 'Por favor, especifique um número de página válido.');
+    return context.reply({ content: 'Por favor, especifique um número de página válido.', ephemeral: true });
   }
 
   try {
@@ -262,11 +430,11 @@ async function searchApplications(message, args) {
     const totalPages = Math.ceil(total / ITEMS_PER_PAGE);
 
     if (total === 0) {
-      return safeSend(message.channel, 'Nenhuma inscrição encontrada com esse termo de busca.');
+      return context.reply({ content: 'Nenhuma inscrição encontrada com esse termo de busca.', ephemeral: true });
     }
 
     if (page > totalPages) {
-      return safeSend(message.channel, `Apenas ${totalPages} páginas disponíveis para esta busca.`);
+      return context.reply({ content: `Apenas ${totalPages} páginas disponíveis para esta busca.`, ephemeral: true });
     }
 
     const [rows] = await dbConnection.execute(
@@ -279,10 +447,11 @@ async function searchApplications(message, args) {
       .setTitle(`Resultados da busca por "${searchTerm}" - Página ${page}/${totalPages}`)
       .setFooter({ text: `Total de resultados: ${total}` });
 
-    await safeSend(message.channel, { embeds: [embed] });
+    await context.deferReply();
+    await context.editReply({ embeds: [embed] });
 
     for (const application of rows) {
-      await sendApplicationEmbed(message.channel, application);
+      await sendApplicationEmbed(context.channel, application);
     }
 
     if (totalPages > 1) {
@@ -299,7 +468,7 @@ async function searchApplications(message, args) {
           .setDisabled(page >= totalPages)
       );
 
-      await safeSend(message.channel, {
+      await safeSend(context.channel, {
         content: `Navegação - Página ${page}/${totalPages}`,
         components: [navRow]
       });
@@ -307,7 +476,7 @@ async function searchApplications(message, args) {
 
   } catch (error) {
     console.error('❌ Erro ao buscar inscrições:', error);
-    await safeSend(message.channel, 'Ocorreu um erro ao buscar inscrições.');
+    await context.reply({ content: 'Ocorreu um erro ao buscar inscrições.', ephemeral: true });
   }
 }
 
@@ -360,169 +529,22 @@ async function sendApplicationEmbed(channel, application) {
 }
 
 // Função para mostrar ajuda
-async function showHelp(message) {
+async function showHelp(interaction) {
   const embed = new EmbedBuilder()
     .setColor('#FF4500')
     .setTitle('Comandos do Bot de Inscrições')
     .setDescription('Lista de comandos disponíveis:')
     .addFields(
-      Object.entries(commands).map(([cmd, info]) => ({
-        name: cmd,
-        value: info.description,
+      slashCommands.map(cmd => ({
+        name: `/${cmd.name}`,
+        value: cmd.description,
         inline: true
       }))
     )
     .setFooter({ text: 'ToHeLL Guild - Sistema de Inscrições' });
 
-  const helpMessage = await safeSend(message.channel, { embeds: [embed] });
-  
-  if (helpMessage) {
-    try {
-      await helpMessage.react('✅');
-      setTimeout(() => {
-        helpMessage.delete().catch(() => {});
-      }, 30000);
-    } catch (error) {
-      console.error('❌ Erro ao adicionar reação:', error);
-    }
-  }
+  await interaction.reply({ embeds: [embed], ephemeral: true });
 }
-
-// Interações com botões
-client.on('interactionCreate', async interaction => {
-  if (!interaction.isButton()) return;
-  
-  if (interaction.channel?.id !== ALLOWED_CHANNEL_ID) {
-    return interaction.reply({ 
-      content: 'Este comando só pode ser usado no canal de inscrições.', 
-      ephemeral: true 
-    }).catch(() => {
-      interaction.channel.send({
-        content: 'Este comando só pode ser usado no canal de inscrições.',
-        ephemeral: true
-      }).catch(console.error);
-    });
-  }
-
-  try {
-    if (interaction.customId.startsWith('prev_page_') || interaction.customId.startsWith('next_page_')) {
-      const [direction, pageStr] = interaction.customId.split('_').slice(1);
-      let page = parseInt(pageStr);
-      
-      page = direction === 'prev' ? page - 1 : page + 1;
-      
-      await interaction.deferUpdate();
-      await interaction.message.delete().catch(() => {});
-      await listPendingApplications(interaction, [page.toString()]);
-      return;
-    }
-
-    if (interaction.customId.startsWith('search_prev_') || interaction.customId.startsWith('search_next_')) {
-      const [direction, searchTerm, pageStr] = interaction.customId.split('_').slice(1);
-      let page = parseInt(pageStr);
-      
-      page = direction === 'prev' ? page - 1 : page + 1;
-      
-      await interaction.deferUpdate();
-      await interaction.message.delete().catch(() => {});
-      await searchApplications(interaction, [searchTerm, page.toString()]);
-      return;
-    }
-
-    const [action, id] = interaction.customId.split('_');
-    
-    if (action === 'approve') {
-      await approveApplication(interaction, id);
-    } else if (action === 'reject') {
-      const modal = new ModalBuilder()
-        .setCustomId(`reject_reason_${id}`)
-        .setTitle('Motivo da Rejeição');
-      
-      const reasonInput = new TextInputBuilder()
-        .setCustomId('reject_reason')
-        .setLabel('Por que esta inscrição está sendo rejeitada?')
-        .setStyle(TextInputStyle.Paragraph)
-        .setRequired(true)
-        .setMinLength(10)
-        .setMaxLength(500);
-      
-      const actionRow = new ActionRowBuilder().addComponents(reasonInput);
-      modal.addComponents(actionRow);
-      
-      await interaction.showModal(modal);
-    }
-  } catch (error) {
-    console.error('❌ Erro ao processar interação:', error);
-    interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', ephemeral: true }).catch(console.error);
-  }
-});
-
-// Interações com modais (para motivo de rejeição)
-client.on('interactionCreate', async interaction => {
-  if (!interaction.isModalSubmit()) return;
-  
-  if (interaction.channel?.id !== ALLOWED_CHANNEL_ID) {
-    return interaction.reply({ 
-      content: 'Este comando só pode ser usado no canal de inscrições.', 
-      ephemeral: true 
-    }).catch(console.error);
-  }
-
-  try {
-    if (interaction.customId.startsWith('reject_reason_')) {
-      const id = interaction.customId.split('_')[2];
-      const reason = interaction.fields.getTextInputValue('reject_reason');
-      
-      await interaction.deferReply({ ephemeral: true });
-      await rejectApplication(interaction, id, reason);
-    }
-  } catch (error) {
-    console.error('❌ Erro ao processar modal:', error);
-    interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', ephemeral: true }).catch(console.error);
-  }
-});
-
-// Interações com reações
-client.on('messageReactionAdd', async (reaction, user) => {
-  if (user.bot) return;
-  if (reaction.message.author.id !== client.user.id) return;
-  if (reaction.message.channel.id !== ALLOWED_CHANNEL_ID) return;
-
-  try {
-    const message = reaction.message;
-    if (message.embeds.length === 0) return;
-    
-    const embed = message.embeds[0];
-    const applicationId = embed.title?.match(/#(\d+)/)?.[1];
-    
-    if (!applicationId) return;
-
-    if (reaction.emoji.name === '👍') {
-      await approveApplication(message, applicationId, user);
-    } else if (reaction.emoji.name === '👎') {
-      try {
-        const dmChannel = await user.createDM();
-        await dmChannel.send(`Por favor, envie o motivo para rejeitar a inscrição #${applicationId} em uma única mensagem:`).catch(console.error);
-        
-        const filter = m => m.author.id === user.id;
-        const collected = await dmChannel.awaitMessages({ filter, max: 1, time: 60000, errors: ['time'] }).catch(console.error);
-        
-        if (collected && collected.first()) {
-          const reason = collected.first().content;
-          await rejectApplication(message, applicationId, user, reason);
-          await dmChannel.send('Inscrição rejeitada com sucesso!').catch(console.error);
-        } else {
-          await message.channel.send(`${user} Você não forneceu um motivo para a rejeição a tempo.`).catch(console.error);
-        }
-      } catch (error) {
-        console.error('❌ Erro ao coletar motivo:', error);
-        await message.channel.send(`${user} Você não forneceu um motivo para a rejeição a tempo.`).catch(console.error);
-      }
-    }
-  } catch (error) {
-    console.error('❌ Erro ao processar reação:', error);
-  }
-});
 
 // Função para aprovar inscrição
 async function approveApplication(context, applicationId, user = null) {
