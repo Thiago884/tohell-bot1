@@ -1,38 +1,85 @@
-// bot.js
+// bot.js - Versão completa para Render
 const { Client, IntentsBitField, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const mysql = require('mysql2/promise');
 const axios = require('axios');
+const express = require('express');
 require('dotenv').config();
 
+// Configuração do servidor Express para health checks
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.use(express.json());
+app.get('/health', (_, res) => {
+  res.status(200).json({ 
+    status: 'healthy',
+    bot: client?.user?.tag || 'starting',
+    db: dbConnection ? 'connected' : 'disconnected'
+  });
+});
+
+// Configurações do bot
 const client = new Client({
   intents: [
     IntentsBitField.Flags.Guilds,
     IntentsBitField.Flags.GuildMessages,
-    IntentsBitField.Flags.MessageContent
+    IntentsBitField.Flags.MessageContent,
+    IntentsBitField.Flags.GuildMessageReactions
   ]
 });
 
 // Configurações
 const ITEMS_PER_PAGE = 5;
-const ALLOWED_CHANNEL_ID = '1256287757135908884'; // Canal permitido
+const ALLOWED_CHANNEL_ID = process.env.ALLOWED_CHANNEL_ID || '1256287757135908884';
 const dbConfig = {
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
-  port: process.env.DB_PORT || 3306
+  port: process.env.DB_PORT || 3306,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
 };
 
 let dbConnection;
+let isShuttingDown = false;
 
-// Conexão com o banco de dados
+// Conexão com o banco de dados com reconexão automática
 async function connectDB() {
   try {
-    dbConnection = await mysql.createConnection(dbConfig);
-    console.log('Conectado ao banco de dados MySQL');
+    dbConnection = await mysql.createPool(dbConfig);
+    console.log('✅ Conectado ao banco de dados MySQL');
+    
+    setInterval(async () => {
+      try {
+        await dbConnection.query('SELECT 1');
+      } catch (err) {
+        console.error('❌ Erro na verificação de conexão com o DB:', err);
+        await reconnectDB();
+      }
+    }, 60000);
+    
+    return dbConnection;
   } catch (error) {
-    console.error('Erro ao conectar ao banco de dados:', error);
-    process.exit(1);
+    console.error('❌ Erro ao conectar ao banco de dados:', error);
+    await reconnectDB();
+  }
+}
+
+async function reconnectDB() {
+  if (isShuttingDown) return;
+  
+  console.log('🔄 Tentando reconectar ao banco de dados...');
+  try {
+    if (dbConnection) {
+      await dbConnection.end().catch(() => {});
+    }
+    dbConnection = await mysql.createPool(dbConfig);
+    console.log('✅ Reconectado ao banco de dados com sucesso');
+  } catch (err) {
+    console.error('❌ Falha na reconexão com o DB:', err);
+    setTimeout(reconnectDB, 5000);
   }
 }
 
@@ -54,49 +101,58 @@ const commands = {
 
 // Quando o bot está pronto
 client.on('ready', () => {
-  console.log(`Bot conectado como ${client.user.tag}`);
+  console.log(`🤖 Bot conectado como ${client.user.tag}`);
+  console.log(`📌 Canal permitido: ${ALLOWED_CHANNEL_ID}`);
+  client.user.setActivity('!ajuda para comandos', { type: 'WATCHING' });
 });
 
 // Função segura para enviar mensagens
 async function safeSend(channel, content, options = {}) {
+  if (isShuttingDown) return null;
+  
   try {
     return await channel.send(content, options);
   } catch (error) {
-    console.error('Erro ao enviar mensagem:', error);
+    console.error('❌ Erro ao enviar mensagem:', error);
     return null;
   }
 }
 
 // Quando uma mensagem é recebida
 client.on('messageCreate', async message => {
-  // Ignora mensagens de bots e que não começam com !
+  if (isShuttingDown) return;
+  
+  console.log(`📩 Mensagem recebida de ${message.author.tag} em #${message.channel.name}: ${message.content}`);
+  
   if (message.author.bot || !message.content.startsWith('!')) return;
 
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args.shift().toLowerCase();
 
-  // Verifica se o comando existe
   if (commands[command]) {
-    // Verifica se está no canal permitido
+    console.log(`🔍 Comando detectado: ${command}`, args);
+    
     if (message.channel.id !== ALLOWED_CHANNEL_ID) {
+      console.log(`🚫 Comando em canal não permitido: ${message.channel.id}`);
       try {
         await message.author.send('Este comando só pode ser usado no canal de inscrições.').catch(() => {});
         await message.delete().catch(() => {});
       } catch (error) {
-        console.error('Erro ao processar mensagem em canal não permitido:', error);
+        console.error('❌ Erro ao processar mensagem em canal não permitido:', error);
       }
       return;
     }
 
-    // Verifica permissões do bot
-    if (!message.channel.permissionsFor(client.user).has('SendMessages')) {
-      return console.error('Bot não tem permissão para enviar mensagens neste canal');
+    const botPermissions = message.channel.permissionsFor(client.user);
+    if (!botPermissions.has('SendMessages')) {
+      console.error('❌ Bot não tem permissão para enviar mensagens neste canal');
+      return;
     }
 
     try {
       await commands[command].execute(message, args);
     } catch (error) {
-      console.error('Erro ao executar comando:', error);
+      console.error(`❌ Erro ao executar comando ${command}:`, error);
       await safeSend(message.channel, 'Ocorreu um erro ao processar seu comando.');
     }
   }
@@ -113,7 +169,6 @@ async function listPendingApplications(message, args) {
   try {
     const offset = (page - 1) * ITEMS_PER_PAGE;
     
-    // Conta o total de inscrições pendentes
     const [countRows] = await dbConnection.execute(
       'SELECT COUNT(*) as total FROM inscricoes_pendentes'
     );
@@ -128,13 +183,11 @@ async function listPendingApplications(message, args) {
       return safeSend(message.channel, `Apenas ${totalPages} páginas disponíveis.`);
     }
 
-    // Obtém as inscrições da página atual
     const [rows] = await dbConnection.execute(
       'SELECT * FROM inscricoes_pendentes ORDER BY data_inscricao DESC LIMIT ? OFFSET ?',
       [ITEMS_PER_PAGE, offset]
     );
 
-    // Cria mensagem com paginação
     const embed = new EmbedBuilder()
       .setColor('#FF4500')
       .setTitle(`Inscrições Pendentes - Página ${page}/${totalPages}`)
@@ -142,12 +195,10 @@ async function listPendingApplications(message, args) {
 
     await safeSend(message.channel, { embeds: [embed] });
 
-    // Envia cada inscrição como uma mensagem separada
     for (const application of rows) {
       await sendApplicationEmbed(message.channel, application);
     }
 
-    // Adiciona navegação se houver mais páginas
     if (totalPages > 1) {
       const navRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -169,7 +220,7 @@ async function listPendingApplications(message, args) {
     }
 
   } catch (error) {
-    console.error('Erro ao listar inscrições pendentes:', error);
+    console.error('❌ Erro ao listar inscrições pendentes:', error);
     await safeSend(message.channel, 'Ocorreu um erro ao listar as inscrições pendentes.');
   }
 }
@@ -191,7 +242,6 @@ async function searchApplications(message, args) {
     const offset = (page - 1) * ITEMS_PER_PAGE;
     const searchPattern = `%${searchTerm}%`;
     
-    // Conta o total de resultados
     const [countRows] = await dbConnection.execute(
       'SELECT COUNT(*) as total FROM inscricoes_pendentes WHERE nome LIKE ? OR discord LIKE ? OR telefone LIKE ?',
       [searchPattern, searchPattern, searchPattern]
@@ -207,13 +257,11 @@ async function searchApplications(message, args) {
       return safeSend(message.channel, `Apenas ${totalPages} páginas disponíveis para esta busca.`);
     }
 
-    // Obtém os resultados da busca
     const [rows] = await dbConnection.execute(
       'SELECT * FROM inscricoes_pendentes WHERE nome LIKE ? OR discord LIKE ? OR telefone LIKE ? ORDER BY data_inscricao DESC LIMIT ? OFFSET ?',
       [searchPattern, searchPattern, searchPattern, ITEMS_PER_PAGE, offset]
     );
 
-    // Cria mensagem com resultados
     const embed = new EmbedBuilder()
       .setColor('#FF4500')
       .setTitle(`Resultados da busca por "${searchTerm}" - Página ${page}/${totalPages}`)
@@ -221,12 +269,10 @@ async function searchApplications(message, args) {
 
     await safeSend(message.channel, { embeds: [embed] });
 
-    // Envia cada inscrição encontrada
     for (const application of rows) {
       await sendApplicationEmbed(message.channel, application);
     }
 
-    // Adiciona navegação se houver mais páginas
     if (totalPages > 1) {
       const navRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -248,7 +294,7 @@ async function searchApplications(message, args) {
     }
 
   } catch (error) {
-    console.error('Erro ao buscar inscrições:', error);
+    console.error('❌ Erro ao buscar inscrições:', error);
     await safeSend(message.channel, 'Ocorreu um erro ao buscar inscrições.');
   }
 }
@@ -296,7 +342,7 @@ async function sendApplicationEmbed(channel, application) {
       await msg.react('👍');
       await msg.react('👎');
     } catch (error) {
-      console.error('Erro ao adicionar reações:', error);
+      console.error('❌ Erro ao adicionar reações:', error);
     }
   }
 }
@@ -321,12 +367,11 @@ async function showHelp(message) {
   if (helpMessage) {
     try {
       await helpMessage.react('✅');
-      // Deleta a mensagem após 30 segundos
       setTimeout(() => {
         helpMessage.delete().catch(() => {});
       }, 30000);
     } catch (error) {
-      console.error('Erro ao adicionar reação:', error);
+      console.error('❌ Erro ao adicionar reação:', error);
     }
   }
 }
@@ -335,7 +380,6 @@ async function showHelp(message) {
 client.on('interactionCreate', async interaction => {
   if (!interaction.isButton()) return;
   
-  // Verificação segura do canal
   if (interaction.channel?.id !== ALLOWED_CHANNEL_ID) {
     return interaction.reply({ 
       content: 'Este comando só pode ser usado no canal de inscrições.', 
@@ -349,7 +393,6 @@ client.on('interactionCreate', async interaction => {
   }
 
   try {
-    // Navegação de páginas
     if (interaction.customId.startsWith('prev_page_') || interaction.customId.startsWith('next_page_')) {
       const [direction, pageStr] = interaction.customId.split('_').slice(1);
       let page = parseInt(pageStr);
@@ -362,7 +405,6 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // Navegação de busca
     if (interaction.customId.startsWith('search_prev_') || interaction.customId.startsWith('search_next_')) {
       const [direction, searchTerm, pageStr] = interaction.customId.split('_').slice(1);
       let page = parseInt(pageStr);
@@ -375,13 +417,11 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // Aprovar/Rejeitar
     const [action, id] = interaction.customId.split('_');
     
     if (action === 'approve') {
       await approveApplication(interaction, id);
     } else if (action === 'reject') {
-      // Cria um modal para coletar o motivo da rejeição
       const modal = new ModalBuilder()
         .setCustomId(`reject_reason_${id}`)
         .setTitle('Motivo da Rejeição');
@@ -400,7 +440,7 @@ client.on('interactionCreate', async interaction => {
       await interaction.showModal(modal);
     }
   } catch (error) {
-    console.error('Erro ao processar interação:', error);
+    console.error('❌ Erro ao processar interação:', error);
     interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', ephemeral: true }).catch(console.error);
   }
 });
@@ -409,7 +449,6 @@ client.on('interactionCreate', async interaction => {
 client.on('interactionCreate', async interaction => {
   if (!interaction.isModalSubmit()) return;
   
-  // Verificação segura do canal
   if (interaction.channel?.id !== ALLOWED_CHANNEL_ID) {
     return interaction.reply({ 
       content: 'Este comando só pode ser usado no canal de inscrições.', 
@@ -426,7 +465,7 @@ client.on('interactionCreate', async interaction => {
       await rejectApplication(interaction, id, reason);
     }
   } catch (error) {
-    console.error('Erro ao processar modal:', error);
+    console.error('❌ Erro ao processar modal:', error);
     interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', ephemeral: true }).catch(console.error);
   }
 });
@@ -435,8 +474,6 @@ client.on('interactionCreate', async interaction => {
 client.on('messageReactionAdd', async (reaction, user) => {
   if (user.bot) return;
   if (reaction.message.author.id !== client.user.id) return;
-  
-  // Verifica se a reação foi adicionada no canal permitido
   if (reaction.message.channel.id !== ALLOWED_CHANNEL_ID) return;
 
   try {
@@ -451,7 +488,6 @@ client.on('messageReactionAdd', async (reaction, user) => {
     if (reaction.emoji.name === '👍') {
       await approveApplication(message, applicationId, user);
     } else if (reaction.emoji.name === '👎') {
-      // Para reações, pedimos o motivo via DM
       try {
         const dmChannel = await user.createDM();
         await dmChannel.send(`Por favor, envie o motivo para rejeitar a inscrição #${applicationId} em uma única mensagem:`).catch(console.error);
@@ -467,19 +503,18 @@ client.on('messageReactionAdd', async (reaction, user) => {
           await message.channel.send(`${user} Você não forneceu um motivo para a rejeição a tempo.`).catch(console.error);
         }
       } catch (error) {
-        console.error('Erro ao coletar motivo:', error);
+        console.error('❌ Erro ao coletar motivo:', error);
         await message.channel.send(`${user} Você não forneceu um motivo para a rejeição a tempo.`).catch(console.error);
       }
     }
   } catch (error) {
-    console.error('Erro ao processar reação:', error);
+    console.error('❌ Erro ao processar reação:', error);
   }
 });
 
 // Função para aprovar inscrição
 async function approveApplication(context, applicationId, user = null) {
   try {
-    // Obtém os dados da inscrição
     const [rows] = await dbConnection.execute(
       'SELECT * FROM inscricoes_pendentes WHERE id = ?',
       [applicationId]
@@ -491,7 +526,6 @@ async function approveApplication(context, applicationId, user = null) {
 
     const application = rows[0];
 
-    // Move para a tabela de inscrições aprovadas
     await dbConnection.execute(
       'INSERT INTO inscricoes (nome, telefone, discord, char_principal, guild_anterior, ip, screenshot_path, data_inscricao, status, avaliador, data_avaliacao) VALUES (?, ?, ?, ?, ?, ?, ?, ?, "aprovado", ?, NOW())',
       [
@@ -507,16 +541,13 @@ async function approveApplication(context, applicationId, user = null) {
       ]
     );
     
-    // Remove da tabela de pendentes
     await dbConnection.execute(
       'DELETE FROM inscricoes_pendentes WHERE id = ?',
       [applicationId]
     );
 
-    // Notifica no webhook
     await notifyWebhook('aprovado', applicationId, application.nome, application.discord);
 
-    // Resposta diferente para diferentes tipos de contexto
     if (context.reply) {
       await context.reply({ 
         content: `Inscrição #${applicationId} aprovada com sucesso!`,
@@ -524,7 +555,6 @@ async function approveApplication(context, applicationId, user = null) {
       }).catch(console.error);
     }
 
-    // Atualiza a mensagem original
     try {
       const embed = context.message.embeds[0];
       embed.setColor('#00FF00');
@@ -532,20 +562,19 @@ async function approveApplication(context, applicationId, user = null) {
       
       await context.message.edit({ 
         embeds: [embed],
-        components: [] // Remove os botões
+        components: []
       }).catch(console.error);
     } catch (editError) {
-      console.error('Erro ao editar mensagem:', editError);
+      console.error('❌ Erro ao editar mensagem:', editError);
     }
 
-    // Remove todas as reações
     try {
       await context.message.reactions.removeAll().catch(console.error);
     } catch (error) {
-      console.error('Erro ao remover reações:', error);
+      console.error('❌ Erro ao remover reações:', error);
     }
   } catch (error) {
-    console.error('Erro ao aprovar inscrição:', error);
+    console.error('❌ Erro ao aprovar inscrição:', error);
     if (context.reply) {
       await context.reply({ 
         content: `Ocorreu um erro ao aprovar a inscrição #${applicationId}`,
@@ -558,7 +587,6 @@ async function approveApplication(context, applicationId, user = null) {
 // Função para rejeitar inscrição
 async function rejectApplication(context, applicationId, reason, user = null) {
   try {
-    // Obtém os dados da inscrição
     const [rows] = await dbConnection.execute(
       'SELECT * FROM inscricoes_pendentes WHERE id = ?',
       [applicationId]
@@ -570,16 +598,13 @@ async function rejectApplication(context, applicationId, reason, user = null) {
 
     const application = rows[0];
 
-    // Remove da tabela de pendentes
     await dbConnection.execute(
       'DELETE FROM inscricoes_pendentes WHERE id = ?',
       [applicationId]
     );
 
-    // Notifica no webhook
     await notifyWebhook('rejeitado', applicationId, application.nome, application.discord, reason);
 
-    // Resposta diferente para diferentes tipos de contexto
     if (context.reply) {
       await context.reply({ 
         content: `Inscrição #${applicationId} rejeitada com sucesso!`,
@@ -587,12 +612,10 @@ async function rejectApplication(context, applicationId, reason, user = null) {
       }).catch(console.error);
     }
 
-    // Atualiza a mensagem original
     try {
       const embed = context.message.embeds[0];
       embed.setColor('#FF0000');
       
-      // Adiciona o motivo da rejeição ao embed se existir
       if (reason) {
         embed.addFields({ name: 'Motivo da Rejeição', value: reason });
       }
@@ -601,20 +624,19 @@ async function rejectApplication(context, applicationId, reason, user = null) {
       
       await context.message.edit({ 
         embeds: [embed],
-        components: [] // Remove os botões
+        components: []
       }).catch(console.error);
     } catch (editError) {
-      console.error('Erro ao editar mensagem:', editError);
+      console.error('❌ Erro ao editar mensagem:', editError);
     }
 
-    // Remove todas as reações
     try {
       await context.message.reactions.removeAll().catch(console.error);
     } catch (error) {
-      console.error('Erro ao remover reações:', error);
+      console.error('❌ Erro ao remover reações:', error);
     }
   } catch (error) {
-    console.error('Erro ao rejeitar inscrição:', error);
+    console.error('❌ Erro ao rejeitar inscrição:', error);
     if (context.reply) {
       await context.reply({ 
         content: `Ocorreu um erro ao rejeitar a inscrição #${applicationId}`,
@@ -651,27 +673,49 @@ async function notifyWebhook(action, applicationId, applicationName, discordTag,
   try {
     await axios.post(process.env.DISCORD_WEBHOOK_URL, {
       embeds: [embed]
-    }).catch(e => console.error('Erro no webhook:', e.response?.data || e.message));
+    }).catch(e => console.error('❌ Erro no webhook:', e.response?.data || e.message));
   } catch (error) {
-    console.error('Erro grave no webhook:', error);
+    console.error('❌ Erro grave no webhook:', error);
   }
 }
 
-// Inicia o bot
-async function startBot() {
+// Inicia o servidor e o bot
+async function startApp() {
   try {
+    const server = app.listen(PORT, () => {
+      console.log(`🌐 Servidor Express rodando na porta ${PORT}`);
+    });
+
+    process.on('SIGTERM', async () => {
+      console.log('🛑 Recebido SIGTERM, encerrando graceful...');
+      isShuttingDown = true;
+      
+      try {
+        await client.destroy();
+        console.log('🤖 Bot desconectado');
+        
+        if (dbConnection) {
+          await dbConnection.end();
+          console.log('🔌 Conexão com DB encerrada');
+        }
+        
+        server.close(() => {
+          console.log('🛑 Servidor HTTP encerrado');
+          process.exit(0);
+        });
+      } catch (err) {
+        console.error('❌ Erro no shutdown graceful:', err);
+        process.exit(1);
+      }
+    });
+
     await connectDB();
     await client.login(process.env.DISCORD_TOKEN);
+    
   } catch (error) {
-    console.error('Erro ao iniciar o bot:', error);
+    console.error('❌ Erro fatal ao iniciar aplicação:', error);
     process.exit(1);
   }
 }
 
-startBot();
-
-const express = require('express');
-const app = express();
-const PORT = process.env.PORT || 3000;
-app.get('/', (_, res) => res.send('Bot online.'));
-app.listen(PORT, () => console.log(`Servidor escutando na porta ${PORT}`));
+startApp();
