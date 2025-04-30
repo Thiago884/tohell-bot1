@@ -565,6 +565,7 @@ async function notifyWebhook(action, applicationId, applicationName, discordTag,
   }
 }
 
+
 // Inicia o bot
 async function startBot() {
   await connectDB();
@@ -572,3 +573,9 @@ async function startBot() {
 }
 
 startBot();
+
+const express = require('express');
+const app = express();
+const PORT = process.env.PORT || 3000;
+app.get('/', (_, res) => res.send('Bot online.'));
+app.listen(PORT, () => console.log(`Servidor escutando na porta ${PORT}`));
