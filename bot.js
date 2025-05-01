@@ -6,6 +6,31 @@ const express = require('express');
 const { JSDOM } = require('jsdom');
 require('dotenv').config();
 
+// Função para formatar data no padrão brasileiro com fuso horário
+function formatBrazilianDate(dateString) {
+  if (!dateString) return 'Data inválida';
+  
+  try {
+    const date = new Date(dateString);
+    
+    // Ajustar para fuso horário de Brasília (-03:00)
+    const offset = -3 * 60; // Brasília UTC-3
+    const adjustedDate = new Date(date.getTime() + (offset + date.getTimezoneOffset()) * 60000);
+    
+    // Formatar como DD/MM/YYYY HH:MM
+    const day = adjustedDate.getDate().toString().padStart(2, '0');
+    const month = (adjustedDate.getMonth() + 1).toString().padStart(2, '0');
+    const year = adjustedDate.getFullYear();
+    const hours = adjustedDate.getHours().toString().padStart(2, '0');
+    const minutes = adjustedDate.getMinutes().toString().padStart(2, '0');
+    
+    return `${day}/${month}/${year} ${hours}:${minutes}`;
+  } catch (error) {
+    console.error('Erro ao formatar data:', error);
+    return 'Data inválida';
+  }
+}
+
 // Configuração do servidor Express para health checks
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -160,6 +185,44 @@ const slashCommands = [
   {
     name: 'ajuda',
     description: 'Mostra todos os comandos disponíveis'
+  },
+  {
+    name: 'admin-permissoes',
+    description: 'Gerencia permissões de comandos para cargos (Admin only)',
+    options: [
+      {
+        name: 'comando',
+        description: 'Comando para gerenciar permissões',
+        type: ApplicationCommandOptionType.String,
+        required: true,
+        choices: [
+          { name: 'pendentes', value: 'pendentes' },
+          { name: 'buscar', value: 'buscar' },
+          { name: 'char', value: 'char' },
+          { name: 'ranking', value: 'ranking' },
+          { name: 'monitorar', value: 'monitorar' },
+          { name: 'parar-monitorar', value: 'parar-monitorar' },
+          { name: 'listar-monitorados', value: 'listar-monitorados' }
+        ]
+      },
+      {
+        name: 'acao',
+        description: 'Ação a ser realizada',
+        type: ApplicationCommandOptionType.String,
+        required: true,
+        choices: [
+          { name: 'Adicionar cargo', value: 'add' },
+          { name: 'Remover cargo', value: 'remove' },
+          { name: 'Listar cargos', value: 'list' }
+        ]
+      },
+      {
+        name: 'cargo',
+        description: 'Cargo para adicionar/remover (não necessário para listar)',
+        type: ApplicationCommandOptionType.Role,
+        required: false
+      }
+    ]
   }
 ];
 
@@ -213,6 +276,17 @@ async function createTables() {
         resets INT NOT NULL,
         recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE CASCADE
+      )
+    `);
+    
+    // Tabela para permissões de comandos
+    await dbConnection.execute(`
+      CREATE TABLE IF NOT EXISTS command_permissions (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        command_name VARCHAR(255) NOT NULL,
+        role_id VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY unique_permission (command_name, role_id)
       )
     `);
     
@@ -443,6 +517,57 @@ class CharacterTracker {
 
 const tracker = new CharacterTracker();
 
+// Funções para gerenciar permissões de comandos
+async function addCommandPermission(commandName, roleId) {
+  try {
+    await dbConnection.execute(
+      'INSERT INTO command_permissions (command_name, role_id) VALUES (?, ?)',
+      [commandName, roleId]
+    );
+    return true;
+  } catch (error) {
+    console.error('❌ Erro ao adicionar permissão:', error);
+    return false;
+  }
+}
+
+async function removeCommandPermission(commandName, roleId) {
+  try {
+    const [result] = await dbConnection.execute(
+      'DELETE FROM command_permissions WHERE command_name = ? AND role_id = ?',
+      [commandName, roleId]
+    );
+    return result.affectedRows > 0;
+  } catch (error) {
+    console.error('❌ Erro ao remover permissão:', error);
+    return false;
+  }
+}
+
+async function getCommandPermissions(commandName) {
+  try {
+    const [rows] = await dbConnection.execute(
+      'SELECT role_id FROM command_permissions WHERE command_name = ?',
+      [commandName]
+    );
+    return rows.map(row => row.role_id);
+  } catch (error) {
+    console.error('❌ Erro ao obter permissões:', error);
+    return [];
+  }
+}
+
+async function checkUserPermission(interaction, commandName) {
+  // Se o comando não requer permissão específica, permitir
+  if (!(await getCommandPermissions(commandName)).length) {
+    return true;
+  }
+
+  // Verificar se o usuário tem algum dos cargos necessários
+  const allowedRoles = await getCommandPermissions(commandName);
+  return interaction.member.roles.cache.some(role => allowedRoles.includes(role.id));
+}
+
 // Função para buscar personagem no banco ou nas guildas (versão corrigida e melhorada)
 async function searchCharacterInDatabaseOrGuilds(name) {
   const nameLower = name.toLowerCase();
@@ -617,7 +742,7 @@ function createCharEmbed({ name, level, resets, guild, found, lastSeen, history,
     if (lastSeen) {
       embed.addFields({ 
         name: 'Última vez visto', 
-        value: new Date(lastSeen).toLocaleString(), 
+        value: formatBrazilianDate(lastSeen), 
         inline: false 
       });
     }
@@ -625,7 +750,7 @@ function createCharEmbed({ name, level, resets, guild, found, lastSeen, history,
   
   if (history && history.length > 0) {
     const historyText = history.map(entry => 
-      `📅 ${new Date(entry.recorded_at).toLocaleDateString()}: Level ${entry.level} | Resets ${entry.resets}`
+      `📅 ${formatBrazilianDate(entry.recorded_at)}: Level ${entry.level} | Resets ${entry.resets}`
     ).join('\n');
     
     embed.addFields({
@@ -874,7 +999,7 @@ async function listPendingApplications(context, args) {
   }
 }
 
-// Função para buscar inscrições
+// Função para buscar inscrições (atualizada para buscar também na tabela inscricoes)
 async function searchApplications(context, args) {
   if (args.length === 0) {
     return context.reply({ content: 'Por favor, especifique um termo de busca.', ephemeral: true });
@@ -891,11 +1016,19 @@ async function searchApplications(context, args) {
     const offset = (page - 1) * ITEMS_PER_PAGE;
     const searchPattern = `%${searchTerm}%`;
     
-    const [countRows] = await dbConnection.execute(
+    // Busca nas inscrições pendentes
+    const [countRowsPendentes] = await dbConnection.execute(
       'SELECT COUNT(*) as total FROM inscricoes_pendentes WHERE nome LIKE ? OR discord LIKE ? OR telefone LIKE ?',
       [searchPattern, searchPattern, searchPattern]
     );
-    const total = countRows[0].total;
+    
+    // Busca nas inscrições aprovadas
+    const [countRowsAprovadas] = await dbConnection.execute(
+      'SELECT COUNT(*) as total FROM inscricoes WHERE (nome LIKE ? OR discord LIKE ? OR telefone LIKE ?) AND status = "aprovado"',
+      [searchPattern, searchPattern, searchPattern]
+    );
+    
+    const total = countRowsPendentes[0].total + countRowsAprovadas[0].total;
     const totalPages = Math.ceil(total / ITEMS_PER_PAGE);
 
     if (total === 0) {
@@ -906,10 +1039,25 @@ async function searchApplications(context, args) {
       return context.reply({ content: `Apenas ${totalPages} páginas disponíveis para esta busca.`, ephemeral: true });
     }
 
-    const [rows] = await dbConnection.execute(
-      'SELECT * FROM inscricoes_pendentes WHERE nome LIKE ? OR discord LIKE ? OR telefone LIKE ? ORDER BY data_inscricao DESC LIMIT ? OFFSET ?',
+    // Busca combinada nas duas tabelas
+    const [rowsPendentes] = await dbConnection.execute(
+      'SELECT *, "pendente" as status FROM inscricoes_pendentes WHERE nome LIKE ? OR discord LIKE ? OR telefone LIKE ? ORDER BY data_inscricao DESC LIMIT ? OFFSET ?',
       [searchPattern, searchPattern, searchPattern, ITEMS_PER_PAGE, offset]
     );
+    
+    // Ajusta o offset para a segunda consulta se necessário
+    const remaining = ITEMS_PER_PAGE - rowsPendentes.length;
+    let rowsAprovadas = [];
+    
+    if (remaining > 0) {
+      const aprovadasOffset = Math.max(0, offset - countRowsPendentes[0].total);
+      [rowsAprovadas] = await dbConnection.execute(
+        'SELECT *, "aprovado" as status FROM inscricoes WHERE (nome LIKE ? OR discord LIKE ? OR telefone LIKE ?) AND status = "aprovado" ORDER BY data_inscricao DESC LIMIT ? OFFSET ?',
+        [searchPattern, searchPattern, searchPattern, remaining, aprovadasOffset]
+      );
+    }
+    
+    const rows = [...rowsPendentes, ...rowsAprovadas];
 
     const embed = new EmbedBuilder()
       .setColor('#FF4500')
@@ -957,8 +1105,8 @@ async function sendApplicationEmbed(channel, application) {
   ).join('\n') || 'Nenhuma imagem enviada';
 
   const embed = new EmbedBuilder()
-    .setColor('#FF4500')
-    .setTitle(`Inscrição #${application.id}`)
+    .setColor(application.status === 'aprovado' ? '#00FF00' : '#FF4500')
+    .setTitle(`Inscrição #${application.id} (${application.status === 'aprovado' ? 'Aprovada' : 'Pendente'})`)
     .setDescription(`**${application.nome}** deseja se juntar à guild!`)
     .addFields(
       { name: '📱 Telefone', value: application.telefone, inline: true },
@@ -966,7 +1114,7 @@ async function sendApplicationEmbed(channel, application) {
       { name: '⚔️ Char Principal', value: application.char_principal, inline: true },
       { name: '🏰 Guild Anterior', value: application.guild_anterior || 'Nenhuma', inline: true },
       { name: '📸 Screenshots', value: screenshotLinks, inline: false },
-      { name: '📅 Data', value: new Date(application.data_inscricao).toLocaleString(), inline: true },
+      { name: '📅 Data', value: formatBrazilianDate(application.data_inscricao), inline: true },
       { name: '🌐 IP', value: application.ip || 'Não registrado', inline: true }
     )
     .setFooter({ text: 'ToHeLL Guild - Use os botões ou reações para aprovar/rejeitar' });
@@ -975,11 +1123,13 @@ async function sendApplicationEmbed(channel, application) {
     new ButtonBuilder()
       .setCustomId(`approve_${application.id}`)
       .setLabel('Aprovar')
-      .setStyle(ButtonStyle.Success),
+      .setStyle(ButtonStyle.Success)
+      .setDisabled(application.status === 'aprovado'),
     new ButtonBuilder()
       .setCustomId(`reject_${application.id}`)
       .setLabel('Rejeitar')
       .setStyle(ButtonStyle.Danger)
+      .setDisabled(application.status === 'aprovado')
   );
 
   const msg = await safeSend(channel, { 
@@ -987,7 +1137,7 @@ async function sendApplicationEmbed(channel, application) {
     components: [row]
   });
 
-  if (msg) {
+  if (msg && application.status !== 'aprovado') {
     try {
       await msg.react('👍');
       await msg.react('👎');
@@ -1166,7 +1316,7 @@ async function notifyWebhook(action, applicationId, applicationName, discordTag,
       { name: 'Discord', value: discordTag, inline: true },
       { name: 'Via', value: 'Discord Bot', inline: true }
     ],
-    timestamp: new Date().toISOString()
+    timestamp: new Date(new Date().getTime() - 3 * 60 * 60 * 1000).toISOString() // Ajusta para UTC-3
   };
   
   if (action === 'rejeitado' && motivo) {
@@ -1217,6 +1367,14 @@ client.on('interactionCreate', async interaction => {
   // Comandos slash
   if (interaction.isCommand()) {
     console.log(`🔍 Comando slash detectado: ${interaction.commandName}`, interaction.options.data);
+
+    // Verificar permissões antes de executar qualquer comando
+    if (!await checkUserPermission(interaction, interaction.commandName)) {
+      return interaction.reply({
+        content: '❌ Você não tem permissão para usar este comando.',
+        ephemeral: true
+      });
+    }
 
     try {
       switch (interaction.commandName) {
@@ -1321,6 +1479,68 @@ client.on('interactionCreate', async interaction => {
           
         case 'ajuda':
           await showHelp(interaction);
+          break;
+
+        case 'admin-permissoes':
+          // Verificar se o usuário é administrador
+          if (!interaction.member.permissions.has('ADMINISTRATOR')) {
+            return interaction.reply({
+              content: '❌ Este comando é restrito a administradores.',
+              ephemeral: true
+            });
+          }
+
+          const commandName = interaction.options.getString('comando');
+          const action = interaction.options.getString('acao');
+          const role = interaction.options.getRole('cargo');
+
+          await interaction.deferReply({ ephemeral: true });
+
+          try {
+            if (action === 'list') {
+              const roleIds = await getCommandPermissions(commandName);
+              
+              if (roleIds.length === 0) {
+                return interaction.editReply({
+                  content: `Nenhum cargo tem permissão para o comando /${commandName}`
+                });
+              }
+
+              const roles = roleIds.map(id => interaction.guild.roles.cache.get(id)?.toString() || id).join('\n');
+              return interaction.editReply({
+                content: `Cargos com permissão para /${commandName}:\n${roles}`
+              });
+            }
+
+            if (!role) {
+              return interaction.editReply({
+                content: 'Por favor, especifique um cargo para esta ação.'
+              });
+            }
+
+            if (action === 'add') {
+              const success = await addCommandPermission(commandName, role.id);
+              return interaction.editReply({
+                content: success ? 
+                  `✅ Cargo ${role.name} agora tem permissão para /${commandName}` :
+                  '❌ Falha ao adicionar permissão. O cargo já pode ter esta permissão.'
+              });
+            }
+
+            if (action === 'remove') {
+              const success = await removeCommandPermission(commandName, role.id);
+              return interaction.editReply({
+                content: success ? 
+                  `✅ Cargo ${role.name} não tem mais permissão para /${commandName}` :
+                  '❌ Falha ao remover permissão. O cargo pode não ter esta permissão.'
+              });
+            }
+          } catch (error) {
+            console.error('❌ Erro ao gerenciar permissões:', error);
+            return interaction.editReply({
+              content: 'Ocorreu um erro ao processar sua solicitação.'
+            });
+          }
           break;
       }
     } catch (error) {
