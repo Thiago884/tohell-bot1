@@ -1,5 +1,17 @@
-// bot.js - Versão completa com todas funcionalidades originais e novas melhorias
-const { Client, IntentsBitField, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, ApplicationCommandOptionType } = require('discord.js');
+// bot.js - Versão completa corrigida
+const { 
+  Client, 
+  IntentsBitField, 
+  EmbedBuilder, 
+  ActionRowBuilder, 
+  ButtonBuilder, 
+  ButtonStyle, 
+  ModalBuilder, 
+  TextInputBuilder, 
+  TextInputStyle, 
+  ApplicationCommandOptionType,
+  MessageFlags
+} = require('discord.js');
 const mysql = require('mysql2/promise');
 const axios = require('axios');
 const express = require('express');
@@ -82,7 +94,7 @@ const dbConfig = {
 let dbConnection;
 let isShuttingDown = false;
 
-// Lista de guildas para verificar (mesmo do monitor.php)
+// Lista de guildas para verificar
 const GUILDS_TO_CHECK = ['ToHeLL_', 'ToHeLL2', 'ToHeLL3', 'ToHeLL4', 'ToHeLL5', 'ToHeLL6', 'ToHeLL7', 'ToHeLL8_', 'ToHeLL9', 'ToHeLL10', 'ToHeLL11', 'ToHeLL13'];
 
 // Comandos Slash atualizados
@@ -936,7 +948,7 @@ async function listPendingApplications(context, args) {
   const page = args[0] ? parseInt(args[0]) : 1;
   
   if (isNaN(page) || page < 1) {
-    return context.reply({ content: 'Por favor, especifique um número de página válido.', ephemeral: true });
+    return context.reply({ content: 'Por favor, especifique um número de página válido.', flags: MessageFlags.Ephemeral });
   }
 
   try {
@@ -949,11 +961,11 @@ async function listPendingApplications(context, args) {
     const totalPages = Math.ceil(total / ITEMS_PER_PAGE);
 
     if (total === 0) {
-      return context.reply({ content: 'Não há inscrições pendentes no momento.', ephemeral: true });
+      return context.reply({ content: 'Não há inscrições pendentes no momento.', flags: MessageFlags.Ephemeral });
     }
 
     if (page > totalPages) {
-      return context.reply({ content: `Apenas ${totalPages} páginas disponíveis.`, ephemeral: true });
+      return context.reply({ content: `Apenas ${totalPages} páginas disponíveis.`, flags: MessageFlags.Ephemeral });
     }
 
     const [rows] = await dbConnection.execute(
@@ -995,21 +1007,21 @@ async function listPendingApplications(context, args) {
 
   } catch (error) {
     console.error('❌ Erro ao listar inscrições pendentes:', error);
-    await context.reply({ content: 'Ocorreu um erro ao listar as inscrições pendentes.', ephemeral: true });
+    await context.reply({ content: 'Ocorreu um erro ao listar as inscrições pendentes.', flags: MessageFlags.Ephemeral });
   }
 }
 
 // Função para buscar inscrições (atualizada para buscar também na tabela inscricoes)
 async function searchApplications(context, args) {
   if (args.length === 0) {
-    return context.reply({ content: 'Por favor, especifique um termo de busca.', ephemeral: true });
+    return context.reply({ content: 'Por favor, especifique um termo de busca.', flags: MessageFlags.Ephemeral });
   }
 
   const searchTerm = args[0];
   const page = args[1] ? parseInt(args[1]) : 1;
   
   if (isNaN(page) || page < 1) {
-    return context.reply({ content: 'Por favor, especifique um número de página válido.', ephemeral: true });
+    return context.reply({ content: 'Por favor, especifique um número de página válido.', flags: MessageFlags.Ephemeral });
   }
 
   try {
@@ -1032,11 +1044,11 @@ async function searchApplications(context, args) {
     const totalPages = Math.ceil(total / ITEMS_PER_PAGE);
 
     if (total === 0) {
-      return context.reply({ content: 'Nenhuma inscrição encontrada com esse termo de busca.', ephemeral: true });
+      return context.reply({ content: 'Nenhuma inscrição encontrada com esse termo de busca.', flags: MessageFlags.Ephemeral });
     }
 
     if (page > totalPages) {
-      return context.reply({ content: `Apenas ${totalPages} páginas disponíveis para esta busca.`, ephemeral: true });
+      return context.reply({ content: `Apenas ${totalPages} páginas disponíveis para esta busca.`, flags: MessageFlags.Ephemeral });
     }
 
     // Busca combinada nas duas tabelas
@@ -1093,7 +1105,7 @@ async function searchApplications(context, args) {
 
   } catch (error) {
     console.error('❌ Erro ao buscar inscrições:', error);
-    await context.reply({ content: 'Ocorreu um erro ao buscar inscrições.', ephemeral: true });
+    await context.reply({ content: 'Ocorreu um erro ao buscar inscrições.', flags: MessageFlags.Ephemeral });
   }
 }
 
@@ -1162,7 +1174,20 @@ async function showHelp(interaction) {
     )
     .setFooter({ text: 'ToHeLL Guild - Sistema de Inscrições' });
 
-  await interaction.reply({ embeds: [embed], ephemeral: true });
+  try {
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({ 
+        embeds: [embed], 
+        flags: MessageFlags.Ephemeral 
+      });
+    } else if (interaction.deferred && !interaction.replied) {
+      await interaction.editReply({ 
+        embeds: [embed] 
+      });
+    }
+  } catch (error) {
+    console.error('❌ Erro ao mostrar ajuda:', error);
+  }
 }
 
 // Função para aprovar inscrição
@@ -1204,7 +1229,7 @@ async function approveApplication(context, applicationId, user = null) {
     if (context.reply) {
       await context.reply({ 
         content: `Inscrição #${applicationId} aprovada com sucesso!`,
-        ephemeral: true 
+        flags: MessageFlags.Ephemeral 
       }).catch(console.error);
     }
 
@@ -1231,7 +1256,7 @@ async function approveApplication(context, applicationId, user = null) {
     if (context.reply) {
       await context.reply({ 
         content: `Ocorreu um erro ao aprovar a inscrição #${applicationId}`,
-        ephemeral: true 
+        flags: MessageFlags.Ephemeral 
       }).catch(console.error);
     }
   }
@@ -1261,7 +1286,7 @@ async function rejectApplication(context, applicationId, reason, user = null) {
     if (context.reply) {
       await context.reply({ 
         content: `Inscrição #${applicationId} rejeitada com sucesso!`,
-        ephemeral: true 
+        flags: MessageFlags.Ephemeral 
       }).catch(console.error);
     }
 
@@ -1293,7 +1318,7 @@ async function rejectApplication(context, applicationId, reason, user = null) {
     if (context.reply) {
       await context.reply({ 
         content: `Ocorreu um erro ao rejeitar a inscrição #${applicationId}`,
-        ephemeral: true 
+        flags: MessageFlags.Ephemeral 
       }).catch(console.error);
     }
   }
@@ -1372,7 +1397,7 @@ client.on('interactionCreate', async interaction => {
     if (!await checkUserPermission(interaction, interaction.commandName)) {
       return interaction.reply({
         content: '❌ Você não tem permissão para usar este comando.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
@@ -1403,7 +1428,7 @@ client.on('interactionCreate', async interaction => {
           const charToTrack = interaction.options.getString('nome');
           const channel = interaction.options.getChannel('canal');
           
-          await interaction.deferReply({ ephemeral: true });
+          await interaction.deferReply({ flags: MessageFlags.Ephemeral });
           
           try {
             await tracker.addTracking(
@@ -1425,7 +1450,7 @@ client.on('interactionCreate', async interaction => {
         case 'parar-monitorar':
           const charToStop = interaction.options.getString('nome');
           
-          await interaction.deferReply({ ephemeral: true });
+          await interaction.deferReply({ flags: MessageFlags.Ephemeral });
           
           try {
             const removed = await tracker.removeTracking(charToStop, interaction.user.id);
@@ -1443,7 +1468,7 @@ client.on('interactionCreate', async interaction => {
           break;
           
         case 'listar-monitorados':
-          await interaction.deferReply({ ephemeral: true });
+          await interaction.deferReply({ flags: MessageFlags.Ephemeral });
           
           try {
             const tracked = await tracker.listTracked(interaction.user.id);
@@ -1482,11 +1507,10 @@ client.on('interactionCreate', async interaction => {
           break;
 
         case 'admin-permissoes':
-          // Verificar se o usuário é administrador
           if (!interaction.member.permissions.has('ADMINISTRATOR')) {
             return interaction.reply({
               content: '❌ Este comando é restrito a administradores.',
-              ephemeral: true
+              flags: MessageFlags.Ephemeral
             });
           }
 
@@ -1494,7 +1518,7 @@ client.on('interactionCreate', async interaction => {
           const action = interaction.options.getString('acao');
           const role = interaction.options.getRole('cargo');
 
-          await interaction.deferReply({ ephemeral: true });
+          await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
           try {
             if (action === 'list') {
@@ -1545,10 +1569,12 @@ client.on('interactionCreate', async interaction => {
       }
     } catch (error) {
       console.error(`❌ Erro ao executar comando ${interaction.commandName}:`, error);
-      await interaction.reply({
-        content: 'Ocorreu um erro ao processar seu comando.',
-        ephemeral: true
-      }).catch(console.error);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          content: 'Ocorreu um erro ao processar seu comando.',
+          flags: MessageFlags.Ephemeral
+        }).catch(console.error);
+      }
     }
   }
 
@@ -1557,11 +1583,11 @@ client.on('interactionCreate', async interaction => {
     if (interaction.channel?.id !== ALLOWED_CHANNEL_ID) {
       return interaction.reply({ 
         content: 'Este comando só pode ser usado no canal de inscrições.', 
-        ephemeral: true 
+        flags: MessageFlags.Ephemeral 
       }).catch(() => {
         interaction.channel.send({
           content: 'Este comando só pode ser usado no canal de inscrições.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         }).catch(console.error);
       });
     }
@@ -1615,7 +1641,7 @@ client.on('interactionCreate', async interaction => {
       }
     } catch (error) {
       console.error('❌ Erro ao processar interação:', error);
-      interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', ephemeral: true }).catch(console.error);
+      interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', flags: MessageFlags.Ephemeral }).catch(console.error);
     }
   }
 
@@ -1624,7 +1650,7 @@ client.on('interactionCreate', async interaction => {
     if (interaction.channel?.id !== ALLOWED_CHANNEL_ID) {
       return interaction.reply({ 
         content: 'Este comando só pode ser usado no canal de inscrições.', 
-        ephemeral: true 
+        flags: MessageFlags.Ephemeral 
       }).catch(console.error);
     }
 
@@ -1633,12 +1659,12 @@ client.on('interactionCreate', async interaction => {
         const id = interaction.customId.split('_')[2];
         const reason = interaction.fields.getTextInputValue('reject_reason');
         
-        await interaction.deferReply({ ephemeral: true });
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         await rejectApplication(interaction, id, reason);
       }
     } catch (error) {
       console.error('❌ Erro ao processar modal:', error);
-      interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', ephemeral: true }).catch(console.error);
+      interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', flags: MessageFlags.Ephemeral }).catch(console.error);
     }
   }
 });
