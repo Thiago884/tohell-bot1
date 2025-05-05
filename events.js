@@ -180,11 +180,10 @@ async function checkNewApplications(client) {
 }
 
 // Configurar eventos
-let dbConnection;
+
 
 function setupEvents(client, db) {
-  dbConnection = db; // Armazene a conexã 
-  // Evento ready
+  // A conexão já está disponível via importação, não é necessário reatribuir
   client.on(Events.ClientReady, async () => {
     console.log(`🤖 Bot conectado como ${client.user.tag}`);
     client.user.setActivity('/ajuda para comandos', { type: 'WATCHING' });
