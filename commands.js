@@ -9,7 +9,7 @@ const {
   ApplicationCommandOptionType,
   MessageFlags
 } = require('discord.js');
-const { dbConnection, formatBrazilianDate, safeSend, notifyWebhook } = require('./utils');
+const { formatBrazilianDate, safeSend, notifyWebhook } = require('./utils');
 
 // Comandos Slash
 const slashCommands = [
@@ -153,7 +153,7 @@ const slashCommands = [
 ];
 
 // Função para listar inscrições pendentes com paginação
-async function listPendingApplications(context, args) {
+async function listPendingApplications(context, args, dbConnection) {
   const page = args[0] ? parseInt(args[0]) : 1;
   
   if (isNaN(page) || page < 1) {
@@ -161,7 +161,7 @@ async function listPendingApplications(context, args) {
   }
 
   try {
-    const offset = (page - 1) * 5; // ITEMS_PER_PAGE = 5
+    const offset = (page - 1) * 5;
     
     const [countRows] = await dbConnection.execute(
       'SELECT COUNT(*) as total FROM inscricoes_pendentes'
@@ -191,7 +191,7 @@ async function listPendingApplications(context, args) {
     await context.editReply({ embeds: [embed] });
 
     for (const application of rows) {
-      await sendApplicationEmbed(context.channel, application);
+      await sendApplicationEmbed(context.channel, application, dbConnection);
     }
 
     if (totalPages > 1) {
@@ -221,7 +221,7 @@ async function listPendingApplications(context, args) {
 }
 
 // Função para buscar inscrições
-async function searchApplications(context, args) {
+async function searchApplications(context, args, dbConnection) {
   if (args.length === 0) {
     return context.reply({ content: 'Por favor, especifique um termo de busca.', flags: MessageFlags.Ephemeral });
   }
@@ -237,13 +237,11 @@ async function searchApplications(context, args) {
     const offset = (page - 1) * 5;
     const searchPattern = `%${searchTerm}%`;
     
-    // Busca nas inscrições pendentes
     const [countRowsPendentes] = await dbConnection.execute(
       'SELECT COUNT(*) as total FROM inscricoes_pendentes WHERE nome LIKE ? OR discord LIKE ? OR telefone LIKE ?',
       [searchPattern, searchPattern, searchPattern]
     );
     
-    // Busca nas inscrições aprovadas
     const [countRowsAprovadas] = await dbConnection.execute(
       'SELECT COUNT(*) as total FROM inscricoes WHERE (nome LIKE ? OR discord LIKE ? OR telefone LIKE ?) AND status = "aprovado"',
       [searchPattern, searchPattern, searchPattern]
@@ -260,13 +258,11 @@ async function searchApplications(context, args) {
       return context.reply({ content: `Apenas ${totalPages} páginas disponíveis para esta busca.`, flags: MessageFlags.Ephemeral });
     }
 
-    // Busca combinada nas duas tabelas
     const [rowsPendentes] = await dbConnection.execute(
       'SELECT *, "pendente" as status FROM inscricoes_pendentes WHERE nome LIKE ? OR discord LIKE ? OR telefone LIKE ? ORDER BY data_inscricao DESC LIMIT ? OFFSET ?',
       [searchPattern, searchPattern, searchPattern, 5, offset]
     );
     
-    // Ajusta o offset para a segunda consulta se necessário
     const remaining = 5 - rowsPendentes.length;
     let rowsAprovadas = [];
     
@@ -289,7 +285,7 @@ async function searchApplications(context, args) {
     await context.editReply({ embeds: [embed] });
 
     for (const application of rows) {
-      await sendApplicationEmbed(context.channel, application);
+      await sendApplicationEmbed(context.channel, application, dbConnection);
     }
 
     if (totalPages > 1) {
@@ -319,7 +315,7 @@ async function searchApplications(context, args) {
 }
 
 // Função para enviar embed de inscrição
-async function sendApplicationEmbed(channel, application) {
+async function sendApplicationEmbed(channel, application, dbConnection) {
   const screenshots = JSON.parse(application.screenshot_path || '[]');
   const screenshotLinks = screenshots.slice(0, 5).map((screenshot, index) => 
     `[Imagem ${index + 1}](${screenshot})`
@@ -400,7 +396,7 @@ async function showHelp(interaction) {
 }
 
 // Função para aprovar inscrição
-async function approveApplication(context, applicationId, user = null) {
+async function approveApplication(context, applicationId, dbConnection, user = null) {
   try {
     const [rows] = await dbConnection.execute(
       'SELECT * FROM inscricoes_pendentes WHERE id = ?',
@@ -472,7 +468,7 @@ async function approveApplication(context, applicationId, user = null) {
 }
 
 // Função para rejeitar inscrição
-async function rejectApplication(context, applicationId, reason, user = null) {
+async function rejectApplication(context, applicationId, reason, dbConnection, user = null) {
   try {
     const [rows] = await dbConnection.execute(
       'SELECT * FROM inscricoes_pendentes WHERE id = ?',
@@ -533,9 +529,8 @@ async function rejectApplication(context, applicationId, reason, user = null) {
   }
 }
 
-// Função para configurar os comandos (NOVA FUNÇÃO ADICIONADA)
+// Função para configurar os comandos
 function setupCommands(client) {
-  // Registrar comandos slash quando o bot estiver pronto
   client.on('ready', async () => {
     try {
       await client.application.commands.set(slashCommands);
@@ -546,7 +541,6 @@ function setupCommands(client) {
   });
 }
 
-// Exportações
 module.exports = {
   slashCommands,
   listPendingApplications,
@@ -555,5 +549,5 @@ module.exports = {
   showHelp,
   approveApplication,
   rejectApplication,
-  setupCommands, // Exportando a nova função
+  setupCommands,
 };

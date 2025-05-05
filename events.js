@@ -1,4 +1,4 @@
-const { Events, EmbedBuilder, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+const { Events, EmbedBuilder, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = require('discord.js');
 const { safeSend, searchCharacterInDatabaseOrGuilds, showRanking, searchCharacter, getCommandPermissions, addCommandPermission, removeCommandPermission, checkUserPermission } = require('./utils');
 const { isShuttingDown } = require('./database');
 const { listPendingApplications, searchApplications, sendApplicationEmbed, approveApplication, rejectApplication, showHelp } = require('./commands');
@@ -167,7 +167,7 @@ async function checkNewApplications(client, db) {
       });
       
       for (const application of rows) {
-        await sendApplicationEmbed(channel, application);
+        await sendApplicationEmbed(channel, application, db);
       }
     }
   } catch (error) {
@@ -207,13 +207,13 @@ function setupEvents(client, db) {
         switch (interaction.commandName) {
           case 'pendentes':
             const page = interaction.options.getInteger('página') || 1;
-            await listPendingApplications(interaction, [page.toString()]);
+            await listPendingApplications(interaction, [page.toString()], db);
             break;
             
           case 'buscar':
             const term = interaction.options.getString('termo');
             const searchPage = interaction.options.getInteger('página') || 1;
-            await searchApplications(interaction, [term, searchPage.toString()]);
+            await searchApplications(interaction, [term, searchPage.toString()], db);
             break;
             
           case 'char':
@@ -403,7 +403,7 @@ function setupEvents(client, db) {
           
           await interaction.deferUpdate();
           await interaction.message.delete().catch(() => {});
-          await listPendingApplications(interaction, [page.toString()]);
+          await listPendingApplications(interaction, [page.toString()], db);
           return;
         }
 
@@ -415,14 +415,14 @@ function setupEvents(client, db) {
           
           await interaction.deferUpdate();
           await interaction.message.delete().catch(() => {});
-          await searchApplications(interaction, [searchTerm, page.toString()]);
+          await searchApplications(interaction, [searchTerm, page.toString()], db);
           return;
         }
 
         const [action, id] = interaction.customId.split('_');
         
         if (action === 'approve') {
-          await approveApplication(interaction, id);
+          await approveApplication(interaction, id, db);
         } else if (action === 'reject') {
           const modal = new ModalBuilder()
             .setCustomId(`reject_reason_${id}`)
@@ -462,7 +462,7 @@ function setupEvents(client, db) {
           const reason = interaction.fields.getTextInputValue('reject_reason');
           
           await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-          await rejectApplication(interaction, id, reason);
+          await rejectApplication(interaction, id, reason, db);
         }
       } catch (error) {
         console.error('❌ Erro ao processar modal:', error);
