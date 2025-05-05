@@ -555,5 +555,6 @@ module.exports = {
   showHelp,
   approveApplication,
   rejectApplication,
-  setupCommands // Exportando a nova função
+  setupCommands, // Exportando a nova função
+  commands
 };
