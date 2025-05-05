@@ -1,7 +1,7 @@
 const { Events, EmbedBuilder, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = require('discord.js');
-const { safeSend } = require('./utils');
+const { safeSend, searchCharacterInDatabaseOrGuilds, showRanking, searchCharacter, getCommandPermissions, addCommandPermission, removeCommandPermission, checkUserPermission } = require('./utils');
 const { dbConnection } = require('./database');
-const { listPendingApplications, searchApplications, sendApplicationEmbed, approveApplication, rejectApplication } = require('./commands');
+const { listPendingApplications, searchApplications, sendApplicationEmbed, approveApplication, rejectApplication, showHelp } = require('./commands');
 
 // Sistema de tracking de personagens
 class CharacterTracker {
