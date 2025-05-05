@@ -114,7 +114,7 @@ async function checkConnection() {
 
 module.exports = {
   connectDB,
-  dbConnection,
+  dbConnection, // Certifique-se que está sendo exportado
   isShuttingDown,
-  checkConnection // Exporte a nova função
+  checkConnection
 };

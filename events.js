@@ -198,12 +198,12 @@ function setupEvents(client, db) {
       console.log(`🔍 Comando slash detectado: ${interaction.commandName}`, interaction.options.data);
 
       // events.js (na parte do interactionCreate)
-if (!await checkUserPermission(interaction, interaction.commandName, db)) {
-  return interaction.reply({
-    content: '❌ Você não tem permissão para usar este comando.',
-    flags: MessageFlags.Ephemeral
-  });
-}
+      if (!await checkUserPermission(interaction, interaction.commandName, db)) {
+        return interaction.reply({
+          content: '❌ Você não tem permissão para usar este comando.',
+          flags: MessageFlags.Ephemeral
+        });
+      }
 
       try {
         switch (interaction.commandName) {
