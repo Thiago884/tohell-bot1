@@ -6,7 +6,7 @@ require('dotenv').config();
 // Importações dos outros módulos
 const { setupCommands } = require('./commands');
 const { setupEvents } = require('./events');
-const { connectDB, dbConnection } = require('./database');
+const { connectDB } = require('./database');
 
 // Configurações do bot
 const client = new Client({
@@ -30,11 +30,11 @@ app.get('/health', (_, res) => res.status(200).json({ status: 'healthy' }));
 async function startBot() {
   try {
     // Conectar ao banco de dados
-    await connectDB();
+    const db = await connectDB();
     
     // Configurar comandos e eventos
     setupCommands(client);
-    setupEvents(client);
+    setupEvents(client, db);
     
     // Iniciar servidor
     const server = app.listen(PORT, () => {

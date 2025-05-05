@@ -179,7 +179,10 @@ async function checkNewApplications(client) {
 }
 
 // Configurar eventos
-function setupEvents(client) {
+let dbConnection;
+
+function setupEvents(client, db) {
+  dbConnection = db; // Armazene a conexã 
   // Evento ready
   client.on(Events.ClientReady, async () => {
     console.log(`🤖 Bot conectado como ${client.user.tag}`);
