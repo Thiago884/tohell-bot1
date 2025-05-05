@@ -1,7 +1,6 @@
 const mysql = require('mysql2/promise');
 const axios = require('axios');
 const { JSDOM } = require('jsdom');
-const { dbConnection } = require('./database');
 const { commands } = require('./commands');
 
 
@@ -572,7 +571,7 @@ async function removeCommandPermission(commandName, roleId) {
   }
 }
 
-async function getCommandPermissions(commandName) {
+async function getCommandPermissions(commandName, dbConnection) {
   try {
     const [rows] = await dbConnection.execute(
       'SELECT role_id FROM command_permissions WHERE command_name = ?',
@@ -585,11 +584,11 @@ async function getCommandPermissions(commandName) {
   }
 }
 
-async function checkUserPermission(interaction, commandName) {
+async function checkUserPermission(interaction, commandName, dbConnection) {
   // Se for o comando pendentes, permitir por padrão
   if (commandName === 'pendentes') return true;
   
-  const allowedRoles = await getCommandPermissions(commandName);
+  const allowedRoles = await getCommandPermissions(commandName, dbConnection);
   
   // Se não houver restrições, permitir
   if (allowedRoles.length === 0) return true;
