@@ -1,6 +1,6 @@
 const { Events, EmbedBuilder, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = require('discord.js');
 const { safeSend, searchCharacterInDatabaseOrGuilds, showRanking, searchCharacter, getCommandPermissions, addCommandPermission, removeCommandPermission, checkUserPermission } = require('./utils');
-const { dbConnection } = require('./database');
+const { dbConnection, isShuttingDown } = require('./database');
 const { listPendingApplications, searchApplications, sendApplicationEmbed, approveApplication, rejectApplication, showHelp } = require('./commands');
 
 // Sistema de tracking de personagens
@@ -148,6 +148,10 @@ let lastCheckedApplications = new Date();
 
 async function checkNewApplications(client) {
   try {
+    if (!dbConnection) {
+      throw new Error('Conexão com o banco de dados não está disponível');
+    }
+
     const [rows] = await dbConnection.execute(
       'SELECT * FROM inscricoes_pendentes WHERE data_inscricao > ? ORDER BY data_inscricao DESC',
       [lastCheckedApplications]
