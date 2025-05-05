@@ -1,4 +1,3 @@
-// bot.js
 const { Client, IntentsBitField } = require('discord.js');
 const express = require('express');
 require('dotenv').config();
@@ -6,7 +5,7 @@ require('dotenv').config();
 // Importações dos outros módulos
 const { setupCommands } = require('./commands');
 const { setupEvents } = require('./events');
-const { connectDB } = require('./database');
+const { connectDB, isShuttingDown } = require('./database');
 
 // Configurações do bot
 const client = new Client({
@@ -26,11 +25,14 @@ app.use(express.json());
 app.get('/', (_, res) => res.status(200).json({ status: 'ok' }));
 app.get('/health', (_, res) => res.status(200).json({ status: 'healthy' }));
 
+// Variável para armazenar a conexão com o banco de dados
+let db;
+
 // Inicialização do bot
 async function startBot() {
   try {
     // Conectar ao banco de dados
-    const db = await connectDB();
+    db = await connectDB();
     
     // Configurar comandos e eventos
     setupCommands(client);
@@ -46,6 +48,7 @@ async function startBot() {
     
     // Configurar shutdown graceful
     process.on('SIGTERM', gracefulShutdown(server));
+    process.on('SIGINT', gracefulShutdown(server));
     
   } catch (error) {
     console.error('❌ Erro fatal ao iniciar o bot:', error);
@@ -55,22 +58,35 @@ async function startBot() {
 
 // Função para shutdown graceful
 function gracefulShutdown(server) {
-  return async () => {
-    console.log('🛑 Recebido SIGTERM, encerrando graceful...');
+  return async (signal) => {
+    console.log(`🛑 Recebido ${signal}, encerrando graceful...`);
+    isShuttingDown = true;
     
     try {
-      await client.destroy();
-      console.log('🤖 Bot desconectado');
+      // Desconectar o bot do Discord
+      if (client && !client.destroyed) {
+        await client.destroy();
+        console.log('🤖 Bot desconectado do Discord');
+      }
       
-      if (dbConnection) {
-        await dbConnection.end();
+      // Encerrar conexão com o banco de dados
+      if (db) {
+        await db.end();
         console.log('🔌 Conexão com DB encerrada');
       }
       
+      // Encerrar servidor HTTP
       server.close(() => {
         console.log('🛑 Servidor HTTP encerrado');
         process.exit(0);
       });
+      
+      // Timeout de segurança
+      setTimeout(() => {
+        console.log('🛑 Forçando encerramento...');
+        process.exit(1);
+      }, 10000);
+      
     } catch (err) {
       console.error('❌ Erro no shutdown graceful:', err);
       process.exit(1);
@@ -79,3 +95,11 @@ function gracefulShutdown(server) {
 }
 
 startBot();
+
+// Exportações para testes (opcional)
+module.exports = {
+  client,
+  app,
+  startBot,
+  gracefulShutdown
+};

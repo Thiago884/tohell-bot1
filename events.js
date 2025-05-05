@@ -1,27 +1,25 @@
-const { Events } = require('discord.js');
-const { safeSend } = require('./utils'); // Mantém safeSend, se você o utiliza aqui
-const { dbConnection } = require('./database'); // Importa dbConnection de database.js
-const { listPendingApplications, searchApplications, sendApplicationEmbed, approveApplication, rejectApplication } = require('./commands')
+const { Events, EmbedBuilder, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = require('discord.js');
+const { safeSend } = require('./utils');
+const { dbConnection } = require('./database');
+const { listPendingApplications, searchApplications, sendApplicationEmbed, approveApplication, rejectApplication } = require('./commands');
 
 // Sistema de tracking de personagens
 class CharacterTracker {
-  constructor() {
+  constructor(db) {
+    this.db = db;
     this.trackedCharacters = new Map();
     this.trackingInterval = null;
   }
 
   async startTracking() {
-    // Carregar personagens monitorados do banco de dados
     await this.loadTrackedCharacters();
-    
-    // Iniciar intervalo de verificação (a cada 5 minutos)
     this.trackingInterval = setInterval(() => this.checkTrackedCharacters(), 5 * 60 * 1000);
     console.log('✅ Sistema de tracking iniciado');
   }
 
   async loadTrackedCharacters() {
     try {
-      const [rows] = await dbConnection.execute('SELECT * FROM tracked_characters');
+      const [rows] = await this.db.execute('SELECT * FROM tracked_characters');
       this.trackedCharacters = new Map(rows.map(row => [row.name.toLowerCase(), row]));
       console.log(`✅ Carregados ${rows.length} personagens monitorados`);
     } catch (error) {
@@ -56,8 +54,7 @@ class CharacterTracker {
               changes
             });
             
-            // Atualizar no banco de dados
-            await dbConnection.execute(
+            await this.db.execute(
               'UPDATE tracked_characters SET last_level = ?, last_resets = ? WHERE id = ?',
               [charData.level, charData.resets, trackingData.id]
             );
@@ -68,7 +65,6 @@ class CharacterTracker {
       }
     }
     
-    // Enviar notificações
     await this.sendNotifications(notifications);
   }
 
@@ -99,13 +95,12 @@ class CharacterTracker {
 
   async addTracking(name, userId, channelId = null) {
     try {
-      // Verificar se o personagem existe
       const charData = await searchCharacterInDatabaseOrGuilds(name);
       if (!charData) {
         throw new Error('Personagem não encontrado');
       }
       
-      await dbConnection.execute(
+      await this.db.execute(
         'INSERT INTO tracked_characters (name, discord_user_id, channel_id, last_level, last_resets) VALUES (?, ?, ?, ?, ?) ' +
         'ON DUPLICATE KEY UPDATE channel_id = VALUES(channel_id), last_level = VALUES(last_level), last_resets = VALUES(last_resets)',
         [name, userId, channelId, charData.level, charData.resets]
@@ -121,7 +116,7 @@ class CharacterTracker {
 
   async removeTracking(name, userId) {
     try {
-      const [result] = await dbConnection.execute(
+      const [result] = await this.db.execute(
         'DELETE FROM tracked_characters WHERE name = ? AND discord_user_id = ?',
         [name, userId]
       );
@@ -136,7 +131,7 @@ class CharacterTracker {
 
   async listTracked(userId) {
     try {
-      const [rows] = await dbConnection.execute(
+      const [rows] = await this.db.execute(
         'SELECT * FROM tracked_characters WHERE discord_user_id = ?',
         [userId]
       );
@@ -147,8 +142,6 @@ class CharacterTracker {
     }
   }
 }
-
-const tracker = new CharacterTracker();
 
 // Monitor de inscrições pendentes
 let lastCheckedApplications = new Date();
@@ -164,12 +157,10 @@ async function checkNewApplications(client) {
       const channel = await client.channels.fetch(process.env.ALLOWED_CHANNEL_ID);
       lastCheckedApplications = new Date();
       
-      // Notificar sobre novas inscrições
       await channel.send({
         content: `📢 Há ${rows.length} nova(s) inscrição(ões) pendente(s)! Use /pendentes para visualizar.`
       });
       
-      // Enviar os embeds das novas inscrições
       for (const application of rows) {
         await sendApplicationEmbed(channel, application);
       }
@@ -180,18 +171,15 @@ async function checkNewApplications(client) {
 }
 
 // Configurar eventos
-
-
 function setupEvents(client, db) {
-  // A conexão já está disponível via importação, não é necessário reatribuir
+  const tracker = new CharacterTracker(db);
+
+  // Evento ready
   client.on(Events.ClientReady, async () => {
     console.log(`🤖 Bot conectado como ${client.user.tag}`);
     client.user.setActivity('/ajuda para comandos', { type: 'WATCHING' });
     
-    // Iniciar tracker de personagens
     await tracker.startTracking();
-    
-    // Iniciar monitor de inscrições pendentes (verificar a cada 1 minuto)
     setInterval(() => checkNewApplications(client), 60000);
   });
 
@@ -203,7 +191,6 @@ function setupEvents(client, db) {
     if (interaction.isCommand()) {
       console.log(`🔍 Comando slash detectado: ${interaction.commandName}`, interaction.options.data);
 
-      // Verificar permissões antes de executar qualquer comando
       if (!await checkUserPermission(interaction, interaction.commandName)) {
         return interaction.reply({
           content: '❌ Você não tem permissão para usar este comando.',
@@ -482,5 +469,5 @@ function setupEvents(client, db) {
 
 module.exports = {
   setupEvents,
-  tracker
+  tracker: new CharacterTracker(dbConnection)
 };
