@@ -1,11 +1,10 @@
 const { EmbedBuilder } = require('discord.js');
 const axios = require('axios');
 const { JSDOM } = require('jsdom');
-const { dbConnection } = require('./database');
 
 // Configurações
 const ITEMS_PER_PAGE = 5;
-const GUILDS_TO_CHECK = ['ToHeLL_', 'ToHeLL2', 'ToHeLL3', 'ToHeLL4', 'ToHeLL5', 'ToHeLL6', 'ToHeLL7', 'ToHeLL8_', 'ToHeLL9', 'ToHeLL10', 'ToHeLL11', 'ToHeLL13'];
+const GUILDS_TO_CHECK = ['ToHeLL_', 'ToHeLL2', 'ToHeLL3', 'ToHeLL4', 'ToHeLL5', 'ToHeLL6', 'ToHeLL7', 'ToHeLL8_', 'ToHeLL9', 'ToHeLL10'];
 
 // Função para formatar data no padrão brasileiro com fuso horário
 function formatBrazilianDate(dateString) {
@@ -91,7 +90,7 @@ async function parallelGuildSearch(name, nameLower, guilds = GUILDS_TO_CHECK) {
 }
 
 // Buscar personagem no banco ou nas guildas
-async function searchCharacterInDatabaseOrGuilds(name) {
+async function searchCharacterInDatabaseOrGuilds(name, dbConnection) {
   const nameLower = name.toLowerCase();
   
   try {
@@ -156,7 +155,7 @@ async function searchCharacterInDatabaseOrGuilds(name) {
 }
 
 // Calcular estatísticas avançadas
-async function calculateAdvancedStats(characterId) {
+async function calculateAdvancedStats(characterId, dbConnection) {
   try {
     const [history] = await dbConnection.execute(`
       SELECT level, resets, UNIX_TIMESTAMP(recorded_at) as timestamp 
@@ -328,11 +327,11 @@ function createCharEmbed({ name, level, resets, guild, found, lastSeen, history,
 }
 
 // Buscar personagem
-async function searchCharacter(interaction, charName) {
+async function searchCharacter(interaction, charName, dbConnection) {
   await interaction.deferReply();
   
   try {
-    const charData = await searchCharacterInDatabaseOrGuilds(charName);
+    const charData = await searchCharacterInDatabaseOrGuilds(charName, dbConnection);
     
     if (!charData) {
       // Verificar se existe no histórico
@@ -367,7 +366,7 @@ async function searchCharacter(interaction, charName) {
     );
     
     // Obter estatísticas avançadas
-    const advancedStats = await calculateAdvancedStats(charData.id);
+    const advancedStats = await calculateAdvancedStats(charData.id, dbConnection);
     
     // Criar embed de resposta
     const embed = createCharEmbed({
@@ -391,7 +390,7 @@ async function searchCharacter(interaction, charName) {
 }
 
 // Mostrar ranking
-async function showRanking(interaction, period) {
+async function showRanking(interaction, period, dbConnection) {
   await interaction.deferReply();
   
   try {
@@ -454,7 +453,7 @@ async function showRanking(interaction, period) {
 }
 
 // Gerenciar permissões de comandos
-async function addCommandPermission(commandName, roleId) {
+async function addCommandPermission(commandName, roleId, dbConnection) {
   try {
     await dbConnection.execute(
       'INSERT INTO command_permissions (command_name, role_id) VALUES (?, ?)',
@@ -467,7 +466,7 @@ async function addCommandPermission(commandName, roleId) {
   }
 }
 
-async function removeCommandPermission(commandName, roleId) {
+async function removeCommandPermission(commandName, roleId, dbConnection) {
   try {
     const [result] = await dbConnection.execute(
       'DELETE FROM command_permissions WHERE command_name = ? AND role_id = ?',
@@ -480,9 +479,9 @@ async function removeCommandPermission(commandName, roleId) {
   }
 }
 
-async function getCommandPermissions(commandName, dbConn) {
+async function getCommandPermissions(commandName, dbConnection) {
   try {
-    const [rows] = await dbConn.execute(
+    const [rows] = await dbConnection.execute(
       'SELECT role_id FROM command_permissions WHERE command_name = ?',
       [commandName]
     );
@@ -493,11 +492,11 @@ async function getCommandPermissions(commandName, dbConn) {
   }
 }
 
-async function checkUserPermission(interaction, commandName, dbConn) {
+async function checkUserPermission(interaction, commandName, dbConnection) {
   // Se for o comando pendentes, permitir por padrão
   if (commandName === 'pendentes') return true;
   
-  const allowedRoles = await getCommandPermissions(commandName, dbConn);
+  const allowedRoles = await getCommandPermissions(commandName, dbConnection);
   
   // Se não houver restrições, permitir
   if (allowedRoles.length === 0) return true;

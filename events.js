@@ -1,7 +1,6 @@
 const { Events, EmbedBuilder, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const { safeSend, searchCharacterInDatabaseOrGuilds, showRanking, searchCharacter, getCommandPermissions, addCommandPermission, removeCommandPermission, checkUserPermission } = require('./utils');
 const { isShuttingDown } = require('./database');
-const { dbConnection } = require('./database');
 const { listPendingApplications, searchApplications, sendApplicationEmbed, approveApplication, rejectApplication, showHelp } = require('./commands');
 
 // Monitor de inscrições pendentes
@@ -38,7 +37,7 @@ class CharacterTracker {
     for (const [nameLower, trackingData] of this.trackedCharacters) {
       try {
         const charName = trackingData.name;
-        const charData = await searchCharacterInDatabaseOrGuilds(charName);
+        const charData = await searchCharacterInDatabaseOrGuilds(charName, this.db);
         
         if (charData) {
           const changes = [];
@@ -99,7 +98,7 @@ class CharacterTracker {
 
   async addTracking(name, userId, channelId = null) {
     try {
-      const charData = await searchCharacterInDatabaseOrGuilds(name);
+      const charData = await searchCharacterInDatabaseOrGuilds(name, this.db);
       if (!charData) {
         throw new Error('Personagem não encontrado');
       }
@@ -197,7 +196,6 @@ function setupEvents(client, db) {
     if (interaction.isCommand()) {
       console.log(`🔍 Comando slash detectado: ${interaction.commandName}`, interaction.options.data);
 
-      // events.js (na parte do interactionCreate)
       if (!await checkUserPermission(interaction, interaction.commandName, db)) {
         return interaction.reply({
           content: '❌ Você não tem permissão para usar este comando.',
@@ -220,12 +218,12 @@ function setupEvents(client, db) {
             
           case 'char':
             const charName = interaction.options.getString('nome');
-            await searchCharacter(interaction, charName);
+            await searchCharacter(interaction, charName, db);
             break;
             
           case 'ranking':
             const period = interaction.options.getString('período');
-            await showRanking(interaction, period);
+            await showRanking(interaction, period, db);
             break;
             
           case 'monitorar':
@@ -326,7 +324,7 @@ function setupEvents(client, db) {
 
             try {
               if (action === 'list') {
-                const roleIds = await getCommandPermissions(commandName);
+                const roleIds = await getCommandPermissions(commandName, db);
                 
                 if (roleIds.length === 0) {
                   return interaction.editReply({
@@ -347,7 +345,7 @@ function setupEvents(client, db) {
               }
 
               if (action === 'add') {
-                const success = await addCommandPermission(commandName, role.id);
+                const success = await addCommandPermission(commandName, role.id, db);
                 return interaction.editReply({
                   content: success ? 
                     `✅ Cargo ${role.name} agora tem permissão para /${commandName}` :
@@ -356,7 +354,7 @@ function setupEvents(client, db) {
               }
 
               if (action === 'remove') {
-                const success = await removeCommandPermission(commandName, role.id);
+                const success = await removeCommandPermission(commandName, role.id, db);
                 return interaction.editReply({
                   content: success ? 
                     `✅ Cargo ${role.name} não tem mais permissão para /${commandName}` :
