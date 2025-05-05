@@ -32,11 +32,17 @@ let db;
 async function startBot() {
   try {
     // Conectar ao banco de dados
+    console.log('🔌 Conectando ao banco de dados...');
     db = await connectDB();
     
+    if (!db) {
+      throw new Error('Não foi possível estabelecer conexão com o banco de dados');
+    }
+
     // Configurar comandos e eventos
+    console.log('⚙️ Configurando comandos e eventos...');
     setupCommands(client);
-    setupEvents(client, db);
+    setupEvents(client, db); // Passa a conexão db para setupEvents
     
     // Iniciar servidor
     const server = app.listen(PORT, () => {
@@ -44,6 +50,7 @@ async function startBot() {
     });
     
     // Login do bot
+    console.log('🔑 Conectando ao Discord...');
     await client.login(process.env.DISCORD_TOKEN);
     
     // Configurar shutdown graceful

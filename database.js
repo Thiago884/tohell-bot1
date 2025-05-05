@@ -102,9 +102,19 @@ async function reconnectDB() {
     setTimeout(reconnectDB, 5000);
   }
 }
+async function checkConnection() {
+  if (!dbConnection) return false;
+  try {
+    await dbConnection.query('SELECT 1');
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
 
 module.exports = {
   connectDB,
   dbConnection,
-  isShuttingDown
+  isShuttingDown,
+  checkConnection // Exporte a nova função
 };

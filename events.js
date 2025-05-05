@@ -1,7 +1,10 @@
-const { Events, EmbedBuilder, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = require('discord.js');
+const { Events, EmbedBuilder, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const { safeSend, searchCharacterInDatabaseOrGuilds, showRanking, searchCharacter, getCommandPermissions, addCommandPermission, removeCommandPermission, checkUserPermission } = require('./utils');
-const { dbConnection, isShuttingDown } = require('./database');
+const { isShuttingDown } = require('./database');
 const { listPendingApplications, searchApplications, sendApplicationEmbed, approveApplication, rejectApplication, showHelp } = require('./commands');
+
+// Monitor de inscrições pendentes
+let lastCheckedApplications = new Date();
 
 // Sistema de tracking de personagens
 class CharacterTracker {
@@ -143,16 +146,14 @@ class CharacterTracker {
   }
 }
 
-// Monitor de inscrições pendentes
-let lastCheckedApplications = new Date();
-
-async function checkNewApplications(client) {
+async function checkNewApplications(client, db) {
   try {
-    if (!dbConnection) {
-      throw new Error('Conexão com o banco de dados não está disponível');
+    if (!db) {
+      console.log('⚠️ Conexão com o banco de dados não está disponível, tentando reconectar...');
+      return;
     }
 
-    const [rows] = await dbConnection.execute(
+    const [rows] = await db.execute(
       'SELECT * FROM inscricoes_pendentes WHERE data_inscricao > ? ORDER BY data_inscricao DESC',
       [lastCheckedApplications]
     );
@@ -184,7 +185,7 @@ function setupEvents(client, db) {
     client.user.setActivity('/ajuda para comandos', { type: 'WATCHING' });
     
     await tracker.startTracking();
-    setInterval(() => checkNewApplications(client), 60000);
+    setInterval(() => checkNewApplications(client, db), 60000);
   });
 
   // Evento interactionCreate
@@ -473,5 +474,5 @@ function setupEvents(client, db) {
 
 module.exports = {
   setupEvents,
-  tracker: new CharacterTracker(dbConnection)
+  CharacterTracker
 };
