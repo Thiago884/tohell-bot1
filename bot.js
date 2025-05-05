@@ -6,7 +6,7 @@ require('dotenv').config();
 // Importações dos outros módulos
 const { setupCommands } = require('./commands');
 const { setupEvents } = require('./events');
-const { connectDB, dbConnection } = require('./utils/database');
+const { connectDB, dbConnection } = require('./database');
 
 // Configurações do bot
 const client = new Client({
