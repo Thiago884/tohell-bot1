@@ -1,6 +1,8 @@
 const mysql = require('mysql2/promise');
 const axios = require('axios');
 const { JSDOM } = require('jsdom');
+const { dbConnection } = require('./database');
+
 
 // Configurações
 const ITEMS_PER_PAGE = 5;
