@@ -1,6 +1,7 @@
 const { Events } = require('discord.js');
-const { dbConnection, safeSend } = require('./utils');
-const { listPendingApplications, searchApplications, sendApplicationEmbed, approveApplication, rejectApplication } = require('./commands');
+const { safeSend } = require('./utils'); // Mantém safeSend, se você o utiliza aqui
+const { dbConnection } = require('./database'); // Importa dbConnection de database.js
+const { listPendingApplications, searchApplications, sendApplicationEmbed, approveApplication, rejectApplication } = require('./commands')
 
 // Sistema de tracking de personagens
 class CharacterTracker {

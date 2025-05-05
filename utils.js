@@ -6,20 +6,7 @@ const { JSDOM } = require('jsdom');
 const ITEMS_PER_PAGE = 5;
 const GUILDS_TO_CHECK = ['ToHeLL_', 'ToHeLL2', 'ToHeLL3', 'ToHeLL4', 'ToHeLL5', 'ToHeLL6', 'ToHeLL7', 'ToHeLL8_', 'ToHeLL9', 'ToHeLL10', 'ToHeLL11', 'ToHeLL13'];
 
-// Configurações do banco de dados
-const dbConfig = {
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
-  port: process.env.DB_PORT || 3306,
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0
-};
 
-let dbConnection;
-let isShuttingDown = false;
 
 // Função para formatar data no padrão brasileiro com fuso horário
 function formatBrazilianDate(dateString) {
@@ -652,8 +639,6 @@ async function safeSend(channel, content) {
 }
 
 module.exports = {
-  connectDB,
-  dbConnection,
   formatBrazilianDate,
   safeSend,
   parallelGuildSearch,
