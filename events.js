@@ -462,12 +462,22 @@ function setupEvents(client, db) {
               return interaction.message.delete().catch(console.error);
             }
             
-            const [rows] = await db.execute(
+            // Primeiro verifica na tabela de pendentes
+            let [rows] = await db.execute(
               'SELECT screenshot_path FROM inscricoes_pendentes WHERE id = ?',
               [applicationId]
             );
             
+            // Se não encontrou, verifica na tabela de aprovados
             if (rows.length === 0) {
+              [rows] = await db.execute(
+                'SELECT screenshot_path FROM inscricoes WHERE id = ?',
+                [applicationId]
+              );
+            }
+            
+            if (rows.length === 0) {
+              console.log(`Inscrição ${applicationId} não encontrada em nenhuma tabela`);
               return interaction.update({
                 content: 'As screenshots não estão mais disponíveis.',
                 embeds: [],
