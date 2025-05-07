@@ -79,6 +79,11 @@ async function safeInteractionReply(interaction, content) {
 
 // Busca paralela em guildas otimizada com retry e priorização
 async function parallelGuildSearch(name, nameLower, guilds = GUILDS_TO_CHECK) {
+  if (!name || typeof name !== 'string') {
+    console.error('❌ Nome inválido para busca em guildas:', name);
+    return null;
+  }
+
   try {
     // Separa guildas principais e secundárias
     const mainGuilds = guilds.filter(g => MAIN_GUILDS.includes(g));
@@ -86,15 +91,25 @@ async function parallelGuildSearch(name, nameLower, guilds = GUILDS_TO_CHECK) {
     
     // Função para criar requests
     const createRequests = (guildList, timeout) => 
-      guildList.flatMap(guild => [1, 2].map(page => {
-        const url = `${MUCA_BRASIL_URL}${guild}${page > 1 ? `&p=${page}` : ''}`;
-        return axios.get(url, { 
-          timeout,
-          headers: { 'User-Agent': 'ToHeLL-Discord-Bot/1.0' }
-        })
-          .then(response => ({ html: response.data, guild, page }))
-          .catch(() => null);
-      }));
+      guildList.flatMap(guild => {
+        if (!guild) return [];
+        return [1, 2].map(page => {
+          const url = `${MUCA_BRASIL_URL}${encodeURIComponent(guild)}${page > 1 ? `&p=${page}` : ''}`;
+          return axios.get(url, { 
+            timeout,
+            headers: { 'User-Agent': 'ToHeLL-Discord-Bot/1.0' }
+          })
+            .then(response => ({ 
+              html: response.data, 
+              guild: guild || 'Desconhecida', 
+              page 
+            }))
+            .catch(error => {
+              console.error(`❌ Erro ao buscar guilda ${guild} página ${page}:`, error.message);
+              return null;
+            });
+        });
+      });
 
     // Executa buscas em paralelo com prioridade para guildas principais
     const [mainResponses, otherResponses] = await Promise.all([
@@ -106,24 +121,28 @@ async function parallelGuildSearch(name, nameLower, guilds = GUILDS_TO_CHECK) {
     for (const response of [...mainResponses, ...otherResponses]) {
       if (response.status === 'fulfilled' && response.value) {
         const { html, guild, page } = response.value;
-        const dom = new JSDOM(html);
-        const doc = dom.window.document;
-        
-        const rows = doc.querySelectorAll('tr');
-        for (const row of rows) {
-          const cells = row.querySelectorAll('td');
-          if (cells.length >= 4) {
-            const charName = cells[1].textContent.trim();
-            if (charName.toLowerCase() === nameLower) {
-              return {
-                name: charName,
-                level: parseInt(cells[2].textContent.trim()) || 0,
-                resets: parseInt(cells[3].textContent.trim()) || 0,
-                guild,
-                found_at: new Date().toISOString()
-              };
+        try {
+          const dom = new JSDOM(html);
+          const doc = dom.window.document;
+          
+          const rows = doc.querySelectorAll('tr');
+          for (const row of rows) {
+            const cells = row.querySelectorAll('td');
+            if (cells.length >= 4) {
+              const charName = cells[1]?.textContent?.trim();
+              if (charName && charName.toLowerCase() === nameLower) {
+                return {
+                  name: charName || name,
+                  level: parseInt(cells[2]?.textContent?.trim()) || 0,
+                  resets: parseInt(cells[3]?.textContent?.trim()) || 0,
+                  guild: guild || 'Desconhecida',
+                  found_at: new Date().toISOString()
+                };
+              }
             }
           }
+        } catch (error) {
+          console.error('❌ Erro ao processar HTML da guilda:', error);
         }
       }
     }
@@ -137,6 +156,11 @@ async function parallelGuildSearch(name, nameLower, guilds = GUILDS_TO_CHECK) {
 
 // Função com cache e busca paralela otimizada
 async function searchCharacterWithCache(name, dbConnection) {
+  if (!name || typeof name !== 'string') {
+    console.error('❌ Nome do personagem inválido:', name);
+    return null;
+  }
+
   const nameLower = name.toLowerCase();
   
   try {
@@ -147,38 +171,52 @@ async function searchCharacterWithCache(name, dbConnection) {
     );
     
     // Se encontrou no banco e foi atualizado nos últimos 5 minutos, retorna
-    const cacheValid = dbRows[0] && new Date(dbRows[0].last_seen) > new Date(Date.now() - 300000);
-    if (cacheValid) {
+    if (dbRows[0] && dbRows[0].last_seen && new Date(dbRows[0].last_seen) > new Date(Date.now() - 300000)) {
       return dbRows[0];
     }
     
-    // Busca nas guildas principais primeiro (em paralelo)
+    // Busca nas guildas
     const guildData = await parallelGuildSearch(name, nameLower);
     
     if (guildData) {
+      // Valida os dados antes de inserir/atualizar
+      const level = Number.isInteger(guildData.level) ? guildData.level : null;
+      const resets = Number.isInteger(guildData.resets) ? guildData.resets : null;
+      const guild = guildData.guild || null;
+
       // Atualiza ou insere no banco de dados
-      if (dbRows.length > 0) {
+      if (dbRows.length > 0 && dbRows[0].id) {
         await dbConnection.execute(
           'UPDATE characters SET last_level = ?, last_resets = ?, guild = ?, last_seen = NOW() WHERE id = ?',
-          [guildData.level, guildData.resets, guildData.guild, dbRows[0].id]
+          [level, resets, guild, dbRows[0].id]
         );
+        guildData.id = dbRows[0].id;
       } else {
-        await dbConnection.execute(
+        const [result] = await dbConnection.execute(
           'INSERT INTO characters (name, guild, last_level, last_resets, last_seen) VALUES (?, ?, ?, ?, NOW())',
-          [guildData.name, guildData.guild, guildData.level, guildData.resets]
+          [name, guild, level, resets]
         );
-        
-        const [inserted] = await dbConnection.execute('SELECT LAST_INSERT_ID() as id');
-        guildData.id = inserted[0].id;
+        guildData.id = result.insertId;
       }
       
-      // Adiciona ao histórico
-      await dbConnection.execute(
-        'INSERT INTO character_history (character_id, level, resets) VALUES (?, ?, ?)',
-        [guildData.id, guildData.level, guildData.resets]
-      );
+      // Adiciona ao histórico (apenas se level e resets são válidos)
+      if (level !== null && resets !== null && guildData.id) {
+        await dbConnection.execute(
+          'INSERT INTO character_history (character_id, level, resets) VALUES (?, ?, ?)',
+          [guildData.id, level, resets]
+        ).catch(error => {
+          console.error('❌ Erro ao inserir no histórico:', error);
+        });
+      }
       
-      return guildData;
+      return {
+        ...guildData,
+        id: guildData.id,
+        level,
+        resets,
+        guild,
+        last_seen: new Date().toISOString()
+      };
     }
     
     // Se não encontrou nas guildas, retorna o do banco se existir
@@ -189,13 +227,13 @@ async function searchCharacterWithCache(name, dbConnection) {
   }
 }
 
-// Função principal para buscar personagem
-async function searchCharacterInDatabaseOrGuilds(name, dbConnection) {
-  return searchCharacterWithCache(name, dbConnection);
-}
-
 // Calcular estatísticas avançadas
 async function calculateAdvancedStats(characterId, dbConnection) {
+  if (!characterId || !dbConnection) {
+    console.error('❌ Parâmetros inválidos para calculateAdvancedStats');
+    return null;
+  }
+
   try {
     const [history] = await dbConnection.execute(`
       SELECT level, resets, UNIX_TIMESTAMP(recorded_at) as timestamp 
@@ -281,13 +319,20 @@ async function calculateAdvancedStats(characterId, dbConnection) {
 
 // Criar embed de personagem
 function createCharEmbed({ name, level, resets, guild, found, lastSeen, history, stats }) {
+  // Valores padrão para evitar undefined
+  name = name || 'Desconhecido';
+  level = level !== undefined ? level : 0;
+  resets = resets !== undefined ? resets : 0;
+  guild = guild || 'Nenhuma';
+  found = found !== undefined ? found : false;
+
   const embed = new EmbedBuilder()
     .setColor(found ? '#00FF00' : '#FF0000')
     .setTitle(`Personagem: ${name}`)
     .addFields(
-      { name: '⚔️ Level', value: level?.toString() || 'Desconhecido', inline: true },
-      { name: '🔄 Resets', value: resets?.toString() || '0', inline: true },
-      { name: '🏰 Guilda', value: guild || 'Nenhuma', inline: true }
+      { name: '⚔️ Level', value: level.toString(), inline: true },
+      { name: '🔄 Resets', value: resets.toString(), inline: true },
+      { name: '🏰 Guilda', value: guild, inline: true }
     );
     
   if (!found) {
@@ -303,7 +348,7 @@ function createCharEmbed({ name, level, resets, guild, found, lastSeen, history,
   
   if (history && history.length > 0) {
     const historyText = history.map(entry => 
-      `📅 ${formatBrazilianDate(entry.recorded_at)}: Level ${entry.level} | Resets ${entry.resets}`
+      `📅 ${formatBrazilianDate(entry.recorded_at)}: Level ${entry.level || 0} | Resets ${entry.resets || 0}`
     ).join('\n');
     
     embed.addFields({
@@ -360,6 +405,13 @@ function createCharEmbed({ name, level, resets, guild, found, lastSeen, history,
 
 // Buscar personagem com tratamento de erro completo
 async function searchCharacter(interaction, charName, dbConnection) {
+  if (!charName || typeof charName !== 'string') {
+    return interaction.reply({
+      content: 'Por favor, forneça um nome de personagem válido.',
+      ephemeral: true
+    });
+  }
+
   try {
     // Verificar conexão com o banco de dados
     if (!dbConnection || !(await dbConnection.execute('SELECT 1').catch(() => false))) {
@@ -389,9 +441,9 @@ async function searchCharacter(interaction, charName, dbConnection) {
         return interaction.editReply({
           embeds: [createCharEmbed({
             name: lastKnown.name,
-            level: lastKnown.last_level,
-            resets: lastKnown.last_resets,
-            guild: lastKnown.guild,
+            level: lastKnown.last_level || 0,
+            resets: lastKnown.last_resets || 0,
+            guild: lastKnown.guild || 'Desconhecida',
             found: false,
             lastSeen: lastKnown.last_seen
           })]
@@ -408,16 +460,16 @@ async function searchCharacter(interaction, charName, dbConnection) {
       dbConnection.execute(
         'SELECT level, resets, recorded_at FROM character_history WHERE character_id = ? ORDER BY recorded_at DESC LIMIT 5',
         [charData.id]
-      ),
+      ).catch(() => [[]]), // Retorna array vazio em caso de erro
       calculateAdvancedStats(charData.id, dbConnection)
     ]);
     
     // Criar embed de resposta
     const embed = createCharEmbed({
       name: charData.name,
-      level: charData.level,
-      resets: charData.resets,
-      guild: charData.guild,
+      level: charData.level || 0,
+      resets: charData.resets || 0,
+      guild: charData.guild || 'Desconhecida',
       found: true,
       history: history[0],
       stats: advancedStats
@@ -500,10 +552,10 @@ async function showRanking(interaction, period, dbConnection) {
     rows.forEach((char, index) => {
       embed.addFields({
         name: `#${index + 1} ${char.name}`,
-        value: `🏰 ${char.guild}\n` +
-               `⚔️ Level: ${char.current_level} (${char.level_change > 0 ? `+${char.level_change}` : '0'})\n` +
-               `🔄 Resets: ${char.current_resets} (${char.reset_change > 0 ? `+${char.reset_change}` : '0'})\n` +
-               `📊 Pontuação: ${char.progress_score.toFixed(0)}`,
+        value: `🏰 ${char.guild || 'Nenhuma'}\n` +
+               `⚔️ Level: ${char.current_level || 0} (${char.level_change > 0 ? `+${char.level_change}` : '0'})\n` +
+               `🔄 Resets: ${char.current_resets || 0} (${char.reset_change > 0 ? `+${char.reset_change}` : '0'})\n` +
+               `📊 Pontuação: ${char.progress_score?.toFixed(0) || '0'}`,
         inline: false
       });
     });
@@ -528,6 +580,10 @@ async function showRanking(interaction, period, dbConnection) {
 // Gerenciar permissões de comandos
 async function addCommandPermission(commandName, roleId, dbConnection) {
   try {
+    if (!commandName || !roleId || !dbConnection) {
+      console.error('❌ Parâmetros inválidos para addCommandPermission');
+      return false;
+    }
     await dbConnection.execute(
       'INSERT INTO command_permissions (command_name, role_id) VALUES (?, ?)',
       [commandName, roleId]
@@ -541,6 +597,10 @@ async function addCommandPermission(commandName, roleId, dbConnection) {
 
 async function removeCommandPermission(commandName, roleId, dbConnection) {
   try {
+    if (!commandName || !roleId || !dbConnection) {
+      console.error('❌ Parâmetros inválidos para removeCommandPermission');
+      return false;
+    }
     const [result] = await dbConnection.execute(
       'DELETE FROM command_permissions WHERE command_name = ? AND role_id = ?',
       [commandName, roleId]
@@ -554,6 +614,10 @@ async function removeCommandPermission(commandName, roleId, dbConnection) {
 
 async function getCommandPermissions(commandName, dbConnection) {
   try {
+    if (!commandName || !dbConnection) {
+      console.error('❌ Parâmetros inválidos para getCommandPermissions');
+      return [];
+    }
     const [rows] = await dbConnection.execute(
       'SELECT role_id FROM command_permissions WHERE command_name = ?',
       [commandName]
@@ -567,17 +631,22 @@ async function getCommandPermissions(commandName, dbConnection) {
 
 async function checkUserPermission(interaction, commandName, dbConnection) {
   if (commandName === 'pendentes') return true;
+  if (!interaction || !commandName || !dbConnection) return false;
   
   const allowedRoles = await getCommandPermissions(commandName, dbConnection);
   
   if (allowedRoles.length === 0) return true;
   
-  return interaction.member.roles.cache.some(role => allowedRoles.includes(role.id));
+  return interaction.member?.roles?.cache?.some(role => allowedRoles.includes(role.id));
 }
 
 // Notificar no webhook
 async function notifyWebhook(action, applicationId, applicationName, discordTag, motivo = '') {
   if (!process.env.DISCORD_WEBHOOK_URL) return;
+  if (!action || !applicationId || !applicationName || !discordTag) {
+    console.error('❌ Parâmetros inválidos para notifyWebhook');
+    return;
+  }
 
   const color = action === 'aprovado' ? 3066993 : 15158332;
   const actionText = action === 'aprovado' ? 'Aprovada' : 'Rejeitada';
@@ -611,6 +680,10 @@ async function notifyWebhook(action, applicationId, applicationName, discordTag,
 // Envio seguro de mensagens
 async function safeSend(channel, content) {
   try {
+    if (!channel || !content) {
+      console.error('❌ Parâmetros inválidos para safeSend');
+      return null;
+    }
     return await channel.send(content);
   } catch (error) {
     console.error('❌ Erro ao enviar mensagem:', error);
