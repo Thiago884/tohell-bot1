@@ -1,28 +1,21 @@
-const { EmbedBuilder, MessageFlags } = require('discord.js');
+const { EmbedBuilder, MessageFlags, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const axios = require('axios');
 const { JSDOM } = require('jsdom');
+const moment = require('moment-timezone');
 
 // Configurações
 const ITEMS_PER_PAGE = 5;
 const GUILDS_TO_CHECK = ['ToHeLL_', 'ToHeLL2', 'ToHeLL3', 'ToHeLL4', 'ToHeLL5', 'ToHeLL6', 'ToHeLL7', 'ToHeLL8_', 'ToHeLL9', 'ToHeLL10'];
 const BASE_URL = process.env.BASE_URL || 'https://seusite.com/';
+const MAIN_GUILDS = ['ToHeLL_', 'ToHeLL2', 'ToHeLL3'];
+const MUCA_BRASIL_URL = 'https://www.mucabrasil.com.br/?go=guild&n=';
 
 // Função para formatar data no padrão brasileiro com fuso horário
 function formatBrazilianDate(dateString) {
   if (!dateString) return 'Data inválida';
   
   try {
-    const date = new Date(dateString);
-    const offset = -3 * 60; // Brasília UTC-3
-    const adjustedDate = new Date(date.getTime() + (offset + date.getTimezoneOffset()) * 60000);
-    
-    const day = adjustedDate.getDate().toString().padStart(2, '0');
-    const month = (adjustedDate.getMonth() + 1).toString().padStart(2, '0');
-    const year = adjustedDate.getFullYear();
-    const hours = adjustedDate.getHours().toString().padStart(2, '0');
-    const minutes = adjustedDate.getMinutes().toString().padStart(2, '0');
-    
-    return `${day}/${month}/${year} ${hours}:${minutes}`;
+    return moment(dateString).tz('America/Sao_Paulo').format('DD/MM/YYYY HH:mm');
   } catch (error) {
     console.error('Erro ao formatar data:', error);
     return 'Data inválida';
@@ -74,14 +67,12 @@ async function safeInteractionReply(interaction, content) {
   }
 }
 
-// Busca paralela em guildas com Promise.allSettled
+// Busca paralela em guildas com Promise.allSettled (otimizada)
 async function parallelGuildSearch(name, nameLower, guilds = GUILDS_TO_CHECK) {
-  const baseUrl = 'https://www.mucabrasil.com.br/?go=guild&n=';
-  
   try {
     const requests = guilds.flatMap(guild => {
       return [1, 2].map(page => {
-        const url = `${baseUrl}${guild}${page > 1 ? `&p=${page}` : ''}`;
+        const url = `${MUCA_BRASIL_URL}${guild}${page > 1 ? `&p=${page}` : ''}`;
         return axios.get(url, { 
           timeout: 5000,
           headers: {
@@ -135,28 +126,29 @@ async function searchCharacterWithCache(name, dbConnection) {
   const nameLower = name.toLowerCase();
   
   try {
+    // Verifica no banco de dados primeiro
     const [dbRows] = await dbConnection.execute(
       'SELECT * FROM characters WHERE name = ? LIMIT 1',
       [name]
     );
     
-    let character = dbRows[0];
-    const cacheValid = character && new Date(character.last_seen) > new Date(Date.now() - 300000);
-    
+    // Se encontrou no banco e foi atualizado nos últimos 5 minutos, retorna
+    const cacheValid = dbRows[0] && new Date(dbRows[0].last_seen) > new Date(Date.now() - 300000);
     if (cacheValid) {
-      return character;
+      return dbRows[0];
     }
     
-    const mainGuildsSearch = parallelGuildSearch(name, nameLower, ['ToHeLL_', 'ToHeLL2', 'ToHeLL3']);
-    const otherGuildsSearch = parallelGuildSearch(name, nameLower, GUILDS_TO_CHECK.filter(g => !['ToHeLL_', 'ToHeLL2', 'ToHeLL3'].includes(g)));
+    // Busca nas guildas principais primeiro (em paralelo)
+    const mainGuildsSearch = parallelGuildSearch(name, nameLower, MAIN_GUILDS);
+    // Busca nas outras guildas (em paralelo)
+    const otherGuildsSearch = parallelGuildSearch(name, nameLower, GUILDS_TO_CHECK.filter(g => !MAIN_GUILDS.includes(g)));
     
-    const [mainResult, otherResult] = await Promise.allSettled([mainGuildsSearch, otherGuildsSearch]);
+    const [mainResult, otherResult] = await Promise.all([mainGuildsSearch, otherGuildsSearch]);
     
-    const guildData = mainResult.status === 'fulfilled' && mainResult.value ? 
-      mainResult.value : 
-      (otherResult.status === 'fulfilled' && otherResult.value ? otherResult.value : null);
+    const guildData = mainResult || otherResult;
     
     if (guildData) {
+      // Atualiza ou insere no banco de dados
       if (dbRows.length > 0) {
         await dbConnection.execute(
           'UPDATE characters SET last_level = ?, last_resets = ?, guild = ?, last_seen = NOW() WHERE id = ?',
@@ -172,6 +164,7 @@ async function searchCharacterWithCache(name, dbConnection) {
         guildData.id = inserted[0].id;
       }
       
+      // Adiciona ao histórico
       await dbConnection.execute(
         'INSERT INTO character_history (character_id, level, resets) VALUES (?, ?, ?)',
         [guildData.id, guildData.level, guildData.resets]
@@ -180,7 +173,8 @@ async function searchCharacterWithCache(name, dbConnection) {
       return guildData;
     }
     
-    return character || null;
+    // Se não encontrou nas guildas, retorna o do banco se existir
+    return dbRows.length > 0 ? dbRows[0] : null;
   } catch (error) {
     console.error('❌ Erro em searchCharacterWithCache:', error);
     return null;
@@ -218,7 +212,7 @@ async function calculateAdvancedStats(characterId, dbConnection) {
       const prev = history[i-1];
       const current = history[i];
       
-      const timeDelta = (current.timestamp - prev.timestamp) / 3600;
+      const timeDelta = (current.timestamp - prev.timestamp) / 3600; // em horas
       const levelDelta = current.level - prev.level;
       const resetDelta = current.resets - prev.resets;
       
@@ -226,7 +220,7 @@ async function calculateAdvancedStats(characterId, dbConnection) {
         levelChanges.push(levelDelta / timeDelta);
         if (resetDelta > 0) {
           resetChanges.push(resetDelta);
-          timeDeltas.push(timeDelta / 24);
+          timeDeltas.push(timeDelta / 24); // em dias
         }
         
         if (resetDelta > 0) {
@@ -609,7 +603,7 @@ async function notifyWebhook(action, applicationId, applicationName, discordTag,
       { name: 'Discord', value: discordTag, inline: true },
       { name: 'Via', value: 'Discord Bot', inline: true }
     ],
-    timestamp: new Date(new Date().getTime() - 3 * 60 * 60 * 1000).toISOString()
+    timestamp: new Date().toISOString()
   };
   
   if (action === 'rejeitado' && motivo) {

@@ -9,7 +9,7 @@ const {
   ApplicationCommandOptionType,
   MessageFlags
 } = require('discord.js');
-const { formatBrazilianDate, safeSend, notifyWebhook } = require('./utils');
+const { formatBrazilianDate, safeSend, notifyWebhook, searchCharacterWithCache, calculateAdvancedStats, createCharEmbed } = require('./utils');
 
 // Configuração da URL base para imagens
 const BASE_URL = process.env.BASE_URL || 'https://tohellguild.com.br/';

@@ -9,7 +9,8 @@ const dbConfig = {
   port: process.env.DB_PORT || 3306,
   waitForConnections: true,
   connectionLimit: 10,
-  queueLimit: 0
+  queueLimit: 0,
+  timezone: 'Z' // Usar UTC para evitar problemas com fusos horários
 };
 
 let dbConnection;
@@ -24,6 +25,7 @@ async function connectDB() {
     // Criar tabelas necessárias
     await createTables();
     
+    // Verificação periódica da conexão
     setInterval(async () => {
       try {
         await dbConnection.query('SELECT 1');
@@ -31,7 +33,7 @@ async function connectDB() {
         console.error('❌ Erro na verificação de conexão com o DB:', err);
         await reconnectDB();
       }
-    }, 60000);
+    }, 60000); // Verificar a cada 1 minuto
     
     return dbConnection;
   } catch (error) {
@@ -45,15 +47,15 @@ async function createTables() {
   try {
     // Tabela para personagens monitorados
     await dbConnection.execute(`
-      CREATE TABLE IF NOT EXISTS tracked_characters (
+      CREATE TABLE IF NOT EXISTS characters (
         id INT AUTO_INCREMENT PRIMARY KEY,
         name VARCHAR(255) NOT NULL,
-        discord_user_id VARCHAR(255) NOT NULL,
-        channel_id VARCHAR(255),
+        guild VARCHAR(255),
         last_level INT,
         last_resets INT,
+        last_seen DATETIME,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE KEY unique_tracking (name, discord_user_id)
+        UNIQUE KEY unique_character (name)
       )
     `);
     
@@ -68,6 +70,20 @@ async function createTables() {
         FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE CASCADE
       )
     `);
+
+    // Tabela para personagens monitorados por usuários
+    await dbConnection.execute(`
+      CREATE TABLE IF NOT EXISTS tracked_characters (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        discord_user_id VARCHAR(255) NOT NULL,
+        channel_id VARCHAR(255),
+        last_level INT,
+        last_resets INT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY unique_tracking (name, discord_user_id)
+      )
+    `);
     
     // Tabela para permissões de comandos
     await dbConnection.execute(`
@@ -79,10 +95,63 @@ async function createTables() {
         UNIQUE KEY unique_permission (command_name, role_id)
       )
     `);
-    
+
+    // Tabela para inscrições pendentes
+    await dbConnection.execute(`
+      CREATE TABLE IF NOT EXISTS inscricoes_pendentes (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        nome VARCHAR(255) NOT NULL,
+        telefone VARCHAR(20),
+        discord VARCHAR(100) NOT NULL,
+        char_principal VARCHAR(100),
+        guild_anterior VARCHAR(100),
+        ip VARCHAR(45),
+        screenshot_path TEXT,
+        data_inscricao DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Tabela para inscrições aprovadas
+    await dbConnection.execute(`
+      CREATE TABLE IF NOT EXISTS inscricoes (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        nome VARCHAR(255) NOT NULL,
+        telefone VARCHAR(20),
+        discord VARCHAR(100) NOT NULL,
+        char_principal VARCHAR(100),
+        guild_anterior VARCHAR(100),
+        ip VARCHAR(45),
+        screenshot_path TEXT,
+        data_inscricao DATETIME,
+        status ENUM('aprovado', 'rejeitado') DEFAULT 'aprovado',
+        avaliador VARCHAR(100),
+        data_avaliacao DATETIME,
+        motivo_rejeicao TEXT
+      )
+    `);
+
+    // Tabela para status do sistema
+    await dbConnection.execute(`
+      CREATE TABLE IF NOT EXISTS system_status (
+        key_name VARCHAR(255) PRIMARY KEY,
+        key_value TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Tabela para logs do cron
+    await dbConnection.execute(`
+      CREATE TABLE IF NOT EXISTS cron_logs (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        message TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
     console.log('✅ Tabelas verificadas/criadas com sucesso');
   } catch (error) {
     console.error('❌ Erro ao criar tabelas:', error);
+    throw error;
   }
 }
 
@@ -97,11 +166,16 @@ async function reconnectDB() {
     }
     dbConnection = await mysql.createPool(dbConfig);
     console.log('✅ Reconectado ao banco de dados com sucesso');
+    return dbConnection;
   } catch (err) {
     console.error('❌ Falha na reconexão com o DB:', err);
+    // Tentar novamente após 5 segundos
     setTimeout(reconnectDB, 5000);
+    return null;
   }
 }
+
+// Verificar conexão
 async function checkConnection() {
   if (!dbConnection) return false;
   try {
@@ -112,9 +186,56 @@ async function checkConnection() {
   }
 }
 
+// Função para registrar logs do cron
+async function logCronMessage(message) {
+  try {
+    await dbConnection.execute(
+      'INSERT INTO cron_logs (message) VALUES (?)',
+      [message]
+    );
+    return true;
+  } catch (error) {
+    console.error('❌ Erro ao registrar log do cron:', error);
+    return false;
+  }
+}
+
+// Função para atualizar status do sistema
+async function updateSystemStatus(key, value) {
+  try {
+    await dbConnection.execute(
+      'INSERT INTO system_status (key_name, key_value) VALUES (?, ?) ' +
+      'ON DUPLICATE KEY UPDATE key_value = VALUES(key_value)',
+      [key, value]
+    );
+    return true;
+  } catch (error) {
+    console.error('❌ Erro ao atualizar status do sistema:', error);
+    return false;
+  }
+}
+
+// Função para obter status do sistema
+async function getSystemStatus(key) {
+  try {
+    const [rows] = await dbConnection.execute(
+      'SELECT key_value FROM system_status WHERE key_name = ?',
+      [key]
+    );
+    return rows.length > 0 ? rows[0].key_value : null;
+  } catch (error) {
+    console.error('❌ Erro ao obter status do sistema:', error);
+    return null;
+  }
+}
+
 module.exports = {
   connectDB,
-  dbConnection, // Certifique-se que está sendo exportado
+  dbConnection,
   isShuttingDown,
-  checkConnection
+  checkConnection,
+  reconnectDB,
+  logCronMessage,
+  updateSystemStatus,
+  getSystemStatus
 };

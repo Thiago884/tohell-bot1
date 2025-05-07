@@ -1,5 +1,5 @@
 const { Events, EmbedBuilder, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
-const { safeSend, searchCharacterInDatabaseOrGuilds, showRanking, searchCharacter, getCommandPermissions, addCommandPermission, removeCommandPermission, checkUserPermission } = require('./utils');
+const { safeSend, searchCharacterWithCache, showRanking, searchCharacter, getCommandPermissions, addCommandPermission, removeCommandPermission, checkUserPermission, formatBrazilianDate } = require('./utils');
 const { isShuttingDown } = require('./database');
 const { listPendingApplications, searchApplications, sendApplicationEmbed, approveApplication, rejectApplication, showHelp, createImageCarousel } = require('./commands');
 
@@ -16,7 +16,7 @@ class CharacterTracker {
 
   async startTracking() {
     await this.loadTrackedCharacters();
-    this.trackingInterval = setInterval(() => this.checkTrackedCharacters(), 5 * 60 * 1000);
+    this.trackingInterval = setInterval(() => this.checkTrackedCharacters(), 5 * 60 * 1000); // Verificar a cada 5 minutos
     console.log('✅ Sistema de tracking iniciado');
   }
 
@@ -31,13 +31,15 @@ class CharacterTracker {
   }
 
   async checkTrackedCharacters() {
+    if (isShuttingDown) return;
+    
     console.log('🔍 Verificando personagens monitorados...');
     const notifications = [];
     
     for (const [nameLower, trackingData] of this.trackedCharacters) {
       try {
         const charName = trackingData.name;
-        const charData = await searchCharacterInDatabaseOrGuilds(charName, this.db);
+        const charData = await searchCharacterWithCache(charName, this.db);
         
         if (charData) {
           const changes = [];
@@ -76,7 +78,7 @@ class CharacterTracker {
       try {
         const channel = trackingData.channel_id ? 
           await client.channels.fetch(trackingData.channel_id) : 
-          await client.users.fetch(trackingData.discord_user_id).createDM();
+          await client.users.fetch(trackingData.discord_user_id).then(user => user.createDM());
           
         const embed = new EmbedBuilder()
           .setColor('#00FF00')
@@ -98,7 +100,7 @@ class CharacterTracker {
 
   async addTracking(name, userId, channelId = null) {
     try {
-      const charData = await searchCharacterInDatabaseOrGuilds(name, this.db);
+      const charData = await searchCharacterWithCache(name, this.db);
       if (!charData) {
         throw new Error('Personagem não encontrado');
       }
@@ -146,7 +148,10 @@ class CharacterTracker {
   }
 }
 
+// Verificar novas inscrições
 async function checkNewApplications(client, db) {
+  if (isShuttingDown) return;
+  
   try {
     if (!db) {
       console.log('⚠️ Conexão com o banco de dados não está disponível, tentando reconectar...');
@@ -185,7 +190,7 @@ function setupEvents(client, db) {
     client.user.setActivity('/ajuda para comandos', { type: 'WATCHING' });
     
     await tracker.startTracking();
-    setInterval(() => checkNewApplications(client, db), 60000);
+    setInterval(() => checkNewApplications(client, db), 60000); // Verificar novas inscrições a cada 1 minuto
   });
 
   // Evento interactionCreate
