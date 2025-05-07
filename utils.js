@@ -5,7 +5,7 @@ const { JSDOM } = require('jsdom');
 // Configurações
 const ITEMS_PER_PAGE = 5;
 const GUILDS_TO_CHECK = ['ToHeLL_', 'ToHeLL2', 'ToHeLL3', 'ToHeLL4', 'ToHeLL5', 'ToHeLL6', 'ToHeLL7', 'ToHeLL8_', 'ToHeLL9', 'ToHeLL10'];
-const BASE_URL = process.env.BASE_URL || 'https://www.tohellguild.com.br/';
+const BASE_URL = process.env.BASE_URL || 'https://seusite.com/';
 
 // Função para formatar data no padrão brasileiro com fuso horário
 function formatBrazilianDate(dateString) {
@@ -81,22 +81,27 @@ async function safeInteractionReply(interaction, content) {
   }
 }
 
-// Busca paralela em guildas com Promise.allSettled
+// Busca paralela em guildas com Promise.allSettled e logs detalhados
 async function parallelGuildSearch(name, nameLower, guilds = GUILDS_TO_CHECK) {
   const baseUrl = 'https://www.mucabrasil.com.br/?go=guild&n=';
+  console.log(`🔍 Iniciando busca por ${name} nas guildas: ${guilds.join(', ')}`);
   
   try {
-    // Criar um array de promessas para todas as requisições
     const requests = guilds.flatMap(guild => {
       return [1, 2].map(page => {
         const url = `${baseUrl}${guild}${page > 1 ? `&p=${page}` : ''}`;
+        console.log(`📡 Fazendo requisição para: ${url}`);
+        
         return axios.get(url, { 
-          timeout: 5000,
+          timeout: 8000, // Aumentado para 8 segundos
           headers: {
             'User-Agent': 'ToHeLL-Discord-Bot/1.0'
           }
         })
-          .then(response => ({ html: response.data, guild, page }))
+          .then(response => {
+            console.log(`✅ Resposta recebida de ${url}`);
+            return { html: response.data, guild, page };
+          })
           .catch(error => {
             console.error(`❌ Erro ao buscar guilda ${guild} página ${page}:`, error.message);
             return null;
@@ -104,10 +109,9 @@ async function parallelGuildSearch(name, nameLower, guilds = GUILDS_TO_CHECK) {
       });
     });
 
-    // Usar Promise.allSettled para lidar com todas as requisições
     const responses = await Promise.allSettled(requests);
+    console.log(`📊 Total de respostas: ${responses.length} (${responses.filter(r => r.status === 'fulfilled').length} bem-sucedidas)`);
     
-    // Processar as respostas bem-sucedidas
     for (const response of responses) {
       if (response.status === 'fulfilled' && response.value) {
         const { html, guild, page } = response.value;
@@ -115,19 +119,18 @@ async function parallelGuildSearch(name, nameLower, guilds = GUILDS_TO_CHECK) {
         const doc = dom.window.document;
         
         const rows = doc.querySelectorAll('tr');
+        console.log(`🔎 Analisando ${rows.length} linhas da guilda ${guild} página ${page}`);
+        
         for (const row of rows) {
           const cells = row.querySelectorAll('td');
           if (cells.length >= 4) {
             const charName = cells[1].textContent.trim();
             if (charName.toLowerCase() === nameLower) {
-              const level = parseInt(cells[2].textContent.trim()) || 0;
-              const resets = parseInt(cells[3].textContent.trim()) || 0;
-              
-              // Se encontrou o personagem, retorna imediatamente
+              console.log(`🎯 Personagem encontrado na guilda ${guild} página ${page}`);
               return {
                 name: charName,
-                level,
-                resets,
+                level: parseInt(cells[2].textContent.trim()) || 0,
+                resets: parseInt(cells[3].textContent.trim()) || 0,
                 guild,
                 found_at: new Date().toISOString()
               };
@@ -137,6 +140,7 @@ async function parallelGuildSearch(name, nameLower, guilds = GUILDS_TO_CHECK) {
       }
     }
     
+    console.log(`⚠️ Personagem ${name} não encontrado nas guildas pesquisadas`);
     return null;
   } catch (error) {
     console.error('❌ Erro no parallelGuildSearch:', error);
@@ -147,8 +151,15 @@ async function parallelGuildSearch(name, nameLower, guilds = GUILDS_TO_CHECK) {
 // Função com cache e busca paralela otimizada
 async function searchCharacterWithCache(name, dbConnection) {
   const nameLower = name.toLowerCase();
+  console.log(`🔍 Buscando personagem ${name} (com cache)`);
   
   try {
+    // Verificar conexão com o banco de dados
+    if (!dbConnection || !(await dbConnection.execute('SELECT 1').catch(() => false))) {
+      console.error('❌ Conexão com o banco de dados não está ativa');
+      return null;
+    }
+
     // Verificar no cache do banco de dados primeiro
     const [dbRows] = await dbConnection.execute(
       'SELECT * FROM characters WHERE name = ? LIMIT 1',
@@ -159,15 +170,22 @@ async function searchCharacterWithCache(name, dbConnection) {
     const cacheValid = character && new Date(character.last_seen) > new Date(Date.now() - 300000); // 5 minutos de cache
     
     if (cacheValid) {
+      console.log(`♻️ Usando cache para ${name} (válido até ${character.last_seen})`);
       return character;
     }
     
-    // Buscar nas guildas principais primeiro em paralelo
-    const mainGuildsSearch = parallelGuildSearch(name, nameLower, ['ToHeLL_', 'ToHeLL2', 'ToHeLL3']);
-    // Buscar nas outras guildas em paralelo
-    const otherGuildsSearch = parallelGuildSearch(name, nameLower, GUILDS_TO_CHECK.filter(g => !['ToHeLL_', 'ToHeLL2', 'ToHeLL3'].includes(g)));
+    console.log(`🔄 Cache inválido/inexistente para ${name}, buscando nas guildas...`);
     
-    // Usar Promise.allSettled para ambas as buscas
+    // Buscar nas guildas principais primeiro em paralelo
+    const mainGuilds = ['ToHeLL_', 'ToHeLL2', 'ToHeLL3'];
+    console.log(`🔍 Buscando nas guildas principais: ${mainGuilds.join(', ')}`);
+    const mainGuildsSearch = parallelGuildSearch(name, nameLower, mainGuilds);
+    
+    // Buscar nas outras guildas em paralelo
+    const otherGuilds = GUILDS_TO_CHECK.filter(g => !mainGuilds.includes(g));
+    console.log(`🔍 Buscando nas outras guildas: ${otherGuilds.join(', ')}`);
+    const otherGuildsSearch = parallelGuildSearch(name, nameLower, otherGuilds);
+    
     const [mainResult, otherResult] = await Promise.allSettled([mainGuildsSearch, otherGuildsSearch]);
     
     const guildData = mainResult.status === 'fulfilled' && mainResult.value ? 
@@ -175,38 +193,34 @@ async function searchCharacterWithCache(name, dbConnection) {
       (otherResult.status === 'fulfilled' && otherResult.value ? otherResult.value : null);
     
     if (guildData) {
-      // Atualizar ou inserir no banco de dados
+      console.log(`✅ Dados encontrados para ${name}:`, guildData);
+      
       if (dbRows.length > 0) {
+        console.log(`🔄 Atualizando cache para ${name}`);
         await dbConnection.execute(
           'UPDATE characters SET last_level = ?, last_resets = ?, guild = ?, last_seen = NOW() WHERE id = ?',
           [guildData.level, guildData.resets, guildData.guild, dbRows[0].id]
         );
       } else {
+        console.log(`➕ Criando novo registro para ${name}`);
         await dbConnection.execute(
           'INSERT INTO characters (name, guild, last_level, last_resets, last_seen) VALUES (?, ?, ?, ?, NOW())',
           [guildData.name, guildData.guild, guildData.level, guildData.resets]
         );
         
-        // Obter o ID inserido
         const [inserted] = await dbConnection.execute('SELECT LAST_INSERT_ID() as id');
         guildData.id = inserted[0].id;
       }
       
-      // Adicionar ao histórico
       await dbConnection.execute(
         'INSERT INTO character_history (character_id, level, resets) VALUES (?, ?, ?)',
         [guildData.id, guildData.level, guildData.resets]
       );
       
-      return {
-        ...guildData,
-        id: guildData.id,
-        level: guildData.level,
-        resets: guildData.resets,
-        guild: guildData.guild
-      };
+      return guildData;
     }
     
+    console.log(`⚠️ Nenhum dado encontrado para ${name}`);
     return character || null;
   } catch (error) {
     console.error('❌ Erro em searchCharacterWithCache:', error);
@@ -391,86 +405,105 @@ function createCharEmbed({ name, level, resets, guild, found, lastSeen, history,
   return embed;
 }
 
-// Buscar personagem
+// Buscar personagem com tratamento de erro completo
 async function searchCharacter(interaction, charName, dbConnection) {
   try {
-    // Verificar se a interação ainda é válida
-    if (interaction.deferred || interaction.replied) {
-      return;
+    console.log(`🔍 Iniciando busca por ${charName} solicitada por ${interaction.user.tag}`);
+    
+    // Verificar conexão com o banco de dados
+    if (!dbConnection || !(await dbConnection.execute('SELECT 1').catch(() => false))) {
+      console.error('❌ Conexão com o banco de dados não está ativa');
+      return interaction.reply({
+        content: 'Erro de conexão com o banco de dados. Por favor, tente novamente mais tarde.',
+        ephemeral: true
+      }).catch(console.error);
     }
 
     // Adicionar timeout para garantir resposta dentro do limite do Discord
     const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Tempo de resposta excedido')), 2500)
+      setTimeout(() => reject(new Error('Tempo de resposta excedido')), 10000) // 10 segundos
     );
 
-    await Promise.race([
-      interaction.deferReply(),
+    // Deferir a resposta primeiro
+    await interaction.deferReply();
+    console.log(`⏳ Resposta deferida para busca de ${charName}`);
+
+    // Executar a busca com timeout
+    const result = await Promise.race([
+      (async () => {
+        const charData = await searchCharacterWithCache(charName, dbConnection);
+        
+        if (!charData) {
+          console.log(`🔍 Personagem ${charName} não encontrado, verificando histórico...`);
+          const [historyRows] = await dbConnection.execute(
+            'SELECT * FROM characters WHERE LOWER(name) = ? LIMIT 1',
+            [charName.toLowerCase()]
+          );
+          
+          if (historyRows.length > 0) {
+            const lastKnown = historyRows[0];
+            console.log(`📌 Exibindo dados históricos para ${charName}`);
+            return interaction.editReply({
+              embeds: [createCharEmbed({
+                name: lastKnown.name,
+                level: lastKnown.last_level,
+                resets: lastKnown.last_resets,
+                guild: lastKnown.guild,
+                found: false,
+                lastSeen: lastKnown.last_seen
+              })]
+            });
+          }
+          
+          console.log(`❌ Personagem ${charName} não encontrado em nenhum lugar`);
+          return interaction.editReply({
+            content: `Personagem "${charName}" não encontrado em nenhuma guilda da ToHeLL.`
+          });
+        }
+        
+        console.log(`✅ Dados encontrados para ${charName}, buscando histórico e estatísticas...`);
+        
+        // Obter histórico e estatísticas em paralelo
+        const [history, advancedStats] = await Promise.all([
+          dbConnection.execute(
+            'SELECT level, resets, recorded_at FROM character_history WHERE character_id = ? ORDER BY recorded_at DESC LIMIT 5',
+            [charData.id]
+          ),
+          calculateAdvancedStats(charData.id, dbConnection)
+        ]);
+        
+        // Criar embed de resposta
+        const embed = createCharEmbed({
+          name: charData.name,
+          level: charData.level,
+          resets: charData.resets,
+          guild: charData.guild,
+          found: true,
+          history: history[0],
+          stats: advancedStats
+        });
+        
+        console.log(`📊 Embed criado para ${charName}, enviando resposta...`);
+        return interaction.editReply({ embeds: [embed] });
+      })(),
       timeoutPromise
     ]);
 
-    // Usar a nova função com cache e busca paralela
-    const charData = await searchCharacterWithCache(charName, dbConnection);
-    
-    if (!charData) {
-      // Verificar se existe no histórico
-      const [historyRows] = await dbConnection.execute(
-        'SELECT * FROM characters WHERE LOWER(name) = ? LIMIT 1',
-        [charName.toLowerCase()]
-      );
-      
-      if (historyRows.length > 0) {
-        const lastKnown = historyRows[0];
-        return interaction.editReply({
-          embeds: [createCharEmbed({
-            name: lastKnown.name,
-            level: lastKnown.last_level,
-            resets: lastKnown.last_resets,
-            guild: lastKnown.guild,
-            found: false,
-            lastSeen: lastKnown.last_seen
-          })]
-        }).catch(console.error);
-      }
-      
-      return interaction.editReply({
-        content: `Personagem "${charName}" não encontrado em nenhuma guilda da ToHeLL.`
-      }).catch(console.error);
-    }
-    
-    // Obter histórico e estatísticas em paralelo
-    const [history, advancedStats] = await Promise.all([
-      dbConnection.execute(
-        'SELECT level, resets, recorded_at FROM character_history WHERE character_id = ? ORDER BY recorded_at DESC LIMIT 5',
-        [charData.id]
-      ),
-      calculateAdvancedStats(charData.id, dbConnection)
-    ]);
-    
-    // Criar embed de resposta
-    const embed = createCharEmbed({
-      name: charData.name,
-      level: charData.level,
-      resets: charData.resets,
-      guild: charData.guild,
-      found: true,
-      history: history[0],
-      stats: advancedStats
-    });
-    
-    await interaction.editReply({ embeds: [embed] }).catch(console.error);
+    return result;
     
   } catch (error) {
     console.error('❌ Erro ao buscar personagem:', error);
-    if (!interaction.replied && !interaction.deferred) {
-      await interaction.reply({
-        content: 'Ocorreu um erro ao buscar o personagem. Por favor, tente novamente mais tarde.',
-        flags: MessageFlags.Ephemeral
-      }).catch(console.error);
-    } else if (interaction.deferred && !interaction.replied) {
-      await interaction.editReply({
+    
+    // Verificar se a interação já foi respondida
+    if (interaction.deferred) {
+      return interaction.editReply({
         content: 'Ocorreu um erro ao buscar o personagem. Por favor, tente novamente mais tarde.'
-      }).catch(console.error);
+      }).catch(e => console.error('Erro ao editar resposta:', e));
+    } else {
+      return interaction.reply({
+        content: 'Ocorreu um erro ao buscar o personagem. Por favor, tente novamente mais tarde.',
+        ephemeral: true
+      }).catch(e => console.error('Erro ao responder:', e));
     }
   }
 }
@@ -660,5 +693,5 @@ module.exports = {
   checkUserPermission,
   notifyWebhook,
   ITEMS_PER_PAGE,
-  searchCharacterWithCache // Exportando a nova função
+  searchCharacterWithCache
 };
