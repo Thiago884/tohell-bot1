@@ -1,5 +1,5 @@
 const { Events, EmbedBuilder, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
-const { safeSend, searchCharacterWithCache, showRanking, searchCharacter, getCommandPermissions, addCommandPermission, removeCommandPermission, checkUserPermission, formatBrazilianDate } = require('./utils');
+const { safeSend, searchCharacterWithCache, showRanking, searchCharacter, getCommandPermissions, addCommandPermission, removeCommandPermission, checkUserPermission, formatBrazilianDate, processImageUrls } = require('./utils');
 const { isShuttingDown } = require('./database');
 const { listPendingApplications, searchApplications, sendApplicationEmbed, approveApplication, rejectApplication, showHelp, createImageCarousel } = require('./commands');
 
@@ -442,7 +442,10 @@ function setupEvents(client, db) {
                 screenshots = rows[0].screenshot_path ? [rows[0].screenshot_path] : [];
               }
               
-              await createImageCarousel(interaction, screenshots, applicationId);
+              // Processa as URLs para garantir que são absolutas
+              const processedScreenshots = processImageUrls(screenshots);
+              
+              await createImageCarousel(interaction, processedScreenshots, applicationId);
               
             } catch (error) {
               console.error('❌ Erro ao buscar screenshots:', error);
@@ -494,7 +497,10 @@ function setupEvents(client, db) {
               screenshots = rows[0].screenshot_path ? [rows[0].screenshot_path] : [];
             }
             
-            const totalImages = screenshots.length;
+            // Processa as URLs para garantir que são absolutas
+            const processedScreenshots = processImageUrls(screenshots);
+            
+            const totalImages = processedScreenshots.length;
             
             if (action === 'prev' && currentIndex > 0) {
               currentIndex--;
@@ -505,7 +511,7 @@ function setupEvents(client, db) {
             const embed = new EmbedBuilder()
               .setColor('#FF4500')
               .setTitle(`Screenshot #${currentIndex + 1} de ${totalImages}`)
-              .setImage(screenshots[currentIndex])
+              .setImage(processedScreenshots[currentIndex]) // Usa a URL processada
               .setFooter({ text: `Inscrição #${applicationId}` });
             
             const row = new ActionRowBuilder().addComponents(

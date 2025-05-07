@@ -16,7 +16,7 @@ axiosRetry(axios, {
 // Configurações
 const ITEMS_PER_PAGE = 5;
 const GUILDS_TO_CHECK = ['ToHeLL_', 'ToHeLL2', 'ToHeLL3', 'ToHeLL4', 'ToHeLL5', 'ToHeLL6', 'ToHeLL7', 'ToHeLL8_', 'ToHeLL9', 'ToHeLL10'];
-const BASE_URL = process.env.BASE_URL || 'https://seusite.com/';
+const BASE_URL = process.env.BASE_URL || 'https://tohellguild.com.br/';
 const MAIN_GUILDS = ['ToHeLL_', 'ToHeLL2', 'ToHeLL3'];
 const MUCA_BRASIL_URL = 'https://www.mucabrasil.com.br/?go=guild&n=';
 const CACHE_TIME = 300; // 5 minutos em segundos
@@ -43,7 +43,7 @@ function isValidImageUrl(url) {
   }
 }
 
-// Função para processar URLs de imagens
+// Função para processar URLs de imagens (corrigida)
 function processImageUrls(imageData) {
   try {
     const urls = typeof imageData === 'string' ? JSON.parse(imageData || '[]') : imageData || [];
@@ -51,7 +51,12 @@ function processImageUrls(imageData) {
     
     return urlArray.map(url => {
       if (!url) return null;
-      return url.startsWith('http') ? url : `${BASE_URL}${url.replace(/^\/+/, '')}`;
+      // Se já for uma URL completa, retorna como está
+      if (url.startsWith('http')) return url;
+      // Remove barras iniciais para evitar duplicação
+      const cleanPath = url.replace(/^\/+/, '');
+      // Constrói URL completa com base no BASE_URL
+      return `${BASE_URL}${cleanPath}`;
     }).filter(url => url !== null && isValidImageUrl(url));
   } catch (error) {
     console.error('Erro ao processar URLs de imagem:', error);
