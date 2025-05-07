@@ -81,17 +81,21 @@ async function safeInteractionReply(interaction, content) {
   }
 }
 
-// Busca paralela em guildas
+// Busca paralela em guildas com Promise.allSettled
 async function parallelGuildSearch(name, nameLower, guilds = GUILDS_TO_CHECK) {
   const baseUrl = 'https://www.mucabrasil.com.br/?go=guild&n=';
-  const results = [];
   
   try {
     // Criar um array de promessas para todas as requisições
     const requests = guilds.flatMap(guild => {
       return [1, 2].map(page => {
         const url = `${baseUrl}${guild}${page > 1 ? `&p=${page}` : ''}`;
-        return axios.get(url, { timeout: 5000 })
+        return axios.get(url, { 
+          timeout: 5000,
+          headers: {
+            'User-Agent': 'ToHeLL-Discord-Bot/1.0'
+          }
+        })
           .then(response => ({ html: response.data, guild, page }))
           .catch(error => {
             console.error(`❌ Erro ao buscar guilda ${guild} página ${page}:`, error.message);
@@ -100,108 +104,119 @@ async function parallelGuildSearch(name, nameLower, guilds = GUILDS_TO_CHECK) {
       });
     });
 
-    // Executar todas as requisições em paralelo
-    const responses = await Promise.all(requests);
+    // Usar Promise.allSettled para lidar com todas as requisições
+    const responses = await Promise.allSettled(requests);
     
-    // Processar as respostas
+    // Processar as respostas bem-sucedidas
     for (const response of responses) {
-      if (!response) continue;
-      
-      const { html, guild, page } = response;
-      const dom = new JSDOM(html);
-      const doc = dom.window.document;
-      
-      const rows = doc.querySelectorAll('tr');
-      for (const row of rows) {
-        const cells = row.querySelectorAll('td');
-        if (cells.length >= 4) {
-          const charName = cells[1].textContent.trim();
-          if (charName.toLowerCase() === nameLower) {
-            const level = parseInt(cells[2].textContent.trim()) || 0;
-            const resets = parseInt(cells[3].textContent.trim()) || 0;
-            
-            results.push({
-              name: charName,
-              level,
-              resets,
-              guild,
-              found_at: new Date().toISOString()
-            });
+      if (response.status === 'fulfilled' && response.value) {
+        const { html, guild, page } = response.value;
+        const dom = new JSDOM(html);
+        const doc = dom.window.document;
+        
+        const rows = doc.querySelectorAll('tr');
+        for (const row of rows) {
+          const cells = row.querySelectorAll('td');
+          if (cells.length >= 4) {
+            const charName = cells[1].textContent.trim();
+            if (charName.toLowerCase() === nameLower) {
+              const level = parseInt(cells[2].textContent.trim()) || 0;
+              const resets = parseInt(cells[3].textContent.trim()) || 0;
+              
+              // Se encontrou o personagem, retorna imediatamente
+              return {
+                name: charName,
+                level,
+                resets,
+                guild,
+                found_at: new Date().toISOString()
+              };
+            }
           }
         }
       }
     }
     
-    return results[0] || null;
+    return null;
   } catch (error) {
     console.error('❌ Erro no parallelGuildSearch:', error);
     return null;
   }
 }
 
-// Buscar personagem no banco ou nas guildas
-async function searchCharacterInDatabaseOrGuilds(name, dbConnection) {
+// Função com cache e busca paralela otimizada
+async function searchCharacterWithCache(name, dbConnection) {
   const nameLower = name.toLowerCase();
   
   try {
-    // Verificar no banco de dados primeiro
+    // Verificar no cache do banco de dados primeiro
     const [dbRows] = await dbConnection.execute(
       'SELECT * FROM characters WHERE name = ? LIMIT 1',
       [name]
     );
     
     let character = dbRows[0];
+    const cacheValid = character && new Date(character.last_seen) > new Date(Date.now() - 300000); // 5 minutos de cache
     
-    // Se não encontrado ou dados desatualizados (mais de 5 minutos)
-    if (!character || new Date(character.last_seen) < new Date(Date.now() - 300000)) {
-      // Buscar nas guildas principais primeiro (ToHeLL_, ToHeLL2, ToHeLL3)
-      let guildData = await parallelGuildSearch(name, nameLower, ['ToHeLL_', 'ToHeLL2', 'ToHeLL3']);
-      
-      // Se não encontrado nas principais, buscar nas demais guildas
-      if (!guildData) {
-        guildData = await parallelGuildSearch(name, nameLower, GUILDS_TO_CHECK);
-      }
-      
-      if (guildData) {
-        // Garantir que todos os campos existam
-        const level = guildData.level || null;
-        const resets = guildData.resets || null;
-        const guild = guildData.guild || null;
-        
-        // Atualizar ou inserir no banco de dados
-        if (dbRows.length > 0) {
-          await dbConnection.execute(
-            'UPDATE characters SET last_level = ?, last_resets = ?, guild = ?, last_seen = NOW() WHERE id = ?',
-            [level, resets, guild, dbRows[0].id]
-          );
-        } else {
-          await dbConnection.execute(
-            'INSERT INTO characters (name, guild, last_level, last_resets, last_seen) VALUES (?, ?, ?, ?, NOW())',
-            [guildData.name, guild, level, resets]
-          );
-        }
-        
-        // Adicionar ao histórico
+    if (cacheValid) {
+      return character;
+    }
+    
+    // Buscar nas guildas principais primeiro em paralelo
+    const mainGuildsSearch = parallelGuildSearch(name, nameLower, ['ToHeLL_', 'ToHeLL2', 'ToHeLL3']);
+    // Buscar nas outras guildas em paralelo
+    const otherGuildsSearch = parallelGuildSearch(name, nameLower, GUILDS_TO_CHECK.filter(g => !['ToHeLL_', 'ToHeLL2', 'ToHeLL3'].includes(g)));
+    
+    // Usar Promise.allSettled para ambas as buscas
+    const [mainResult, otherResult] = await Promise.allSettled([mainGuildsSearch, otherGuildsSearch]);
+    
+    const guildData = mainResult.status === 'fulfilled' && mainResult.value ? 
+      mainResult.value : 
+      (otherResult.status === 'fulfilled' && otherResult.value ? otherResult.value : null);
+    
+    if (guildData) {
+      // Atualizar ou inserir no banco de dados
+      if (dbRows.length > 0) {
         await dbConnection.execute(
-          'INSERT INTO character_history (character_id, level, resets) VALUES (?, ?, ?)',
-          [dbRows[0]?.id || guildData.id, level, resets]
+          'UPDATE characters SET last_level = ?, last_resets = ?, guild = ?, last_seen = NOW() WHERE id = ?',
+          [guildData.level, guildData.resets, guildData.guild, dbRows[0].id]
+        );
+      } else {
+        await dbConnection.execute(
+          'INSERT INTO characters (name, guild, last_level, last_resets, last_seen) VALUES (?, ?, ?, ?, NOW())',
+          [guildData.name, guildData.guild, guildData.level, guildData.resets]
         );
         
-        character = {
-          ...guildData,
-          id: dbRows[0]?.id || guildData.id,
-          level,
-          resets,
-          guild
-        };
+        // Obter o ID inserido
+        const [inserted] = await dbConnection.execute('SELECT LAST_INSERT_ID() as id');
+        guildData.id = inserted[0].id;
       }
+      
+      // Adicionar ao histórico
+      await dbConnection.execute(
+        'INSERT INTO character_history (character_id, level, resets) VALUES (?, ?, ?)',
+        [guildData.id, guildData.level, guildData.resets]
+      );
+      
+      return {
+        ...guildData,
+        id: guildData.id,
+        level: guildData.level,
+        resets: guildData.resets,
+        guild: guildData.guild
+      };
     }
     
     return character || null;
   } catch (error) {
-    console.error('❌ Erro em searchCharacterInDatabaseOrGuilds:', error);
+    console.error('❌ Erro em searchCharacterWithCache:', error);
     return null;
   }
+}
+
+// Função principal para buscar personagem (mantida para compatibilidade)
+async function searchCharacterInDatabaseOrGuilds(name, dbConnection) {
+  return searchCharacterWithCache(name, dbConnection);
 }
 
 // Calcular estatísticas avançadas
@@ -394,7 +409,8 @@ async function searchCharacter(interaction, charName, dbConnection) {
       timeoutPromise
     ]);
 
-    const charData = await searchCharacterInDatabaseOrGuilds(charName, dbConnection);
+    // Usar a nova função com cache e busca paralela
+    const charData = await searchCharacterWithCache(charName, dbConnection);
     
     if (!charData) {
       // Verificar se existe no histórico
@@ -422,14 +438,14 @@ async function searchCharacter(interaction, charName, dbConnection) {
       }).catch(console.error);
     }
     
-    // Obter histórico
-    const [history] = await dbConnection.execute(
-      'SELECT level, resets, recorded_at FROM character_history WHERE character_id = ? ORDER BY recorded_at DESC LIMIT 5',
-      [charData.id]
-    );
-    
-    // Obter estatísticas avançadas
-    const advancedStats = await calculateAdvancedStats(charData.id, dbConnection);
+    // Obter histórico e estatísticas em paralelo
+    const [history, advancedStats] = await Promise.all([
+      dbConnection.execute(
+        'SELECT level, resets, recorded_at FROM character_history WHERE character_id = ? ORDER BY recorded_at DESC LIMIT 5',
+        [charData.id]
+      ),
+      calculateAdvancedStats(charData.id, dbConnection)
+    ]);
     
     // Criar embed de resposta
     const embed = createCharEmbed({
@@ -438,7 +454,7 @@ async function searchCharacter(interaction, charName, dbConnection) {
       resets: charData.resets,
       guild: charData.guild,
       found: true,
-      history: history,
+      history: history[0],
       stats: advancedStats
     });
     
@@ -643,5 +659,6 @@ module.exports = {
   getCommandPermissions,
   checkUserPermission,
   notifyWebhook,
-  ITEMS_PER_PAGE
+  ITEMS_PER_PAGE,
+  searchCharacterWithCache // Exportando a nova função
 };
