@@ -699,7 +699,7 @@ module.exports = {
   safeInteractionReply,
   safeSend,
   parallelGuildSearch,
-  searchCharacterInDatabaseOrGuilds,
+  searchCharacterWithCache, // Corrigido: substituído searchCharacterInDatabaseOrGuilds por searchCharacterWithCache
   calculateAdvancedStats,
   createCharEmbed,
   searchCharacter,
@@ -709,6 +709,5 @@ module.exports = {
   getCommandPermissions,
   checkUserPermission,
   notifyWebhook,
-  ITEMS_PER_PAGE,
-  searchCharacterWithCache
+  ITEMS_PER_PAGE
 };
