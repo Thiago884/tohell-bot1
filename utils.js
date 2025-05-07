@@ -19,6 +19,7 @@ const GUILDS_TO_CHECK = ['ToHeLL_', 'ToHeLL2', 'ToHeLL3', 'ToHeLL4', 'ToHeLL5', 
 const BASE_URL = process.env.BASE_URL || 'https://seusite.com/';
 const MAIN_GUILDS = ['ToHeLL_', 'ToHeLL2', 'ToHeLL3'];
 const MUCA_BRASIL_URL = 'https://www.mucabrasil.com.br/?go=guild&n=';
+const CACHE_TIME = 300; // 5 minutos em segundos
 
 // Função para formatar data no padrão brasileiro com fuso horário
 function formatBrazilianDate(dateString) {
@@ -171,7 +172,7 @@ async function searchCharacterWithCache(name, dbConnection) {
     );
     
     // Se encontrou no banco e foi atualizado nos últimos 5 minutos, retorna
-    if (dbRows[0] && dbRows[0].last_seen && new Date(dbRows[0].last_seen) > new Date(Date.now() - 300000)) {
+    if (dbRows[0] && dbRows[0].last_seen && new Date(dbRows[0].last_seen) > new Date(Date.now() - CACHE_TIME * 1000)) {
       return dbRows[0];
     }
     
@@ -495,21 +496,33 @@ async function searchCharacter(interaction, charName, dbConnection) {
   }
 }
 
-// Mostrar ranking com cache
+// Mostrar ranking igual ao do monitor.php
 async function showRanking(interaction, period, dbConnection) {
   try {
     await interaction.deferReply();
 
-    let days;
+    // Definir intervalos conforme monitor.php
+    let interval, periodName;
     switch (period) {
-      case '24h': days = 1; break;
-      case '7d': days = 7; break;
-      case '30d': days = 30; break;
-      default: days = 7;
+      case '24h':
+        interval = '24 HOUR';
+        periodName = '24 Horas';
+        break;
+      case '7d':
+        interval = '7 DAY';
+        periodName = '7 Dias';
+        break;
+      case '30d':
+        interval = '30 DAY';
+        periodName = '30 Dias';
+        break;
+      default:
+        interval = '24 HOUR';
+        periodName = '24 Horas';
     }
-    
-    // Verificar cache
-    const cacheKey = `ranking_${days}d`;
+
+    // Verificar cache (5 minutos como no monitor.php)
+    const cacheKey = `rankings_${period}`;
     const [cacheRows] = await dbConnection.execute(
       'SELECT key_value FROM system_status WHERE key_name = ? AND updated_at > DATE_SUB(NOW(), INTERVAL 5 MINUTE)',
       [cacheKey]
@@ -520,6 +533,7 @@ async function showRanking(interaction, period, dbConnection) {
       return interaction.editReply({ embeds: [cachedData.embed] });
     }
 
+    // Consulta idêntica ao monitor.php
     const [rows] = await dbConnection.execute(`
       SELECT 
         c.name, 
@@ -531,44 +545,46 @@ async function showRanking(interaction, period, dbConnection) {
         (MAX(h.level) - MIN(h.level) + (MAX(h.resets) - MIN(h.resets)) * 1000) as progress_score
       FROM character_history h
       JOIN characters c ON h.character_id = c.id
-      WHERE h.recorded_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+      WHERE h.recorded_at >= DATE_SUB(NOW(), INTERVAL ${interval})
       GROUP BY h.character_id, c.name, c.guild, c.last_level, c.last_resets
       ORDER BY progress_score DESC
       LIMIT 10
-    `, [days]);
-    
+    `);
+
     if (rows.length === 0) {
       return interaction.editReply({
-        content: `Nenhum dado de ranking disponível para o período de ${days} dias.`
+        content: `Nenhum dado de ranking disponível para o período de ${periodName.toLowerCase()}.`
       });
     }
-    
-    const periodName = days === 1 ? '24 horas' : `${days} dias`;
+
+    // Criar embed com estilo similar ao monitor.php
     const embed = new EmbedBuilder()
       .setColor('#FFA500')
-      .setTitle(`🏆 Ranking de Progresso - Últimas ${periodName}`)
-      .setDescription(`Top 10 personagens com maior progresso nos últimos ${periodName}`);
-    
+      .setTitle(`🏆 Ranking de Progresso - ${periodName}`)
+      .setDescription(`Top 10 personagens com maior progresso`);
+
     rows.forEach((char, index) => {
       embed.addFields({
         name: `#${index + 1} ${char.name}`,
         value: `🏰 ${char.guild || 'Nenhuma'}\n` +
-               `⚔️ Level: ${char.current_level || 0} (${char.level_change > 0 ? `+${char.level_change}` : '0'})\n` +
-               `🔄 Resets: ${char.current_resets || 0} (${char.reset_change > 0 ? `+${char.reset_change}` : '0'})\n` +
-               `📊 Pontuação: ${char.progress_score?.toFixed(0) || '0'}`,
+               `⚔️ Level: ${char.current_level || 0} ` + 
+               (char.level_change > 0 ? `**(+${char.level_change})**` : '') + '\n' +
+               `🔄 Resets: ${char.current_resets || 0} ` +
+               (char.reset_change > 0 ? `**(+${char.reset_change})**` : '') + '\n' +
+               `📊 Pontuação: **${char.progress_score?.toFixed(0) || '0'}**`,
         inline: false
       });
     });
 
-    // Salvar no cache
+    // Salvar no cache como no monitor.php
     await dbConnection.execute(
       'INSERT INTO system_status (key_name, key_value) VALUES (?, ?) ' +
       'ON DUPLICATE KEY UPDATE key_value = VALUES(key_value), updated_at = NOW()',
       [cacheKey, JSON.stringify({ embed })]
     );
-    
+
     await interaction.editReply({ embeds: [embed] });
-    
+
   } catch (error) {
     console.error('❌ Erro ao buscar ranking:', error);
     await interaction.editReply({
@@ -699,7 +715,7 @@ module.exports = {
   safeInteractionReply,
   safeSend,
   parallelGuildSearch,
-  searchCharacterWithCache, // Corrigido: substituído searchCharacterInDatabaseOrGuilds por searchCharacterWithCache
+  searchCharacterWithCache,
   calculateAdvancedStats,
   createCharEmbed,
   searchCharacter,
