@@ -196,14 +196,14 @@ function setupEvents(client, db) {
     if (interaction.isCommand()) {
       console.log(`🔍 Comando slash detectado: ${interaction.commandName}`, interaction.options.data);
 
-      if (!await checkUserPermission(interaction, interaction.commandName, db)) {
-        return interaction.reply({
-          content: '❌ Você não tem permissão para usar este comando.',
-          flags: MessageFlags.Ephemeral
-        });
-      }
-
       try {
+        if (!await checkUserPermission(interaction, interaction.commandName, db)) {
+          return interaction.reply({
+            content: '❌ Você não tem permissão para usar este comando.',
+            flags: MessageFlags.Ephemeral
+          }).catch(console.error);
+        }
+
         switch (interaction.commandName) {
           case 'pendentes':
             const page = interaction.options.getInteger('página') || 1;
@@ -218,7 +218,25 @@ function setupEvents(client, db) {
             
           case 'char':
             const charName = interaction.options.getString('nome');
-            await searchCharacter(interaction, charName, db);
+            try {
+              await interaction.deferReply().catch(e => {
+                console.error('Erro ao deferir resposta:', e);
+                throw e;
+              });
+              await searchCharacter(interaction, charName, db);
+            } catch (error) {
+              console.error('❌ Erro ao executar comando char:', error);
+              if (!interaction.replied && !interaction.deferred) {
+                await interaction.reply({
+                  content: 'Ocorreu um erro ao processar seu comando.',
+                  flags: MessageFlags.Ephemeral
+                }).catch(console.error);
+              } else if (interaction.deferred && !interaction.replied) {
+                await interaction.editReply({
+                  content: 'Ocorreu um erro ao buscar o personagem.'
+                }).catch(console.error);
+              }
+            }
             break;
             
           case 'ranking':
@@ -230,7 +248,7 @@ function setupEvents(client, db) {
             const charToTrack = interaction.options.getString('nome');
             const channel = interaction.options.getChannel('canal');
             
-            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(console.error);
             
             try {
               await tracker.addTracking(
@@ -241,18 +259,18 @@ function setupEvents(client, db) {
               
               await interaction.editReply({
                 content: `✅ Personagem "${charToTrack}" está sendo monitorado${channel ? ` no canal ${channel.name}` : ''}.`
-              });
+              }).catch(console.error);
             } catch (error) {
               await interaction.editReply({
                 content: `❌ Erro ao monitorar personagem: ${error.message}`
-              });
+              }).catch(console.error);
             }
             break;
             
           case 'parar-monitorar':
             const charToStop = interaction.options.getString('nome');
             
-            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(console.error);
             
             try {
               const removed = await tracker.removeTracking(charToStop, interaction.user.id);
@@ -261,25 +279,24 @@ function setupEvents(client, db) {
                 content: removed ? 
                   `✅ Personagem "${charToStop}" não será mais monitorado.` :
                   `❌ Personagem "${charToStop}" não estava sendo monitorado.`
-              });
+              }).catch(console.error);
             } catch (error) {
               await interaction.editReply({
                 content: `❌ Erro ao parar de monitorar: ${error.message}`
-              });
+              }).catch(console.error);
             }
             break;
             
           case 'listar-monitorados':
-            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(console.error);
             
             try {
               const tracked = await tracker.listTracked(interaction.user.id);
               
               if (tracked.length === 0) {
-                await interaction.editReply({
+                return interaction.editReply({
                   content: 'Você não está monitorando nenhum personagem no momento.'
-                });
-                return;
+                }).catch(console.error);
               }
               
               const embed = new EmbedBuilder()
@@ -296,11 +313,11 @@ function setupEvents(client, db) {
                 });
               });
               
-              await interaction.editReply({ embeds: [embed] });
+              await interaction.editReply({ embeds: [embed] }).catch(console.error);
             } catch (error) {
               await interaction.editReply({
                 content: `❌ Erro ao listar personagens monitorados: ${error.message}`
-              });
+              }).catch(console.error);
             }
             break;
             
@@ -313,14 +330,14 @@ function setupEvents(client, db) {
               return interaction.reply({
                 content: '❌ Este comando é restrito a administradores.',
                 flags: MessageFlags.Ephemeral
-              });
+              }).catch(console.error);
             }
 
             const commandName = interaction.options.getString('comando');
             const action = interaction.options.getString('acao');
             const role = interaction.options.getRole('cargo');
 
-            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(console.error);
 
             try {
               if (action === 'list') {
@@ -329,19 +346,19 @@ function setupEvents(client, db) {
                 if (roleIds.length === 0) {
                   return interaction.editReply({
                     content: `Nenhum cargo tem permissão para o comando /${commandName}`
-                  });
+                  }).catch(console.error);
                 }
 
                 const roles = roleIds.map(id => interaction.guild.roles.cache.get(id)?.toString() || id).join('\n');
                 return interaction.editReply({
                   content: `Cargos com permissão para /${commandName}:\n${roles}`
-                });
+                }).catch(console.error);
               }
 
               if (!role) {
                 return interaction.editReply({
                   content: 'Por favor, especifique um cargo para esta ação.'
-                });
+                }).catch(console.error);
               }
 
               if (action === 'add') {
@@ -350,7 +367,7 @@ function setupEvents(client, db) {
                   content: success ? 
                     `✅ Cargo ${role.name} agora tem permissão para /${commandName}` :
                     '❌ Falha ao adicionar permissão. O cargo já pode ter esta permissão.'
-                });
+                }).catch(console.error);
               }
 
               if (action === 'remove') {
@@ -359,13 +376,13 @@ function setupEvents(client, db) {
                   content: success ? 
                     `✅ Cargo ${role.name} não tem mais permissão para /${commandName}` :
                     '❌ Falha ao remover permissão. O cargo pode não ter esta permissão.'
-                });
+                }).catch(console.error);
               }
             } catch (error) {
               console.error('❌ Erro ao gerenciar permissões:', error);
               return interaction.editReply({
                 content: 'Ocorreu um erro ao processar sua solicitação.'
-              });
+              }).catch(console.error);
             }
             break;
         }
@@ -402,7 +419,7 @@ function setupEvents(client, db) {
           
           page = direction === 'prev' ? page - 1 : page + 1;
           
-          await interaction.deferUpdate();
+          await interaction.deferUpdate().catch(console.error);
           await interaction.message.delete().catch(() => {});
           await listPendingApplications(interaction, [page.toString()], db);
           return;
@@ -415,7 +432,7 @@ function setupEvents(client, db) {
           
           page = direction === 'prev' ? page - 1 : page + 1;
           
-          await interaction.deferUpdate();
+          await interaction.deferUpdate().catch(console.error);
           await interaction.message.delete().catch(() => {});
           await searchApplications(interaction, [searchTerm, page.toString()], db);
           return;
@@ -438,10 +455,18 @@ function setupEvents(client, db) {
               return interaction.reply({
                 content: 'Inscrição não encontrada.',
                 flags: MessageFlags.Ephemeral
-              });
+              }).catch(console.error);
             }
             
-            const screenshots = JSON.parse(rows[0].screenshot_path || '[]');
+            let screenshots = [];
+            try {
+              screenshots = typeof rows[0].screenshot_path === 'string' ? 
+                JSON.parse(rows[0].screenshot_path || '[]') : 
+                rows[0].screenshot_path || [];
+            } catch (e) {
+              screenshots = rows[0].screenshot_path ? [rows[0].screenshot_path] : [];
+            }
+            
             await createImageCarousel(interaction, screenshots, applicationId);
             
           } catch (error) {
@@ -449,7 +474,7 @@ function setupEvents(client, db) {
             await interaction.reply({
               content: 'Ocorreu um erro ao buscar as screenshots.',
               flags: MessageFlags.Ephemeral
-            });
+            }).catch(console.error);
           }
           return;
         }
@@ -474,10 +499,18 @@ function setupEvents(client, db) {
               content: 'As screenshots não estão mais disponíveis.',
               embeds: [],
               components: []
-            });
+            }).catch(console.error);
           }
           
-          const screenshots = JSON.parse(rows[0].screenshot_path || '[]');
+          let screenshots = [];
+          try {
+            screenshots = typeof rows[0].screenshot_path === 'string' ? 
+              JSON.parse(rows[0].screenshot_path || '[]') : 
+              rows[0].screenshot_path || [];
+          } catch (e) {
+            screenshots = rows[0].screenshot_path ? [rows[0].screenshot_path] : [];
+          }
+          
           const totalImages = screenshots.length;
           
           // Atualizar índice baseado na ação
@@ -515,7 +548,7 @@ function setupEvents(client, db) {
           await interaction.update({
             embeds: [embed],
             components: [row]
-          });
+          }).catch(console.error);
           return;
         }
 
@@ -540,7 +573,7 @@ function setupEvents(client, db) {
           const actionRow = new ActionRowBuilder().addComponents(reasonInput);
           modal.addComponents(actionRow);
           
-          await interaction.showModal(modal);
+          await interaction.showModal(modal).catch(console.error);
         }
       } catch (error) {
         console.error('❌ Erro ao processar interação:', error);
@@ -562,7 +595,7 @@ function setupEvents(client, db) {
           const id = interaction.customId.split('_')[2];
           const reason = interaction.fields.getTextInputValue('reject_reason');
           
-          await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+          await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(console.error);
           await rejectApplication(interaction, id, reason, db);
         }
       } catch (error) {

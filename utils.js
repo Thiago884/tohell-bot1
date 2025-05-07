@@ -1,10 +1,11 @@
-const { EmbedBuilder } = require('discord.js');
+const { EmbedBuilder, MessageFlags } = require('discord.js');
 const axios = require('axios');
 const { JSDOM } = require('jsdom');
 
 // Configurações
 const ITEMS_PER_PAGE = 5;
 const GUILDS_TO_CHECK = ['ToHeLL_', 'ToHeLL2', 'ToHeLL3', 'ToHeLL4', 'ToHeLL5', 'ToHeLL6', 'ToHeLL7', 'ToHeLL8_', 'ToHeLL9', 'ToHeLL10'];
+const BASE_URL = process.env.BASE_URL || 'https://seusite.com/';
 
 // Função para formatar data no padrão brasileiro com fuso horário
 function formatBrazilianDate(dateString) {
@@ -41,24 +42,38 @@ function isValidImageUrl(url) {
   }
 }
 
-// Função para extrair URLs de imagens válidas
-function extractValidImageUrls(jsonString) {
+// Função para processar URLs de imagens
+function processImageUrls(imageData) {
   try {
-    const urls = JSON.parse(jsonString || '[]');
-    return urls.filter(url => isValidImageUrl(url));
+    // Se for string, tentar parsear como JSON
+    const urls = typeof imageData === 'string' ? JSON.parse(imageData || '[]') : imageData || [];
+    
+    // Converter para array se não for
+    const urlArray = Array.isArray(urls) ? urls : [urls];
+    
+    // Mapear para URLs completas se necessário
+    return urlArray.map(url => {
+      if (!url) return null;
+      return url.startsWith('http') ? url : `${BASE_URL}${url.replace(/^\/+/, '')}`;
+    }).filter(url => url !== null && isValidImageUrl(url));
   } catch (error) {
-    console.error('Erro ao extrair URLs de imagens:', error);
+    console.error('Erro ao processar URLs de imagem:', error);
     return [];
   }
+}
+
+// Função para extrair URLs de imagens válidas
+function extractValidImageUrls(jsonString) {
+  return processImageUrls(jsonString);
 }
 
 // Função para responder a interações de forma segura
 async function safeInteractionReply(interaction, content) {
   try {
     if (interaction.replied || interaction.deferred) {
-      return await interaction.editReply(content);
+      return await interaction.editReply(content).catch(console.error);
     } else {
-      return await interaction.reply(content);
+      return await interaction.reply(content).catch(console.error);
     }
   } catch (error) {
     console.error('❌ Erro ao responder interação:', error);
@@ -363,9 +378,22 @@ function createCharEmbed({ name, level, resets, guild, found, lastSeen, history,
 
 // Buscar personagem
 async function searchCharacter(interaction, charName, dbConnection) {
-  await interaction.deferReply();
-  
   try {
+    // Verificar se a interação ainda é válida
+    if (interaction.deferred || interaction.replied) {
+      return;
+    }
+
+    // Adicionar timeout para garantir resposta dentro do limite do Discord
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Tempo de resposta excedido')), 2500)
+    );
+
+    await Promise.race([
+      interaction.deferReply(),
+      timeoutPromise
+    ]);
+
     const charData = await searchCharacterInDatabaseOrGuilds(charName, dbConnection);
     
     if (!charData) {
@@ -386,12 +414,12 @@ async function searchCharacter(interaction, charName, dbConnection) {
             found: false,
             lastSeen: lastKnown.last_seen
           })]
-        });
+        }).catch(console.error);
       }
       
       return interaction.editReply({
         content: `Personagem "${charName}" não encontrado em nenhuma guilda da ToHeLL.`
-      });
+      }).catch(console.error);
     }
     
     // Obter histórico
@@ -414,21 +442,28 @@ async function searchCharacter(interaction, charName, dbConnection) {
       stats: advancedStats
     });
     
-    await interaction.editReply({ embeds: [embed] });
+    await interaction.editReply({ embeds: [embed] }).catch(console.error);
     
   } catch (error) {
     console.error('❌ Erro ao buscar personagem:', error);
-    await interaction.editReply({
-      content: 'Ocorreu um erro ao buscar o personagem. Por favor, tente novamente mais tarde.'
-    });
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({
+        content: 'Ocorreu um erro ao buscar o personagem. Por favor, tente novamente mais tarde.',
+        flags: MessageFlags.Ephemeral
+      }).catch(console.error);
+    } else if (interaction.deferred && !interaction.replied) {
+      await interaction.editReply({
+        content: 'Ocorreu um erro ao buscar o personagem. Por favor, tente novamente mais tarde.'
+      }).catch(console.error);
+    }
   }
 }
 
 // Mostrar ranking
 async function showRanking(interaction, period, dbConnection) {
-  await interaction.deferReply();
-  
   try {
+    await interaction.deferReply().catch(console.error);
+
     let days;
     switch (period) {
       case '24h': days = 1; break;
@@ -457,7 +492,7 @@ async function showRanking(interaction, period, dbConnection) {
     if (rows.length === 0) {
       return interaction.editReply({
         content: `Nenhum dado de ranking disponível para o período de ${days} dias.`
-      });
+      }).catch(console.error);
     }
     
     const periodName = days === 1 ? '24 horas' : `${days} dias`;
@@ -477,13 +512,20 @@ async function showRanking(interaction, period, dbConnection) {
       });
     });
     
-    await interaction.editReply({ embeds: [embed] });
+    await interaction.editReply({ embeds: [embed] }).catch(console.error);
     
   } catch (error) {
     console.error('❌ Erro ao buscar ranking:', error);
-    await interaction.editReply({
-      content: 'Ocorreu um erro ao buscar o ranking. Por favor, tente novamente mais tarde.'
-    });
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({
+        content: 'Ocorreu um erro ao buscar o ranking. Por favor, tente novamente mais tarde.',
+        flags: MessageFlags.Ephemeral
+      }).catch(console.error);
+    } else if (interaction.deferred && !interaction.replied) {
+      await interaction.editReply({
+        content: 'Ocorreu um erro ao buscar o ranking. Por favor, tente novamente mais tarde.'
+      }).catch(console.error);
+    }
   }
 }
 
@@ -587,6 +629,7 @@ module.exports = {
   formatBrazilianDate,
   isValidImageUrl,
   extractValidImageUrls,
+  processImageUrls,
   safeInteractionReply,
   safeSend,
   parallelGuildSearch,
