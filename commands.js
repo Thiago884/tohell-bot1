@@ -11,6 +11,9 @@ const {
 } = require('discord.js');
 const { formatBrazilianDate, safeSend, notifyWebhook } = require('./utils');
 
+// Configuração da URL base para imagens
+const BASE_URL = process.env.BASE_URL || 'https://tohellguild.com.br/';
+
 // Comandos Slash
 const slashCommands = [
   {
@@ -152,9 +155,31 @@ const slashCommands = [
   }
 ];
 
+// Função para converter caminhos em URLs completas
+function processImageUrls(imageData) {
+  try {
+    // Se for string, tentar parsear como JSON
+    const urls = typeof imageData === 'string' ? JSON.parse(imageData || '[]') : imageData || [];
+    
+    // Converter para array se não for
+    const urlArray = Array.isArray(urls) ? urls : [urls];
+    
+    // Mapear para URLs completas se necessário
+    return urlArray.map(url => {
+      if (!url) return null;
+      return url.startsWith('http') ? url : `${BASE_URL}${url.replace(/^\/+/, '')}`;
+    }).filter(url => url !== null);
+  } catch (error) {
+    console.error('Erro ao processar URLs de imagem:', error);
+    return [];
+  }
+}
+
 // Função para criar um carrossel de imagens
 async function createImageCarousel(interaction, images, applicationId) {
-  if (!images || images.length === 0) {
+  const processedImages = processImageUrls(images);
+  
+  if (processedImages.length === 0) {
     return interaction.reply({
       content: 'Nenhuma imagem disponível para exibição.',
       flags: MessageFlags.Ephemeral
@@ -162,16 +187,14 @@ async function createImageCarousel(interaction, images, applicationId) {
   }
 
   const currentIndex = 0;
-  const totalImages = images.length;
+  const totalImages = processedImages.length;
 
-  // Criar embed para a imagem atual
   const embed = new EmbedBuilder()
     .setColor('#FF4500')
     .setTitle(`Screenshot #${currentIndex + 1} de ${totalImages}`)
-    .setImage(images[currentIndex])
+    .setImage(processedImages[currentIndex])
     .setFooter({ text: `Inscrição #${applicationId}` });
 
-  // Criar botões de navegação
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`carousel_prev_${applicationId}_${currentIndex}`)
@@ -189,7 +212,6 @@ async function createImageCarousel(interaction, images, applicationId) {
       .setStyle(ButtonStyle.Danger)
   );
 
-  // Enviar a mensagem do carrossel
   return interaction.reply({
     embeds: [embed],
     components: [row],
@@ -330,38 +352,7 @@ async function searchApplications(context, args, dbConnection) {
     await context.editReply({ embeds: [embed] });
 
     for (const application of rows) {
-      const screenshots = JSON.parse(application.screenshot_path || '[]');
-      const screenshotLinks = screenshots.slice(0, 5).map((screenshot, index) => 
-        `[Imagem ${index + 1}](${screenshot})`
-      ).join('\n') || 'Nenhuma imagem enviada';
-
-      const embed = new EmbedBuilder()
-        .setColor(application.status === 'aprovado' ? '#00FF00' : '#FF4500')
-        .setTitle(`Inscrição #${application.id} (${application.status === 'aprovado' ? 'Aprovada' : 'Pendente'})`)
-        .setDescription(`**${application.nome}** deseja se juntar à guild!`)
-        .addFields(
-          { name: '📱 Telefone', value: application.telefone, inline: true },
-          { name: '🎮 Discord', value: application.discord, inline: true },
-          { name: '⚔️ Char Principal', value: application.char_principal, inline: true },
-          { name: '🏰 Guild Anterior', value: application.guild_anterior || 'Nenhuma', inline: true },
-          { name: '📸 Screenshots', value: screenshotLinks, inline: false },
-          { name: '📅 Data', value: formatBrazilianDate(application.data_inscricao), inline: true },
-          { name: '🌐 IP', value: application.ip || 'Não registrado', inline: true }
-        )
-        .setFooter({ text: 'ToHeLL Guild - Use os botões para visualizar screenshots' });
-
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`view_screenshots_${application.id}_${application.status}`)
-          .setLabel('Visualizar Screenshots')
-          .setStyle(ButtonStyle.Secondary)
-          .setDisabled(screenshots.length === 0)
-      );
-
-      await safeSend(context.channel, { 
-        embeds: [embed],
-        components: [row]
-      });
+      await sendApplicationEmbed(context.channel, application, dbConnection);
     }
 
     if (totalPages > 1) {
@@ -392,7 +383,7 @@ async function searchApplications(context, args, dbConnection) {
 
 // Função para enviar embed de inscrição
 async function sendApplicationEmbed(channel, application, dbConnection) {
-  const screenshots = JSON.parse(application.screenshot_path || '[]');
+  const screenshots = processImageUrls(application.screenshot_path);
   const screenshotLinks = screenshots.slice(0, 5).map((screenshot, index) => 
     `[Imagem ${index + 1}](${screenshot})`
   ).join('\n') || 'Nenhuma imagem enviada';
@@ -410,7 +401,7 @@ async function sendApplicationEmbed(channel, application, dbConnection) {
       { name: '📅 Data', value: formatBrazilianDate(application.data_inscricao), inline: true },
       { name: '🌐 IP', value: application.ip || 'Não registrado', inline: true }
     )
-    .setFooter({ text: 'ToHeLL Guild - Use os botões ou reações para aprovar/rejeitar' });
+    .setFooter({ text: 'ToHeLL Guild - Use os botões para visualizar ou aprovar/rejeitar' });
 
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -631,5 +622,6 @@ module.exports = {
   approveApplication,
   rejectApplication,
   setupCommands,
-  createImageCarousel
+  createImageCarousel,
+  processImageUrls
 };
