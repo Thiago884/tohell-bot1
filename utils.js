@@ -1,7 +1,17 @@
 const { EmbedBuilder, MessageFlags, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const axios = require('axios');
+const axiosRetry = require('axios-retry');
 const { JSDOM } = require('jsdom');
 const moment = require('moment-timezone');
+
+// Configura axios para tentar novamente em caso de falha
+axiosRetry(axios, {
+  retries: 2,
+  retryDelay: (retryCount) => retryCount * 1000,
+  retryCondition: (error) => 
+    axiosRetry.isNetworkOrIdempotentRequestError(error) || 
+    error.code === 'ECONNABORTED'
+});
 
 // Configurações
 const ITEMS_PER_PAGE = 5;
@@ -67,29 +77,33 @@ async function safeInteractionReply(interaction, content) {
   }
 }
 
-// Busca paralela em guildas com Promise.allSettled (otimizada)
+// Busca paralela em guildas otimizada com retry e priorização
 async function parallelGuildSearch(name, nameLower, guilds = GUILDS_TO_CHECK) {
   try {
-    const requests = guilds.flatMap(guild => {
-      return [1, 2].map(page => {
+    // Separa guildas principais e secundárias
+    const mainGuilds = guilds.filter(g => MAIN_GUILDS.includes(g));
+    const otherGuilds = guilds.filter(g => !MAIN_GUILDS.includes(g));
+    
+    // Função para criar requests
+    const createRequests = (guildList, timeout) => 
+      guildList.flatMap(guild => [1, 2].map(page => {
         const url = `${MUCA_BRASIL_URL}${guild}${page > 1 ? `&p=${page}` : ''}`;
         return axios.get(url, { 
-          timeout: 5000,
-          headers: {
-            'User-Agent': 'ToHeLL-Discord-Bot/1.0'
-          }
+          timeout,
+          headers: { 'User-Agent': 'ToHeLL-Discord-Bot/1.0' }
         })
           .then(response => ({ html: response.data, guild, page }))
-          .catch(error => {
-            console.error(`❌ Erro ao buscar guilda ${guild} página ${page}:`, error.message);
-            return null;
-          });
-      });
-    });
+          .catch(() => null);
+      }));
 
-    const responses = await Promise.allSettled(requests);
-    
-    for (const response of responses) {
+    // Executa buscas em paralelo com prioridade para guildas principais
+    const [mainResponses, otherResponses] = await Promise.all([
+      Promise.allSettled(createRequests(mainGuilds, 3000)), // 3s para guildas principais
+      Promise.allSettled(createRequests(otherGuilds, 5000)) // 5s para outras
+    ]);
+
+    // Processa respostas
+    for (const response of [...mainResponses, ...otherResponses]) {
       if (response.status === 'fulfilled' && response.value) {
         const { html, guild, page } = response.value;
         const dom = new JSDOM(html);
@@ -139,13 +153,7 @@ async function searchCharacterWithCache(name, dbConnection) {
     }
     
     // Busca nas guildas principais primeiro (em paralelo)
-    const mainGuildsSearch = parallelGuildSearch(name, nameLower, MAIN_GUILDS);
-    // Busca nas outras guildas (em paralelo)
-    const otherGuildsSearch = parallelGuildSearch(name, nameLower, GUILDS_TO_CHECK.filter(g => !MAIN_GUILDS.includes(g)));
-    
-    const [mainResult, otherResult] = await Promise.all([mainGuildsSearch, otherGuildsSearch]);
-    
-    const guildData = mainResult || otherResult;
+    const guildData = await parallelGuildSearch(name, nameLower);
     
     if (guildData) {
       // Atualiza ou insere no banco de dados
@@ -352,34 +360,10 @@ function createCharEmbed({ name, level, resets, guild, found, lastSeen, history,
 
 // Buscar personagem com tratamento de erro completo
 async function searchCharacter(interaction, charName, dbConnection) {
-  if (interaction.replied || interaction.deferred) {
-    console.log('⚠️ Interação já foi respondida, ignorando nova tentativa');
-    return;
-  }
-
-  let replied = false;
-  const reply = async (content) => {
-    if (!replied) {
-      replied = true;
-      try {
-        if (interaction.deferred) {
-          await interaction.editReply(content);
-        } else {
-          await interaction.reply(content);
-        }
-      } catch (error) {
-        console.error('❌ Erro ao enviar resposta:', error);
-      }
-    }
-  };
-
   try {
-    console.log(`🔍 Iniciando busca por ${charName}`);
-
     // Verificar conexão com o banco de dados
     if (!dbConnection || !(await dbConnection.execute('SELECT 1').catch(() => false))) {
-      console.error('❌ Conexão com o banco de dados não está ativa');
-      return reply({
+      return interaction.reply({
         content: 'Erro de conexão com o banco de dados. Por favor, tente novamente mais tarde.',
         ephemeral: true
       });
@@ -387,24 +371,14 @@ async function searchCharacter(interaction, charName, dbConnection) {
 
     // Deferir a resposta primeiro
     await interaction.deferReply();
-    console.log(`⏳ Resposta deferida para busca de ${charName}`);
 
-    // Timeout de 10 segundos
-    const timeout = setTimeout(async () => {
-      if (!replied) {
-        console.error('⌛ Timeout excedido para busca de personagem');
-        await reply({
-          content: 'A busca está demorando mais que o esperado. Por favor, tente novamente.',
-          ephemeral: true
-        });
-      }
-    }, 10000);
+    // Executar a busca com timeout total de 15 segundos
+    const charData = await Promise.race([
+      searchCharacterWithCache(charName, dbConnection),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 15000))
+    ]);
 
-    // Executar a busca
-    const charData = await searchCharacterWithCache(charName, dbConnection);
-    
     if (!charData) {
-      console.log(`🔍 Personagem ${charName} não encontrado, verificando histórico...`);
       const [historyRows] = await dbConnection.execute(
         'SELECT * FROM characters WHERE LOWER(name) = ? LIMIT 1',
         [charName.toLowerCase()]
@@ -412,8 +386,7 @@ async function searchCharacter(interaction, charName, dbConnection) {
       
       if (historyRows.length > 0) {
         const lastKnown = historyRows[0];
-        console.log(`📌 Exibindo dados históricos para ${charName}`);
-        return reply({
+        return interaction.editReply({
           embeds: [createCharEmbed({
             name: lastKnown.name,
             level: lastKnown.last_level,
@@ -425,13 +398,10 @@ async function searchCharacter(interaction, charName, dbConnection) {
         });
       }
       
-      console.log(`❌ Personagem ${charName} não encontrado em nenhum lugar`);
-      return reply({
+      return interaction.editReply({
         content: `Personagem "${charName}" não encontrado em nenhuma guilda da ToHeLL.`
       });
     }
-    
-    console.log(`✅ Dados encontrados para ${charName}, buscando histórico e estatísticas...`);
     
     // Obter histórico e estatísticas em paralelo
     const [history, advancedStats] = await Promise.all([
@@ -453,23 +423,30 @@ async function searchCharacter(interaction, charName, dbConnection) {
       stats: advancedStats
     });
     
-    console.log(`📊 Embed criado para ${charName}, enviando resposta...`);
-    await reply({ embeds: [embed] });
-    clearTimeout(timeout);
+    await interaction.editReply({ embeds: [embed] });
     
   } catch (error) {
     console.error('❌ Erro ao buscar personagem:', error);
-    await reply({
-      content: 'Ocorreu um erro ao buscar o personagem. Por favor, tente novamente mais tarde.',
-      ephemeral: true
-    });
+    
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({
+        content: 'Ocorreu um erro ao buscar o personagem. Por favor, tente novamente mais tarde.',
+        ephemeral: true
+      });
+    } else if (interaction.deferred) {
+      await interaction.editReply({
+        content: error.message === 'Timeout' ? 
+          'A busca está demorando mais que o esperado. Por favor, tente novamente.' :
+          'Ocorreu um erro ao buscar o personagem. Por favor, tente novamente mais tarde.'
+      });
+    }
   }
 }
 
-// Mostrar ranking
+// Mostrar ranking com cache
 async function showRanking(interaction, period, dbConnection) {
   try {
-    await interaction.deferReply().catch(console.error);
+    await interaction.deferReply();
 
     let days;
     switch (period) {
@@ -479,6 +456,18 @@ async function showRanking(interaction, period, dbConnection) {
       default: days = 7;
     }
     
+    // Verificar cache
+    const cacheKey = `ranking_${days}d`;
+    const [cacheRows] = await dbConnection.execute(
+      'SELECT key_value FROM system_status WHERE key_name = ? AND updated_at > DATE_SUB(NOW(), INTERVAL 5 MINUTE)',
+      [cacheKey]
+    );
+
+    if (cacheRows.length > 0) {
+      const cachedData = JSON.parse(cacheRows[0].key_value);
+      return interaction.editReply({ embeds: [cachedData.embed] });
+    }
+
     const [rows] = await dbConnection.execute(`
       SELECT 
         c.name, 
@@ -499,7 +488,7 @@ async function showRanking(interaction, period, dbConnection) {
     if (rows.length === 0) {
       return interaction.editReply({
         content: `Nenhum dado de ranking disponível para o período de ${days} dias.`
-      }).catch(console.error);
+      });
     }
     
     const periodName = days === 1 ? '24 horas' : `${days} dias`;
@@ -518,21 +507,21 @@ async function showRanking(interaction, period, dbConnection) {
         inline: false
       });
     });
+
+    // Salvar no cache
+    await dbConnection.execute(
+      'INSERT INTO system_status (key_name, key_value) VALUES (?, ?) ' +
+      'ON DUPLICATE KEY UPDATE key_value = VALUES(key_value), updated_at = NOW()',
+      [cacheKey, JSON.stringify({ embed })]
+    );
     
-    await interaction.editReply({ embeds: [embed] }).catch(console.error);
+    await interaction.editReply({ embeds: [embed] });
     
   } catch (error) {
     console.error('❌ Erro ao buscar ranking:', error);
-    if (!interaction.replied && !interaction.deferred) {
-      await interaction.reply({
-        content: 'Ocorreu um erro ao buscar o ranking. Por favor, tente novamente mais tarde.',
-        flags: MessageFlags.Ephemeral
-      }).catch(console.error);
-    } else if (interaction.deferred && !interaction.replied) {
-      await interaction.editReply({
-        content: 'Ocorreu um erro ao buscar o ranking. Por favor, tente novamente mais tarde.'
-      }).catch(console.error);
-    }
+    await interaction.editReply({
+      content: 'Ocorreu um erro ao buscar o ranking. Por favor, tente novamente mais tarde.'
+    });
   }
 }
 
