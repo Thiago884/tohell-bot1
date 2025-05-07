@@ -152,6 +152,51 @@ const slashCommands = [
   }
 ];
 
+// Função para criar um carrossel de imagens
+async function createImageCarousel(interaction, images, applicationId) {
+  if (!images || images.length === 0) {
+    return interaction.reply({
+      content: 'Nenhuma imagem disponível para exibição.',
+      ephemeral: true
+    });
+  }
+
+  const currentIndex = 0;
+  const totalImages = images.length;
+
+  // Criar embed para a imagem atual
+  const embed = new EmbedBuilder()
+    .setColor('#FF4500')
+    .setTitle(`Screenshot #${currentIndex + 1} de ${totalImages}`)
+    .setImage(images[currentIndex])
+    .setFooter({ text: `Inscrição #${applicationId}` });
+
+  // Criar botões de navegação
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`carousel_prev_${applicationId}_${currentIndex}`)
+      .setLabel('Anterior')
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(currentIndex === 0),
+    new ButtonBuilder()
+      .setCustomId(`carousel_next_${applicationId}_${currentIndex}`)
+      .setLabel('Próxima')
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(currentIndex === totalImages - 1),
+    new ButtonBuilder()
+      .setCustomId(`carousel_close_${applicationId}`)
+      .setLabel('Fechar')
+      .setStyle(ButtonStyle.Danger)
+  );
+
+  // Enviar a mensagem do carrossel
+  return interaction.reply({
+    embeds: [embed],
+    components: [row],
+    ephemeral: true
+  });
+}
+
 // Função para listar inscrições pendentes com paginação
 async function listPendingApplications(context, args, dbConnection) {
   const page = args[0] ? parseInt(args[0]) : 1;
@@ -337,6 +382,11 @@ async function sendApplicationEmbed(channel, application, dbConnection) {
     .setFooter({ text: 'ToHeLL Guild - Use os botões ou reações para aprovar/rejeitar' });
 
   const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`view_screenshots_${application.id}`)
+      .setLabel('Visualizar Screenshots')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(screenshots.length === 0),
     new ButtonBuilder()
       .setCustomId(`approve_${application.id}`)
       .setLabel('Aprovar')
@@ -550,4 +600,5 @@ module.exports = {
   approveApplication,
   rejectApplication,
   setupCommands,
+  createImageCarousel
 };

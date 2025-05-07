@@ -1,7 +1,7 @@
 const { Events, EmbedBuilder, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = require('discord.js');
 const { safeSend, searchCharacterInDatabaseOrGuilds, showRanking, searchCharacter, getCommandPermissions, addCommandPermission, removeCommandPermission, checkUserPermission } = require('./utils');
 const { isShuttingDown } = require('./database');
-const { listPendingApplications, searchApplications, sendApplicationEmbed, approveApplication, rejectApplication, showHelp } = require('./commands');
+const { listPendingApplications, searchApplications, sendApplicationEmbed, approveApplication, rejectApplication, showHelp, createImageCarousel } = require('./commands');
 
 // Monitor de inscrições pendentes
 let lastCheckedApplications = new Date();
@@ -395,6 +395,7 @@ function setupEvents(client, db) {
       }
 
       try {
+        // Navegação de páginas
         if (interaction.customId.startsWith('prev_page_') || interaction.customId.startsWith('next_page_')) {
           const [direction, pageStr] = interaction.customId.split('_').slice(1);
           let page = parseInt(pageStr);
@@ -407,6 +408,7 @@ function setupEvents(client, db) {
           return;
         }
 
+        // Navegação de busca
         if (interaction.customId.startsWith('search_prev_') || interaction.customId.startsWith('search_next_')) {
           const [direction, searchTerm, pageStr] = interaction.customId.split('_').slice(1);
           let page = parseInt(pageStr);
@@ -419,6 +421,103 @@ function setupEvents(client, db) {
           return;
         }
 
+        // Visualizar screenshots
+        if (interaction.customId.startsWith('view_screenshots_')) {
+          const applicationId = interaction.customId.split('_')[2];
+          
+          try {
+            // Buscar as imagens no banco de dados
+            const [rows] = await db.execute(
+              'SELECT screenshot_path FROM inscricoes_pendentes WHERE id = ?',
+              [applicationId]
+            );
+            
+            if (rows.length === 0) {
+              return interaction.reply({
+                content: 'Inscrição não encontrada ou já processada.',
+                ephemeral: true
+              });
+            }
+            
+            const screenshots = JSON.parse(rows[0].screenshot_path || '[]');
+            await createImageCarousel(interaction, screenshots, applicationId);
+            
+          } catch (error) {
+            console.error('❌ Erro ao buscar screenshots:', error);
+            await interaction.reply({
+              content: 'Ocorreu um erro ao buscar as screenshots.',
+              ephemeral: true
+            });
+          }
+          return;
+        }
+        
+        // Navegação do carrossel
+        if (interaction.customId.startsWith('carousel_')) {
+          const [_, action, applicationId, currentIndexStr] = interaction.customId.split('_');
+          let currentIndex = parseInt(currentIndexStr);
+          
+          if (action === 'close') {
+            return interaction.message.delete().catch(console.error);
+          }
+          
+          // Buscar as imagens novamente para garantir que ainda existam
+          const [rows] = await db.execute(
+            'SELECT screenshot_path FROM inscricoes_pendentes WHERE id = ?',
+            [applicationId]
+          );
+          
+          if (rows.length === 0) {
+            return interaction.update({
+              content: 'As screenshots não estão mais disponíveis.',
+              embeds: [],
+              components: []
+            });
+          }
+          
+          const screenshots = JSON.parse(rows[0].screenshot_path || '[]');
+          const totalImages = screenshots.length;
+          
+          // Atualizar índice baseado na ação
+          if (action === 'prev' && currentIndex > 0) {
+            currentIndex--;
+          } else if (action === 'next' && currentIndex < totalImages - 1) {
+            currentIndex++;
+          }
+          
+          // Atualizar embed
+          const embed = new EmbedBuilder()
+            .setColor('#FF4500')
+            .setTitle(`Screenshot #${currentIndex + 1} de ${totalImages}`)
+            .setImage(screenshots[currentIndex])
+            .setFooter({ text: `Inscrição #${applicationId}` });
+          
+          // Atualizar botões
+          const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`carousel_prev_${applicationId}_${currentIndex}`)
+              .setLabel('Anterior')
+              .setStyle(ButtonStyle.Primary)
+              .setDisabled(currentIndex === 0),
+            new ButtonBuilder()
+              .setCustomId(`carousel_next_${applicationId}_${currentIndex}`)
+              .setLabel('Próxima')
+              .setStyle(ButtonStyle.Primary)
+              .setDisabled(currentIndex === totalImages - 1),
+            new ButtonBuilder()
+              .setCustomId(`carousel_close_${applicationId}`)
+              .setLabel('Fechar')
+              .setStyle(ButtonStyle.Danger)
+          );
+          
+          await interaction.update({
+            embeds: [embed],
+            components: [row]
+          });
+          return;
+        }
+
+        // Aprovar/rejeitar inscrição
         const [action, id] = interaction.customId.split('_');
         
         if (action === 'approve') {

@@ -31,6 +31,41 @@ function formatBrazilianDate(dateString) {
   }
 }
 
+// Função para validar URL de imagem
+function isValidImageUrl(url) {
+  try {
+    new URL(url);
+    return /\.(jpg|jpeg|png|gif|webp)$/i.test(url);
+  } catch {
+    return false;
+  }
+}
+
+// Função para extrair URLs de imagens válidas
+function extractValidImageUrls(jsonString) {
+  try {
+    const urls = JSON.parse(jsonString || '[]');
+    return urls.filter(url => isValidImageUrl(url));
+  } catch (error) {
+    console.error('Erro ao extrair URLs de imagens:', error);
+    return [];
+  }
+}
+
+// Função para responder a interações de forma segura
+async function safeInteractionReply(interaction, content) {
+  try {
+    if (interaction.replied || interaction.deferred) {
+      return await interaction.editReply(content);
+    } else {
+      return await interaction.reply(content);
+    }
+  } catch (error) {
+    console.error('❌ Erro ao responder interação:', error);
+    return null;
+  }
+}
+
 // Busca paralela em guildas
 async function parallelGuildSearch(name, nameLower, guilds = GUILDS_TO_CHECK) {
   const baseUrl = 'https://www.mucabrasil.com.br/?go=guild&n=';
@@ -550,6 +585,9 @@ async function safeSend(channel, content) {
 
 module.exports = {
   formatBrazilianDate,
+  isValidImageUrl,
+  extractValidImageUrls,
+  safeInteractionReply,
   safeSend,
   parallelGuildSearch,
   searchCharacterInDatabaseOrGuilds,
