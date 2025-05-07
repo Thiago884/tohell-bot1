@@ -157,7 +157,7 @@ async function createImageCarousel(interaction, images, applicationId) {
   if (!images || images.length === 0) {
     return interaction.reply({
       content: 'Nenhuma imagem disponível para exibição.',
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 
@@ -193,7 +193,7 @@ async function createImageCarousel(interaction, images, applicationId) {
   return interaction.reply({
     embeds: [embed],
     components: [row],
-    ephemeral: true
+    flags: MessageFlags.Ephemeral
   });
 }
 
@@ -330,7 +330,38 @@ async function searchApplications(context, args, dbConnection) {
     await context.editReply({ embeds: [embed] });
 
     for (const application of rows) {
-      await sendApplicationEmbed(context.channel, application, dbConnection);
+      const screenshots = JSON.parse(application.screenshot_path || '[]');
+      const screenshotLinks = screenshots.slice(0, 5).map((screenshot, index) => 
+        `[Imagem ${index + 1}](${screenshot})`
+      ).join('\n') || 'Nenhuma imagem enviada';
+
+      const embed = new EmbedBuilder()
+        .setColor(application.status === 'aprovado' ? '#00FF00' : '#FF4500')
+        .setTitle(`Inscrição #${application.id} (${application.status === 'aprovado' ? 'Aprovada' : 'Pendente'})`)
+        .setDescription(`**${application.nome}** deseja se juntar à guild!`)
+        .addFields(
+          { name: '📱 Telefone', value: application.telefone, inline: true },
+          { name: '🎮 Discord', value: application.discord, inline: true },
+          { name: '⚔️ Char Principal', value: application.char_principal, inline: true },
+          { name: '🏰 Guild Anterior', value: application.guild_anterior || 'Nenhuma', inline: true },
+          { name: '📸 Screenshots', value: screenshotLinks, inline: false },
+          { name: '📅 Data', value: formatBrazilianDate(application.data_inscricao), inline: true },
+          { name: '🌐 IP', value: application.ip || 'Não registrado', inline: true }
+        )
+        .setFooter({ text: 'ToHeLL Guild - Use os botões para visualizar screenshots' });
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`view_screenshots_${application.id}_${application.status}`)
+          .setLabel('Visualizar Screenshots')
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(screenshots.length === 0)
+      );
+
+      await safeSend(context.channel, { 
+        embeds: [embed],
+        components: [row]
+      });
     }
 
     if (totalPages > 1) {
@@ -383,7 +414,7 @@ async function sendApplicationEmbed(channel, application, dbConnection) {
 
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId(`view_screenshots_${application.id}`)
+      .setCustomId(`view_screenshots_${application.id}_${application.status || 'pendente'}`)
       .setLabel('Visualizar Screenshots')
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(screenshots.length === 0),

@@ -1,4 +1,4 @@
-const { Events, EmbedBuilder, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = require('discord.js');
+const { Events, EmbedBuilder, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { safeSend, searchCharacterInDatabaseOrGuilds, showRanking, searchCharacter, getCommandPermissions, addCommandPermission, removeCommandPermission, checkUserPermission } = require('./utils');
 const { isShuttingDown } = require('./database');
 const { listPendingApplications, searchApplications, sendApplicationEmbed, approveApplication, rejectApplication, showHelp, createImageCarousel } = require('./commands');
@@ -423,19 +423,21 @@ function setupEvents(client, db) {
 
         // Visualizar screenshots
         if (interaction.customId.startsWith('view_screenshots_')) {
-          const applicationId = interaction.customId.split('_')[2];
+          const [_, __, applicationId, status] = interaction.customId.split('_');
           
           try {
-            // Buscar as imagens no banco de dados
+            // Determinar qual tabela consultar baseado no status
+            const table = status === 'aprovado' ? 'inscricoes' : 'inscricoes_pendentes';
+            
             const [rows] = await db.execute(
-              'SELECT screenshot_path FROM inscricoes_pendentes WHERE id = ?',
+              `SELECT screenshot_path FROM ${table} WHERE id = ?`,
               [applicationId]
             );
             
             if (rows.length === 0) {
               return interaction.reply({
-                content: 'Inscrição não encontrada ou já processada.',
-                ephemeral: true
+                content: 'Inscrição não encontrada.',
+                flags: MessageFlags.Ephemeral
               });
             }
             
@@ -446,7 +448,7 @@ function setupEvents(client, db) {
             console.error('❌ Erro ao buscar screenshots:', error);
             await interaction.reply({
               content: 'Ocorreu um erro ao buscar as screenshots.',
-              ephemeral: true
+              flags: MessageFlags.Ephemeral
             });
           }
           return;
