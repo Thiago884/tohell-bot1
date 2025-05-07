@@ -1,658 +1,590 @@
-const { EmbedBuilder, MessageFlags } = require('discord.js');
-const axios = require('axios');
-const { JSDOM } = require('jsdom');
+const { Events, EmbedBuilder, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { safeSend, searchCharacterInDatabaseOrGuilds, showRanking, searchCharacter, getCommandPermissions, addCommandPermission, removeCommandPermission, checkUserPermission } = require('./utils');
+const { isShuttingDown } = require('./database');
+const { listPendingApplications, searchApplications, sendApplicationEmbed, approveApplication, rejectApplication, showHelp, createImageCarousel } = require('./commands');
 
-// Configurações
-const ITEMS_PER_PAGE = 5;
-const GUILDS_TO_CHECK = ['ToHeLL_', 'ToHeLL2', 'ToHeLL3', 'ToHeLL4', 'ToHeLL5', 'ToHeLL6', 'ToHeLL7', 'ToHeLL8_', 'ToHeLL9', 'ToHeLL10'];
-const BASE_URL = process.env.BASE_URL || 'https://seusite.com/';
+// Monitor de inscrições pendentes
+let lastCheckedApplications = new Date();
 
-// Função para formatar data no padrão brasileiro com fuso horário
-function formatBrazilianDate(dateString) {
-  if (!dateString) return 'Data inválida';
-  
-  try {
-    const date = new Date(dateString);
-    const offset = -3 * 60; // Brasília UTC-3
-    const adjustedDate = new Date(date.getTime() + (offset + date.getTimezoneOffset()) * 60000);
-    
-    const day = adjustedDate.getDate().toString().padStart(2, '0');
-    const month = (adjustedDate.getMonth() + 1).toString().padStart(2, '0');
-    const year = adjustedDate.getFullYear();
-    const hours = adjustedDate.getHours().toString().padStart(2, '0');
-    const minutes = adjustedDate.getMinutes().toString().padStart(2, '0');
-    
-    return `${day}/${month}/${year} ${hours}:${minutes}`;
-  } catch (error) {
-    console.error('Erro ao formatar data:', error);
-    return 'Data inválida';
-  }
-}
-
-// Função para validar URL de imagem
-function isValidImageUrl(url) {
-  try {
-    new URL(url);
-    return /\.(jpg|jpeg|png|gif|webp)$/i.test(url);
-  } catch {
-    return false;
-  }
-}
-
-// Função para processar URLs de imagens
-function processImageUrls(imageData) {
-  try {
-    const urls = typeof imageData === 'string' ? JSON.parse(imageData || '[]') : imageData || [];
-    const urlArray = Array.isArray(urls) ? urls : [urls];
-    
-    return urlArray.map(url => {
-      if (!url) return null;
-      return url.startsWith('http') ? url : `${BASE_URL}${url.replace(/^\/+/, '')}`;
-    }).filter(url => url !== null && isValidImageUrl(url));
-  } catch (error) {
-    console.error('Erro ao processar URLs de imagem:', error);
-    return [];
-  }
-}
-
-// Função para extrair URLs de imagens válidas
-function extractValidImageUrls(jsonString) {
-  return processImageUrls(jsonString);
-}
-
-// Função para responder a interações de forma segura
-async function safeInteractionReply(interaction, content) {
-  try {
-    if (interaction.replied || interaction.deferred) {
-      return await interaction.editReply(content).catch(console.error);
-    } else {
-      return await interaction.reply(content).catch(console.error);
-    }
-  } catch (error) {
-    console.error('❌ Erro ao responder interação:', error);
-    return null;
-  }
-}
-
-// Busca paralela em guildas com Promise.allSettled
-async function parallelGuildSearch(name, nameLower, guilds = GUILDS_TO_CHECK) {
-  const baseUrl = 'https://www.mucabrasil.com.br/?go=guild&n=';
-  
-  try {
-    const requests = guilds.flatMap(guild => {
-      return [1, 2].map(page => {
-        const url = `${baseUrl}${guild}${page > 1 ? `&p=${page}` : ''}`;
-        return axios.get(url, { 
-          timeout: 5000,
-          headers: {
-            'User-Agent': 'ToHeLL-Discord-Bot/1.0'
-          }
-        })
-          .then(response => ({ html: response.data, guild, page }))
-          .catch(error => {
-            console.error(`❌ Erro ao buscar guilda ${guild} página ${page}:`, error.message);
-            return null;
-          });
-      });
-    });
-
-    const responses = await Promise.allSettled(requests);
-    
-    for (const response of responses) {
-      if (response.status === 'fulfilled' && response.value) {
-        const { html, guild, page } = response.value;
-        const dom = new JSDOM(html);
-        const doc = dom.window.document;
-        
-        const rows = doc.querySelectorAll('tr');
-        for (const row of rows) {
-          const cells = row.querySelectorAll('td');
-          if (cells.length >= 4) {
-            const charName = cells[1].textContent.trim();
-            if (charName.toLowerCase() === nameLower) {
-              return {
-                name: charName,
-                level: parseInt(cells[2].textContent.trim()) || 0,
-                resets: parseInt(cells[3].textContent.trim()) || 0,
-                guild,
-                found_at: new Date().toISOString()
-              };
-            }
-          }
-        }
-      }
-    }
-    
-    return null;
-  } catch (error) {
-    console.error('❌ Erro no parallelGuildSearch:', error);
-    return null;
-  }
-}
-
-// Função com cache e busca paralela otimizada
-async function searchCharacterWithCache(name, dbConnection) {
-  const nameLower = name.toLowerCase();
-  
-  try {
-    const [dbRows] = await dbConnection.execute(
-      'SELECT * FROM characters WHERE name = ? LIMIT 1',
-      [name]
-    );
-    
-    let character = dbRows[0];
-    const cacheValid = character && new Date(character.last_seen) > new Date(Date.now() - 300000);
-    
-    if (cacheValid) {
-      return character;
-    }
-    
-    const mainGuildsSearch = parallelGuildSearch(name, nameLower, ['ToHeLL_', 'ToHeLL2', 'ToHeLL3']);
-    const otherGuildsSearch = parallelGuildSearch(name, nameLower, GUILDS_TO_CHECK.filter(g => !['ToHeLL_', 'ToHeLL2', 'ToHeLL3'].includes(g)));
-    
-    const [mainResult, otherResult] = await Promise.allSettled([mainGuildsSearch, otherGuildsSearch]);
-    
-    const guildData = mainResult.status === 'fulfilled' && mainResult.value ? 
-      mainResult.value : 
-      (otherResult.status === 'fulfilled' && otherResult.value ? otherResult.value : null);
-    
-    if (guildData) {
-      if (dbRows.length > 0) {
-        await dbConnection.execute(
-          'UPDATE characters SET last_level = ?, last_resets = ?, guild = ?, last_seen = NOW() WHERE id = ?',
-          [guildData.level, guildData.resets, guildData.guild, dbRows[0].id]
-        );
-      } else {
-        await dbConnection.execute(
-          'INSERT INTO characters (name, guild, last_level, last_resets, last_seen) VALUES (?, ?, ?, ?, NOW())',
-          [guildData.name, guildData.guild, guildData.level, guildData.resets]
-        );
-        
-        const [inserted] = await dbConnection.execute('SELECT LAST_INSERT_ID() as id');
-        guildData.id = inserted[0].id;
-      }
-      
-      await dbConnection.execute(
-        'INSERT INTO character_history (character_id, level, resets) VALUES (?, ?, ?)',
-        [guildData.id, guildData.level, guildData.resets]
-      );
-      
-      return guildData;
-    }
-    
-    return character || null;
-  } catch (error) {
-    console.error('❌ Erro em searchCharacterWithCache:', error);
-    return null;
-  }
-}
-
-// Função principal para buscar personagem
-async function searchCharacterInDatabaseOrGuilds(name, dbConnection) {
-  return searchCharacterWithCache(name, dbConnection);
-}
-
-// Calcular estatísticas avançadas
-async function calculateAdvancedStats(characterId, dbConnection) {
-  try {
-    const [history] = await dbConnection.execute(`
-      SELECT level, resets, UNIX_TIMESTAMP(recorded_at) as timestamp 
-      FROM character_history 
-      WHERE character_id = ? 
-      AND recorded_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-      ORDER BY recorded_at ASC
-    `, [characterId]);
-    
-    if (history.length < 2) {
-      return null;
-    }
-    
-    const stats = {};
-    const levelChanges = [];
-    const resetChanges = [];
-    const timeDeltas = [];
-    const timeBetweenResets = [];
-    const timeTo400 = [];
-    
-    for (let i = 1; i < history.length; i++) {
-      const prev = history[i-1];
-      const current = history[i];
-      
-      const timeDelta = (current.timestamp - prev.timestamp) / 3600;
-      const levelDelta = current.level - prev.level;
-      const resetDelta = current.resets - prev.resets;
-      
-      if (timeDelta > 0) {
-        levelChanges.push(levelDelta / timeDelta);
-        if (resetDelta > 0) {
-          resetChanges.push(resetDelta);
-          timeDeltas.push(timeDelta / 24);
-        }
-        
-        if (resetDelta > 0) {
-          timeBetweenResets.push(timeDelta / resetDelta);
-        }
-        
-        if (prev.level < 400 && levelDelta > 0) {
-          timeTo400.push((400 - prev.level) / (levelDelta / timeDelta));
-        }
-      }
-    }
-    
-    stats.levelPerHour = levelChanges.length > 0 ? 
-      levelChanges.reduce((a, b) => a + b, 0) / levelChanges.length : 0;
-    
-    stats.avgTimePerReset = resetChanges.length > 0 ? 
-      timeDeltas.reduce((a, b) => a + b, 0) / resetChanges.length : null;
-    
-    stats.nextLevelPrediction = stats.levelPerHour > 0 ? 
-      1 / stats.levelPerHour : null;
-    
-    stats.nextResetPrediction = stats.avgTimePerReset;
-    
-    const latest = history[history.length - 1];
-    if (latest.level < 400 && timeTo400.length > 0) {
-      stats.projectionTo400 = timeTo400.reduce((a, b) => a + b, 0) / timeTo400.length;
-    } else if (latest.level >= 400) {
-      stats.projectionTo400 = 'Já atingiu level 400';
-    } else {
-      stats.projectionTo400 = null;
-    }
-    
-    if (timeBetweenResets.length > 0 && stats.levelPerHour > 0) {
-      const avgTimeBetweenResets = timeBetweenResets.reduce((a, b) => a + b, 0) / timeBetweenResets.length;
-      stats.projectionNextReset = avgTimeBetweenResets;
-      
-      if (latest.level < 400 && stats.projectionTo400 !== null) {
-        stats.projectionNextReset = stats.projectionTo400 + avgTimeBetweenResets;
-      }
-    } else {
-      stats.projectionNextReset = null;
-    }
-    
-    return stats;
-  } catch (error) {
-    console.error('❌ Erro ao calcular estatísticas avançadas:', error);
-    return null;
-  }
-}
-
-// Criar embed de personagem
-function createCharEmbed({ name, level, resets, guild, found, lastSeen, history, stats }) {
-  const embed = new EmbedBuilder()
-    .setColor(found ? '#00FF00' : '#FF0000')
-    .setTitle(`Personagem: ${name}`)
-    .addFields(
-      { name: '⚔️ Level', value: level?.toString() || 'Desconhecido', inline: true },
-      { name: '🔄 Resets', value: resets?.toString() || '0', inline: true },
-      { name: '🏰 Guilda', value: guild || 'Nenhuma', inline: true }
-    );
-    
-  if (!found) {
-    embed.setDescription('❗ Personagem não encontrado atualmente em nenhuma guilda');
-    if (lastSeen) {
-      embed.addFields({ 
-        name: 'Última vez visto', 
-        value: formatBrazilianDate(lastSeen), 
-        inline: false 
-      });
-    }
-  }
-  
-  if (history && history.length > 0) {
-    const historyText = history.map(entry => 
-      `📅 ${formatBrazilianDate(entry.recorded_at)}: Level ${entry.level} | Resets ${entry.resets}`
-    ).join('\n');
-    
-    embed.addFields({
-      name: '📜 Histórico Recente',
-      value: historyText,
-      inline: false
-    });
-  }
-  
-  if (stats) {
-    const statsFields = [];
-    
-    if (stats.levelPerHour > 0) {
-      statsFields.push({
-        name: '📊 Progresso',
-        value: `Média: ${stats.levelPerHour.toFixed(2)} levels/hora`,
-        inline: true
-      });
-      
-      if (stats.nextLevelPrediction) {
-        statsFields.push({
-          name: '⏱️ Próximo Level',
-          value: `~${stats.nextLevelPrediction.toFixed(2)} horas`,
-          inline: true
-        });
-      }
-    }
-    
-    if (stats.projectionTo400) {
-      statsFields.push({
-        name: '🎯 Projeção para 400',
-        value: typeof stats.projectionTo400 === 'string' ? 
-          stats.projectionTo400 : 
-          `~${(stats.projectionTo400 / 24).toFixed(2)} dias`,
-        inline: true
-      });
-    }
-    
-    if (stats.projectionNextReset) {
-      statsFields.push({
-        name: '🔄 Próximo Reset',
-        value: `~${(stats.projectionNextReset / 24).toFixed(2)} dias`,
-        inline: true
-      });
-    }
-    
-    if (statsFields.length > 0) {
-      embed.addFields(statsFields);
-    }
-  }
-  
-  return embed;
-}
-
-// Buscar personagem com tratamento de erro completo
-async function searchCharacter(interaction, charName, dbConnection) {
-  if (interaction.replied || interaction.deferred) {
-    console.log('⚠️ Interação já foi respondida, ignorando nova tentativa');
-    return;
+// Sistema de tracking de personagens
+class CharacterTracker {
+  constructor(db) {
+    this.db = db;
+    this.trackedCharacters = new Map();
+    this.trackingInterval = null;
   }
 
-  let replied = false;
-  const reply = async (content) => {
-    if (!replied) {
-      replied = true;
+  async startTracking() {
+    await this.loadTrackedCharacters();
+    this.trackingInterval = setInterval(() => this.checkTrackedCharacters(), 5 * 60 * 1000);
+    console.log('✅ Sistema de tracking iniciado');
+  }
+
+  async loadTrackedCharacters() {
+    try {
+      const [rows] = await this.db.execute('SELECT * FROM tracked_characters');
+      this.trackedCharacters = new Map(rows.map(row => [row.name.toLowerCase(), row]));
+      console.log(`✅ Carregados ${rows.length} personagens monitorados`);
+    } catch (error) {
+      console.error('❌ Erro ao carregar personagens monitorados:', error);
+    }
+  }
+
+  async checkTrackedCharacters() {
+    console.log('🔍 Verificando personagens monitorados...');
+    const notifications = [];
+    
+    for (const [nameLower, trackingData] of this.trackedCharacters) {
       try {
-        if (interaction.deferred) {
-          await interaction.editReply(content);
-        } else {
-          await interaction.reply(content);
+        const charName = trackingData.name;
+        const charData = await searchCharacterInDatabaseOrGuilds(charName, this.db);
+        
+        if (charData) {
+          const changes = [];
+          
+          if (charData.level !== trackingData.last_level) {
+            changes.push(`Level: ${trackingData.last_level || 'N/A'} → ${charData.level}`);
+          }
+          
+          if (charData.resets !== trackingData.last_resets) {
+            changes.push(`Resets: ${trackingData.last_resets || 'N/A'} → ${charData.resets}`);
+          }
+          
+          if (changes.length > 0) {
+            notifications.push({
+              trackingData,
+              charData,
+              changes
+            });
+            
+            await this.db.execute(
+              'UPDATE tracked_characters SET last_level = ?, last_resets = ? WHERE id = ?',
+              [charData.level, charData.resets, trackingData.id]
+            );
+          }
         }
       } catch (error) {
-        console.error('❌ Erro ao enviar resposta:', error);
+        console.error(`❌ Erro ao verificar personagem ${trackingData.name}:`, error);
       }
     }
-  };
-
-  try {
-    console.log(`🔍 Iniciando busca por ${charName}`);
-
-    // Verificar conexão com o banco de dados
-    if (!dbConnection || !(await dbConnection.execute('SELECT 1').catch(() => false))) {
-      console.error('❌ Conexão com o banco de dados não está ativa');
-      return reply({
-        content: 'Erro de conexão com o banco de dados. Por favor, tente novamente mais tarde.',
-        ephemeral: true
-      });
-    }
-
-    // Deferir a resposta primeiro
-    await interaction.deferReply();
-    console.log(`⏳ Resposta deferida para busca de ${charName}`);
-
-    // Timeout de 10 segundos
-    const timeout = setTimeout(async () => {
-      if (!replied) {
-        console.error('⌛ Timeout excedido para busca de personagem');
-        await reply({
-          content: 'A busca está demorando mais que o esperado. Por favor, tente novamente.',
-          ephemeral: true
-        });
-      }
-    }, 10000);
-
-    // Executar a busca
-    const charData = await searchCharacterWithCache(charName, dbConnection);
     
-    if (!charData) {
-      console.log(`🔍 Personagem ${charName} não encontrado, verificando histórico...`);
-      const [historyRows] = await dbConnection.execute(
-        'SELECT * FROM characters WHERE LOWER(name) = ? LIMIT 1',
-        [charName.toLowerCase()]
+    await this.sendNotifications(notifications);
+  }
+
+  async sendNotifications(notifications) {
+    for (const { trackingData, charData, changes } of notifications) {
+      try {
+        const channel = trackingData.channel_id ? 
+          await client.channels.fetch(trackingData.channel_id) : 
+          await client.users.fetch(trackingData.discord_user_id).createDM();
+          
+        const embed = new EmbedBuilder()
+          .setColor('#00FF00')
+          .setTitle(`📢 Progresso de ${charData.name}`)
+          .setDescription(`O personagem ${charData.name} teve mudanças!`)
+          .addFields(
+            { name: '🏰 Guilda', value: charData.guild || 'Nenhuma', inline: true },
+            { name: 'Mudanças', value: changes.join('\n'), inline: false }
+          )
+          .setTimestamp();
+          
+        await channel.send({ embeds: [embed] });
+        console.log(`✅ Notificação enviada para ${trackingData.name}`);
+      } catch (error) {
+        console.error(`❌ Erro ao enviar notificação para ${trackingData.name}:`, error);
+      }
+    }
+  }
+
+  async addTracking(name, userId, channelId = null) {
+    try {
+      const charData = await searchCharacterInDatabaseOrGuilds(name, this.db);
+      if (!charData) {
+        throw new Error('Personagem não encontrado');
+      }
+      
+      await this.db.execute(
+        'INSERT INTO tracked_characters (name, discord_user_id, channel_id, last_level, last_resets) VALUES (?, ?, ?, ?, ?) ' +
+        'ON DUPLICATE KEY UPDATE channel_id = VALUES(channel_id), last_level = VALUES(last_level), last_resets = VALUES(last_resets)',
+        [name, userId, channelId, charData.level, charData.resets]
       );
       
-      if (historyRows.length > 0) {
-        const lastKnown = historyRows[0];
-        console.log(`📌 Exibindo dados históricos para ${charName}`);
-        return reply({
-          embeds: [createCharEmbed({
-            name: lastKnown.name,
-            level: lastKnown.last_level,
-            resets: lastKnown.last_resets,
-            guild: lastKnown.guild,
-            found: false,
-            lastSeen: lastKnown.last_seen
-          })]
-        });
-      }
+      await this.loadTrackedCharacters();
+      return true;
+    } catch (error) {
+      console.error('❌ Erro ao adicionar tracking:', error);
+      throw error;
+    }
+  }
+
+  async removeTracking(name, userId) {
+    try {
+      const [result] = await this.db.execute(
+        'DELETE FROM tracked_characters WHERE name = ? AND discord_user_id = ?',
+        [name, userId]
+      );
       
-      console.log(`❌ Personagem ${charName} não encontrado em nenhum lugar`);
-      return reply({
-        content: `Personagem "${charName}" não encontrado em nenhuma guilda da ToHeLL.`
+      await this.loadTrackedCharacters();
+      return result.affectedRows > 0;
+    } catch (error) {
+      console.error('❌ Erro ao remover tracking:', error);
+      throw error;
+    }
+  }
+
+  async listTracked(userId) {
+    try {
+      const [rows] = await this.db.execute(
+        'SELECT * FROM tracked_characters WHERE discord_user_id = ?',
+        [userId]
+      );
+      return rows;
+    } catch (error) {
+      console.error('❌ Erro ao listar personagens monitorados:', error);
+      throw error;
+    }
+  }
+}
+
+async function checkNewApplications(client, db) {
+  try {
+    if (!db) {
+      console.log('⚠️ Conexão com o banco de dados não está disponível, tentando reconectar...');
+      return;
+    }
+
+    const [rows] = await db.execute(
+      'SELECT * FROM inscricoes_pendentes WHERE data_inscricao > ? ORDER BY data_inscricao DESC',
+      [lastCheckedApplications]
+    );
+    
+    if (rows.length > 0) {
+      const channel = await client.channels.fetch(process.env.ALLOWED_CHANNEL_ID);
+      lastCheckedApplications = new Date();
+      
+      await channel.send({
+        content: `📢 Há ${rows.length} nova(s) inscrição(ões) pendente(s)! Use /pendentes para visualizar.`
       });
+      
+      for (const application of rows) {
+        await sendApplicationEmbed(channel, application, db);
+      }
     }
-    
-    console.log(`✅ Dados encontrados para ${charName}, buscando histórico e estatísticas...`);
-    
-    // Obter histórico e estatísticas em paralelo
-    const [history, advancedStats] = await Promise.all([
-      dbConnection.execute(
-        'SELECT level, resets, recorded_at FROM character_history WHERE character_id = ? ORDER BY recorded_at DESC LIMIT 5',
-        [charData.id]
-      ),
-      calculateAdvancedStats(charData.id, dbConnection)
-    ]);
-    
-    // Criar embed de resposta
-    const embed = createCharEmbed({
-      name: charData.name,
-      level: charData.level,
-      resets: charData.resets,
-      guild: charData.guild,
-      found: true,
-      history: history[0],
-      stats: advancedStats
-    });
-    
-    console.log(`📊 Embed criado para ${charName}, enviando resposta...`);
-    await reply({ embeds: [embed] });
-    clearTimeout(timeout);
-    
   } catch (error) {
-    console.error('❌ Erro ao buscar personagem:', error);
-    await reply({
-      content: 'Ocorreu um erro ao buscar o personagem. Por favor, tente novamente mais tarde.',
-      ephemeral: true
-    });
+    console.error('❌ Erro ao verificar novas inscrições:', error);
   }
 }
 
-// Mostrar ranking
-async function showRanking(interaction, period, dbConnection) {
-  try {
-    await interaction.deferReply().catch(console.error);
+// Configurar eventos
+function setupEvents(client, db) {
+  const tracker = new CharacterTracker(db);
 
-    let days;
-    switch (period) {
-      case '24h': days = 1; break;
-      case '7d': days = 7; break;
-      case '30d': days = 30; break;
-      default: days = 7;
+  // Evento ready
+  client.on(Events.ClientReady, async () => {
+    console.log(`🤖 Bot conectado como ${client.user.tag}`);
+    client.user.setActivity('/ajuda para comandos', { type: 'WATCHING' });
+    
+    await tracker.startTracking();
+    setInterval(() => checkNewApplications(client, db), 60000);
+  });
+
+  // Evento interactionCreate
+  client.on(Events.InteractionCreate, async interaction => {
+    if (isShuttingDown) return;
+
+    try {
+      // Comandos slash
+      if (interaction.isCommand()) {
+        console.log(`🔍 Comando slash detectado: ${interaction.commandName}`, interaction.options.data);
+
+        if (!await checkUserPermission(interaction, interaction.commandName, db)) {
+          return interaction.reply({
+            content: '❌ Você não tem permissão para usar este comando.',
+            ephemeral: true
+          }).catch(console.error);
+        }
+
+        switch (interaction.commandName) {
+          case 'pendentes':
+            const page = interaction.options.getInteger('página') || 1;
+            await listPendingApplications(interaction, [page.toString()], db);
+            break;
+            
+          case 'buscar':
+            const term = interaction.options.getString('termo');
+            const searchPage = interaction.options.getInteger('página') || 1;
+            await searchApplications(interaction, [term, searchPage.toString()], db);
+            break;
+            
+          case 'char':
+            const charName = interaction.options.getString('nome');
+            console.log(`🔍 Comando /char recebido para personagem: ${charName}`);
+            await searchCharacter(interaction, charName, db);
+            break;
+            
+          case 'ranking':
+            const period = interaction.options.getString('período');
+            await showRanking(interaction, period, db);
+            break;
+            
+          case 'monitorar':
+            const charToTrack = interaction.options.getString('nome');
+            const channel = interaction.options.getChannel('canal');
+            
+            await interaction.deferReply({ ephemeral: true }).catch(console.error);
+            
+            try {
+              await tracker.addTracking(
+                charToTrack, 
+                interaction.user.id, 
+                channel?.id
+              );
+              
+              await interaction.editReply({
+                content: `✅ Personagem "${charToTrack}" está sendo monitorado${channel ? ` no canal ${channel.name}` : ''}.`
+              }).catch(console.error);
+            } catch (error) {
+              await interaction.editReply({
+                content: `❌ Erro ao monitorar personagem: ${error.message}`
+              }).catch(console.error);
+            }
+            break;
+            
+          case 'parar-monitorar':
+            const charToStop = interaction.options.getString('nome');
+            
+            await interaction.deferReply({ ephemeral: true }).catch(console.error);
+            
+            try {
+              const removed = await tracker.removeTracking(charToStop, interaction.user.id);
+              
+              await interaction.editReply({
+                content: removed ? 
+                  `✅ Personagem "${charToStop}" não será mais monitorado.` :
+                  `❌ Personagem "${charToStop}" não estava sendo monitorado.`
+              }).catch(console.error);
+            } catch (error) {
+              await interaction.editReply({
+                content: `❌ Erro ao parar de monitorar: ${error.message}`
+              }).catch(console.error);
+            }
+            break;
+            
+          case 'listar-monitorados':
+            await interaction.deferReply({ ephemeral: true }).catch(console.error);
+            
+            try {
+              const tracked = await tracker.listTracked(interaction.user.id);
+              
+              if (tracked.length === 0) {
+                return interaction.editReply({
+                  content: 'Você não está monitorando nenhum personagem no momento.'
+                }).catch(console.error);
+              }
+              
+              const embed = new EmbedBuilder()
+                .setColor('#FFA500')
+                .setTitle('Personagens Monitorados')
+                .setDescription('Lista de personagens que você está monitorando:');
+                
+              tracked.forEach(char => {
+                embed.addFields({
+                  name: char.name,
+                  value: `Último level: ${char.last_level || 'N/A'}\n` +
+                         `Últimos resets: ${char.last_resets || 'N/A'}`,
+                  inline: true
+                });
+              });
+              
+              await interaction.editReply({ embeds: [embed] }).catch(console.error);
+            } catch (error) {
+              await interaction.editReply({
+                content: `❌ Erro ao listar personagens monitorados: ${error.message}`
+              }).catch(console.error);
+            }
+            break;
+            
+          case 'ajuda':
+            await showHelp(interaction);
+            break;
+
+          case 'admin-permissoes':
+            if (!interaction.member.permissions.has('ADMINISTRATOR')) {
+              return interaction.reply({
+                content: '❌ Este comando é restrito a administradores.',
+                ephemeral: true
+              }).catch(console.error);
+            }
+
+            const commandName = interaction.options.getString('comando');
+            const action = interaction.options.getString('acao');
+            const role = interaction.options.getRole('cargo');
+
+            await interaction.deferReply({ ephemeral: true }).catch(console.error);
+
+            try {
+              if (action === 'list') {
+                const roleIds = await getCommandPermissions(commandName, db);
+                
+                if (roleIds.length === 0) {
+                  return interaction.editReply({
+                    content: `Nenhum cargo tem permissão para o comando /${commandName}`
+                  }).catch(console.error);
+                }
+
+                const roles = roleIds.map(id => interaction.guild.roles.cache.get(id)?.toString() || id).join('\n');
+                return interaction.editReply({
+                  content: `Cargos com permissão para /${commandName}:\n${roles}`
+                }).catch(console.error);
+              }
+
+              if (!role) {
+                return interaction.editReply({
+                  content: 'Por favor, especifique um cargo para esta ação.'
+                }).catch(console.error);
+              }
+
+              if (action === 'add') {
+                const success = await addCommandPermission(commandName, role.id, db);
+                return interaction.editReply({
+                  content: success ? 
+                    `✅ Cargo ${role.name} agora tem permissão para /${commandName}` :
+                    '❌ Falha ao adicionar permissão. O cargo já pode ter esta permissão.'
+                }).catch(console.error);
+              }
+
+              if (action === 'remove') {
+                const success = await removeCommandPermission(commandName, role.id, db);
+                return interaction.editReply({
+                  content: success ? 
+                    `✅ Cargo ${role.name} não tem mais permissão para /${commandName}` :
+                    '❌ Falha ao remover permissão. O cargo pode não ter esta permissão.'
+                }).catch(console.error);
+              }
+            } catch (error) {
+              console.error('❌ Erro ao gerenciar permissões:', error);
+              return interaction.editReply({
+                content: 'Ocorreu um erro ao processar sua solicitação.'
+              }).catch(console.error);
+            }
+            break;
+        }
+      }
+
+      // Botões
+      if (interaction.isButton()) {
+        if (interaction.channel?.id !== process.env.ALLOWED_CHANNEL_ID) {
+          return interaction.reply({ 
+            content: 'Este comando só pode ser usado no canal de inscrições.', 
+            ephemeral: true 
+          }).catch(() => {
+            interaction.channel.send({
+              content: 'Este comando só pode ser usado no canal de inscrições.',
+              ephemeral: true
+            }).catch(console.error);
+          });
+        }
+
+        try {
+          if (interaction.customId.startsWith('prev_page_') || interaction.customId.startsWith('next_page_')) {
+            const [direction, pageStr] = interaction.customId.split('_').slice(1);
+            let page = parseInt(pageStr);
+            
+            page = direction === 'prev' ? page - 1 : page + 1;
+            
+            await interaction.deferUpdate().catch(console.error);
+            await interaction.message.delete().catch(() => {});
+            await listPendingApplications(interaction, [page.toString()], db);
+            return;
+          }
+
+          if (interaction.customId.startsWith('search_prev_') || interaction.customId.startsWith('search_next_')) {
+            const [direction, searchTerm, pageStr] = interaction.customId.split('_').slice(1);
+            let page = parseInt(pageStr);
+            
+            page = direction === 'prev' ? page - 1 : page + 1;
+            
+            await interaction.deferUpdate().catch(console.error);
+            await interaction.message.delete().catch(() => {});
+            await searchApplications(interaction, [searchTerm, page.toString()], db);
+            return;
+          }
+
+          if (interaction.customId.startsWith('view_screenshots_')) {
+            const [_, __, applicationId, status] = interaction.customId.split('_');
+            
+            try {
+              const table = status === 'aprovado' ? 'inscricoes' : 'inscricoes_pendentes';
+              
+              const [rows] = await db.execute(
+                `SELECT screenshot_path FROM ${table} WHERE id = ?`,
+                [applicationId]
+              );
+              
+              if (rows.length === 0) {
+                return interaction.reply({
+                  content: 'Inscrição não encontrada.',
+                  ephemeral: true
+                }).catch(console.error);
+              }
+              
+              let screenshots = [];
+              try {
+                screenshots = typeof rows[0].screenshot_path === 'string' ? 
+                  JSON.parse(rows[0].screenshot_path || '[]') : 
+                  rows[0].screenshot_path || [];
+              } catch (e) {
+                screenshots = rows[0].screenshot_path ? [rows[0].screenshot_path] : [];
+              }
+              
+              await createImageCarousel(interaction, screenshots, applicationId);
+              
+            } catch (error) {
+              console.error('❌ Erro ao buscar screenshots:', error);
+              await interaction.reply({
+                content: 'Ocorreu um erro ao buscar as screenshots.',
+                ephemeral: true
+              }).catch(console.error);
+            }
+            return;
+          }
+          
+          if (interaction.customId.startsWith('carousel_')) {
+            const [_, action, applicationId, currentIndexStr] = interaction.customId.split('_');
+            let currentIndex = parseInt(currentIndexStr);
+            
+            if (action === 'close') {
+              return interaction.message.delete().catch(console.error);
+            }
+            
+            const [rows] = await db.execute(
+              'SELECT screenshot_path FROM inscricoes_pendentes WHERE id = ?',
+              [applicationId]
+            );
+            
+            if (rows.length === 0) {
+              return interaction.update({
+                content: 'As screenshots não estão mais disponíveis.',
+                embeds: [],
+                components: []
+              }).catch(console.error);
+            }
+            
+            let screenshots = [];
+            try {
+              screenshots = typeof rows[0].screenshot_path === 'string' ? 
+                JSON.parse(rows[0].screenshot_path || '[]') : 
+                rows[0].screenshot_path || [];
+            } catch (e) {
+              screenshots = rows[0].screenshot_path ? [rows[0].screenshot_path] : [];
+            }
+            
+            const totalImages = screenshots.length;
+            
+            if (action === 'prev' && currentIndex > 0) {
+              currentIndex--;
+            } else if (action === 'next' && currentIndex < totalImages - 1) {
+              currentIndex++;
+            }
+            
+            const embed = new EmbedBuilder()
+              .setColor('#FF4500')
+              .setTitle(`Screenshot #${currentIndex + 1} de ${totalImages}`)
+              .setImage(screenshots[currentIndex])
+              .setFooter({ text: `Inscrição #${applicationId}` });
+            
+            const row = new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId(`carousel_prev_${applicationId}_${currentIndex}`)
+                .setLabel('Anterior')
+                .setStyle(ButtonStyle.Primary)
+                .setDisabled(currentIndex === 0),
+              new ButtonBuilder()
+                .setCustomId(`carousel_next_${applicationId}_${currentIndex}`)
+                .setLabel('Próxima')
+                .setStyle(ButtonStyle.Primary)
+                .setDisabled(currentIndex === totalImages - 1),
+              new ButtonBuilder()
+                .setCustomId(`carousel_close_${applicationId}`)
+                .setLabel('Fechar')
+                .setStyle(ButtonStyle.Danger)
+            );
+            
+            await interaction.update({
+              embeds: [embed],
+              components: [row]
+            }).catch(console.error);
+            return;
+          }
+
+          // Aprovar/rejeitar inscrição
+          const [action, id] = interaction.customId.split('_');
+          
+          if (action === 'approve') {
+            await approveApplication(interaction, id, db);
+          } else if (action === 'reject') {
+            const modal = new ModalBuilder()
+              .setCustomId(`reject_reason_${id}`)
+              .setTitle('Motivo da Rejeição');
+            
+            const reasonInput = new TextInputBuilder()
+              .setCustomId('reject_reason')
+              .setLabel('Por que esta inscrição está sendo rejeitada?')
+              .setStyle(TextInputStyle.Paragraph)
+              .setRequired(true)
+              .setMinLength(10)
+              .setMaxLength(500);
+            
+            const actionRow = new ActionRowBuilder().addComponents(reasonInput);
+            modal.addComponents(actionRow);
+            
+            await interaction.showModal(modal).catch(console.error);
+          }
+        } catch (error) {
+          console.error('❌ Erro ao processar interação:', error);
+          interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', ephemeral: true }).catch(console.error);
+        }
+      }
+
+      // Modais
+      if (interaction.isModalSubmit()) {
+        if (interaction.channel?.id !== process.env.ALLOWED_CHANNEL_ID) {
+          return interaction.reply({ 
+            content: 'Este comando só pode ser usado no canal de inscrições.', 
+            ephemeral: true 
+          }).catch(console.error);
+        }
+
+        try {
+          if (interaction.customId.startsWith('reject_reason_')) {
+            const id = interaction.customId.split('_')[2];
+            const reason = interaction.fields.getTextInputValue('reject_reason');
+            
+            await interaction.deferReply({ ephemeral: true }).catch(console.error);
+            await rejectApplication(interaction, id, reason, db);
+          }
+        } catch (error) {
+          console.error('❌ Erro ao processar modal:', error);
+          interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', ephemeral: true }).catch(console.error);
+        }
+      }
+    } catch (error) {
+      console.error('❌ Erro não tratado em InteractionCreate:', error);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          content: 'Ocorreu um erro interno. Por favor, tente novamente mais tarde.',
+          ephemeral: true
+        }).catch(console.error);
+      } else if (interaction.deferred) {
+        await interaction.editReply({
+          content: 'Ocorreu um erro interno. Por favor, tente novamente mais tarde.'
+        }).catch(console.error);
+      }
     }
-    
-    const [rows] = await dbConnection.execute(`
-      SELECT 
-        c.name, 
-        c.last_level as current_level,
-        c.last_resets as current_resets,
-        (MAX(h.level) - MIN(h.level)) as level_change,
-        (MAX(h.resets) - MIN(h.resets)) as reset_change,
-        c.guild,
-        (MAX(h.level) - MIN(h.level) + (MAX(h.resets) - MIN(h.resets)) * 1000) as progress_score
-      FROM character_history h
-      JOIN characters c ON h.character_id = c.id
-      WHERE h.recorded_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
-      GROUP BY h.character_id, c.name, c.guild, c.last_level, c.last_resets
-      ORDER BY progress_score DESC
-      LIMIT 10
-    `, [days]);
-    
-    if (rows.length === 0) {
-      return interaction.editReply({
-        content: `Nenhum dado de ranking disponível para o período de ${days} dias.`
-      }).catch(console.error);
-    }
-    
-    const periodName = days === 1 ? '24 horas' : `${days} dias`;
-    const embed = new EmbedBuilder()
-      .setColor('#FFA500')
-      .setTitle(`🏆 Ranking de Progresso - Últimas ${periodName}`)
-      .setDescription(`Top 10 personagens com maior progresso nos últimos ${periodName}`);
-    
-    rows.forEach((char, index) => {
-      embed.addFields({
-        name: `#${index + 1} ${char.name}`,
-        value: `🏰 ${char.guild}\n` +
-               `⚔️ Level: ${char.current_level} (${char.level_change > 0 ? `+${char.level_change}` : '0'})\n` +
-               `🔄 Resets: ${char.current_resets} (${char.reset_change > 0 ? `+${char.reset_change}` : '0'})\n` +
-               `📊 Pontuação: ${char.progress_score.toFixed(0)}`,
-        inline: false
-      });
-    });
-    
-    await interaction.editReply({ embeds: [embed] }).catch(console.error);
-    
-  } catch (error) {
-    console.error('❌ Erro ao buscar ranking:', error);
-    if (!interaction.replied && !interaction.deferred) {
-      await interaction.reply({
-        content: 'Ocorreu um erro ao buscar o ranking. Por favor, tente novamente mais tarde.',
-        flags: MessageFlags.Ephemeral
-      }).catch(console.error);
-    } else if (interaction.deferred && !interaction.replied) {
-      await interaction.editReply({
-        content: 'Ocorreu um erro ao buscar o ranking. Por favor, tente novamente mais tarde.'
-      }).catch(console.error);
-    }
-  }
-}
-
-// Gerenciar permissões de comandos
-async function addCommandPermission(commandName, roleId, dbConnection) {
-  try {
-    await dbConnection.execute(
-      'INSERT INTO command_permissions (command_name, role_id) VALUES (?, ?)',
-      [commandName, roleId]
-    );
-    return true;
-  } catch (error) {
-    console.error('❌ Erro ao adicionar permissão:', error);
-    return false;
-  }
-}
-
-async function removeCommandPermission(commandName, roleId, dbConnection) {
-  try {
-    const [result] = await dbConnection.execute(
-      'DELETE FROM command_permissions WHERE command_name = ? AND role_id = ?',
-      [commandName, roleId]
-    );
-    return result.affectedRows > 0;
-  } catch (error) {
-    console.error('❌ Erro ao remover permissão:', error);
-    return false;
-  }
-}
-
-async function getCommandPermissions(commandName, dbConnection) {
-  try {
-    const [rows] = await dbConnection.execute(
-      'SELECT role_id FROM command_permissions WHERE command_name = ?',
-      [commandName]
-    );
-    return rows.map(row => row.role_id);
-  } catch (error) {
-    console.error('❌ Erro ao obter permissões:', error);
-    return [];
-  }
-}
-
-async function checkUserPermission(interaction, commandName, dbConnection) {
-  if (commandName === 'pendentes') return true;
-  
-  const allowedRoles = await getCommandPermissions(commandName, dbConnection);
-  
-  if (allowedRoles.length === 0) return true;
-  
-  return interaction.member.roles.cache.some(role => allowedRoles.includes(role.id));
-}
-
-// Notificar no webhook
-async function notifyWebhook(action, applicationId, applicationName, discordTag, motivo = '') {
-  if (!process.env.DISCORD_WEBHOOK_URL) return;
-
-  const color = action === 'aprovado' ? 3066993 : 15158332;
-  const actionText = action === 'aprovado' ? 'Aprovada' : 'Rejeitada';
-  
-  const embed = {
-    title: `📢 Inscrição ${actionText}`,
-    description: `A inscrição de ${applicationName} foi ${action}`,
-    color: color,
-    fields: [
-      { name: 'ID', value: applicationId.toString(), inline: true },
-      { name: 'Status', value: actionText, inline: true },
-      { name: 'Discord', value: discordTag, inline: true },
-      { name: 'Via', value: 'Discord Bot', inline: true }
-    ],
-    timestamp: new Date(new Date().getTime() - 3 * 60 * 60 * 1000).toISOString()
-  };
-  
-  if (action === 'rejeitado' && motivo) {
-    embed.fields.push({ name: 'Motivo', value: motivo, inline: false });
-  }
-  
-  try {
-    await axios.post(process.env.DISCORD_WEBHOOK_URL, {
-      embeds: [embed]
-    }).catch(e => console.error('❌ Erro no webhook:', e.response?.data || e.message));
-  } catch (error) {
-    console.error('❌ Erro grave no webhook:', error);
-  }
-}
-
-// Envio seguro de mensagens
-async function safeSend(channel, content) {
-  try {
-    return await channel.send(content);
-  } catch (error) {
-    console.error('❌ Erro ao enviar mensagem:', error);
-    return null;
-  }
+  });
 }
 
 module.exports = {
-  formatBrazilianDate,
-  isValidImageUrl,
-  extractValidImageUrls,
-  processImageUrls,
-  safeInteractionReply,
-  safeSend,
-  parallelGuildSearch,
-  searchCharacterInDatabaseOrGuilds,
-  calculateAdvancedStats,
-  createCharEmbed,
-  searchCharacter,
-  showRanking,
-  addCommandPermission,
-  removeCommandPermission,
-  getCommandPermissions,
-  checkUserPermission,
-  notifyWebhook,
-  ITEMS_PER_PAGE,
-  searchCharacterWithCache
+  setupEvents,
+  CharacterTracker
 };
