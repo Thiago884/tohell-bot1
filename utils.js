@@ -5,7 +5,7 @@ const { JSDOM } = require('jsdom');
 // Configurações
 const ITEMS_PER_PAGE = 5;
 const GUILDS_TO_CHECK = ['ToHeLL_', 'ToHeLL2', 'ToHeLL3', 'ToHeLL4', 'ToHeLL5', 'ToHeLL6', 'ToHeLL7', 'ToHeLL8_', 'ToHeLL9', 'ToHeLL10'];
-const BASE_URL = process.env.BASE_URL || 'https://seusite.com/';
+const BASE_URL = process.env.BASE_URL || 'https://www.tohellguild.com.br/';
 
 // Função para formatar data no padrão brasileiro com fuso horário
 function formatBrazilianDate(dateString) {
