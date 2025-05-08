@@ -212,10 +212,10 @@ async function createImageCarousel(interaction, images, applicationId) {
       .setStyle(ButtonStyle.Danger)
   );
 
+  // Removido MessageFlags.Ephemeral para que todos vejam o carrossel
   return interaction.reply({
     embeds: [embed],
-    components: [row],
-    flags: MessageFlags.Ephemeral
+    components: [row]
   });
 }
 

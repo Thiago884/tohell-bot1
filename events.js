@@ -462,7 +462,19 @@ function setupEvents(client, db) {
             let currentIndex = parseInt(currentIndexStr);
             
             if (action === 'close') {
-              return interaction.message.delete().catch(console.error);
+              try {
+                await interaction.message.delete().catch(error => {
+                  if (error.code !== 10008) { // Ignora erro de mensagem desconhecida
+                    console.error('Erro ao deletar mensagem do carrossel:', error);
+                  }
+                });
+                return;
+              } catch (error) {
+                if (error.code !== 10008) {
+                  console.error('Erro ao deletar mensagem do carrossel:', error);
+                }
+                return;
+              }
             }
             
             // Primeiro verifica na tabela de pendentes
