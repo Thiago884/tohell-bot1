@@ -712,6 +712,238 @@ async function safeSend(channel, content) {
   }
 }
 
+// ==============================================
+// NOVAS FUNÇÕES PARA SISTEMA DE BLOQUEIO DE IP
+// ==============================================
+
+// Função para bloquear IP
+async function blockIP(ip, motivo, dbConnection, userId) {
+  try {
+    // Verifica se o IP já está bloqueado
+    const [existing] = await dbConnection.execute(
+      'SELECT * FROM ips_bloqueados WHERE ip = ?',
+      [ip]
+    );
+    
+    if (existing.length > 0) {
+      return { success: false, message: 'Este IP já está bloqueado.' };
+    }
+
+    // Consulta informações do IP
+    const geoInfo = await getIPInfo(ip);
+    if (!geoInfo) {
+      return { success: false, message: 'Não foi possível obter informações do IP.' };
+    }
+
+    // Insere no banco de dados
+    await dbConnection.execute(
+      'INSERT INTO ips_bloqueados (ip, motivo, pais, regiao, cidade, postal, provedor, bloqueado_por) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [
+        ip,
+        motivo,
+        geoInfo.country,
+        geoInfo.region,
+        geoInfo.city,
+        geoInfo.postal,
+        geoInfo.org,
+        userId
+      ]
+    );
+
+    return { success: true, message: 'IP bloqueado com sucesso!', geoInfo };
+  } catch (error) {
+    console.error('Erro ao bloquear IP:', error);
+    return { success: false, message: 'Erro ao bloquear IP.' };
+  }
+}
+
+// Função para consultar IP
+async function queryIP(ip, dbConnection) {
+  try {
+    // Verifica se está bloqueado
+    const [blocked] = await dbConnection.execute(
+      'SELECT * FROM ips_bloqueados WHERE ip = ?',
+      [ip]
+    );
+
+    // Verifica se está na whitelist
+    const [whitelisted] = await dbConnection.execute(
+      'SELECT * FROM ips_whitelist WHERE ip = ?',
+      [ip]
+    );
+
+    // Consulta informações do IP
+    const geoInfo = await getIPInfo(ip);
+    
+    return {
+      blocked: blocked.length > 0 ? blocked[0] : null,
+      whitelisted: whitelisted.length > 0 ? whitelisted[0] : null,
+      geoInfo
+    };
+  } catch (error) {
+    console.error('Erro ao consultar IP:', error);
+    return null;
+  }
+}
+
+// Função para obter informações de geolocalização
+async function getIPInfo(ip) {
+  try {
+    const response = await axios.get(`http://ip-api.com/json/${ip}?fields=status,message,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,query`);
+    
+    if (response.data.status !== 'success') {
+      console.error('Erro ao consultar IP:', response.data.message);
+      return null;
+    }
+    
+    return {
+      country: response.data.country,
+      countryCode: response.data.countryCode,
+      region: response.data.regionName,
+      city: response.data.city,
+      postal: response.data.zip,
+      org: response.data.org,
+      isp: response.data.isp,
+      timezone: response.data.timezone,
+      coordinates: `${response.data.lat}, ${response.data.lon}`
+    };
+  } catch (error) {
+    console.error('Erro na API de geolocalização:', error);
+    return null;
+  }
+}
+
+// Função para gerar relatório de segurança
+async function generateSecurityReport(dbConnection, period = '24h') {
+  try {
+    let interval;
+    switch (period) {
+      case '7d': interval = '7 DAY'; break;
+      case '30d': interval = '30 DAY'; break;
+      default: interval = '1 DAY';
+    }
+
+    // IPs bloqueados recentemente
+    const [blockedIPs] = await dbConnection.execute(
+      `SELECT ip, motivo, pais, data_bloqueio FROM ips_bloqueados 
+       WHERE data_bloqueio >= DATE_SUB(NOW(), INTERVAL ${interval})
+       ORDER BY data_bloqueio DESC LIMIT 10`
+    );
+
+    // Tentativas de acesso suspeitas
+    const [suspiciousAccess] = await dbConnection.execute(
+      `SELECT ip, COUNT(*) as tentativas, MAX(data_acesso) as ultima_tentativa 
+       FROM tentativas_login_falhas 
+       WHERE data_acesso >= DATE_SUB(NOW(), INTERVAL ${interval})
+       GROUP BY ip 
+       HAVING tentativas > 3
+       ORDER BY tentativas DESC LIMIT 5`
+    );
+
+    // IPs mais problemáticos
+    const [problematicIPs] = await dbConnection.execute(
+      `SELECT ip, COUNT(*) as bloqueios 
+       FROM ips_bloqueados 
+       WHERE data_bloqueio >= DATE_SUB(NOW(), INTERVAL ${interval})
+       GROUP BY ip 
+       ORDER BY bloqueios DESC LIMIT 5`
+    );
+
+    return {
+      blockedIPs,
+      suspiciousAccess,
+      problematicIPs,
+      period
+    };
+  } catch (error) {
+    console.error('Erro ao gerar relatório:', error);
+    return null;
+  }
+}
+
+// Função para listar últimos acessos
+async function getRecentAccess(dbConnection, limit = 10, country = null) {
+  try {
+    let query = `SELECT ip, pagina, user_agent, data_acesso 
+                FROM visitantes 
+                ORDER BY data_acesso DESC 
+                LIMIT ?`;
+    
+    let params = [limit];
+    
+    if (country) {
+      query = `SELECT v.ip, v.pagina, v.user_agent, v.data_acesso, i.pais
+               FROM visitantes v
+               LEFT JOIN ips_info i ON v.ip = i.ip
+               WHERE i.pais = ?
+               ORDER BY v.data_acesso DESC 
+               LIMIT ?`;
+      params = [country.toUpperCase(), limit];
+    }
+
+    const [access] = await dbConnection.execute(query, params);
+    return access;
+  } catch (error) {
+    console.error('Erro ao buscar acessos:', error);
+    return null;
+  }
+}
+
+// Função para gerenciar whitelist
+async function manageWhitelist(action, ip, motivo, dbConnection, userId) {
+  try {
+    if (action === 'add') {
+      // Verifica se já está na whitelist
+      const [existing] = await dbConnection.execute(
+        'SELECT * FROM ips_whitelist WHERE ip = ?',
+        [ip]
+      );
+      
+      if (existing.length > 0) {
+        return { success: false, message: 'Este IP já está na whitelist.' };
+      }
+
+      // Adiciona à whitelist
+      await dbConnection.execute(
+        'INSERT INTO ips_whitelist (ip, motivo, criado_por) VALUES (?, ?, ?)',
+        [ip, motivo || 'Adicionado via Discord', userId]
+      );
+
+      // Remove do bloqueio se estiver bloqueado
+      await dbConnection.execute(
+        'DELETE FROM ips_bloqueados WHERE ip = ?',
+        [ip]
+      );
+
+      return { success: true, message: 'IP adicionado à whitelist com sucesso!' };
+    }
+    else if (action === 'remove') {
+      const [result] = await dbConnection.execute(
+        'DELETE FROM ips_whitelist WHERE ip = ?',
+        [ip]
+      );
+      
+      if (result.affectedRows === 0) {
+        return { success: false, message: 'IP não encontrado na whitelist.' };
+      }
+      
+      return { success: true, message: 'IP removido da whitelist com sucesso!' };
+    }
+    else if (action === 'list') {
+      const [ips] = await dbConnection.execute(
+        'SELECT ip, motivo, data_criacao FROM ips_whitelist ORDER BY data_criacao DESC LIMIT 50'
+      );
+      return { success: true, data: ips };
+    }
+    
+    return { success: false, message: 'Ação inválida.' };
+  } catch (error) {
+    console.error('Erro ao gerenciar whitelist:', error);
+    return { success: false, message: 'Erro ao gerenciar whitelist.' };
+  }
+}
+
 module.exports = {
   formatBrazilianDate,
   isValidImageUrl,
@@ -730,5 +962,12 @@ module.exports = {
   getCommandPermissions,
   checkUserPermission,
   notifyWebhook,
-  ITEMS_PER_PAGE
+  ITEMS_PER_PAGE,
+  // Novas funções para sistema de IP
+  blockIP,
+  queryIP,
+  getIPInfo,
+  generateSecurityReport,
+  getRecentAccess,
+  manageWhitelist
 };

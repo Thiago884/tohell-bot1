@@ -148,7 +148,76 @@ async function createTables() {
       )
     `);
 
-    console.log('✅ Tabelas verificadas/criadas com sucesso');
+    // Tabela para IPs bloqueados
+    await dbConnection.execute(`
+      CREATE TABLE IF NOT EXISTS ips_bloqueados (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        ip VARCHAR(45) NOT NULL,
+        motivo TEXT NOT NULL,
+        pais VARCHAR(100),
+        regiao VARCHAR(100),
+        cidade VARCHAR(100),
+        postal VARCHAR(20),
+        provedor VARCHAR(255),
+        data_bloqueio TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        bloqueado_por VARCHAR(255),
+        UNIQUE KEY unique_ip (ip)
+      )
+    `);
+
+    // Tabela para whitelist de IPs
+    await dbConnection.execute(`
+      CREATE TABLE IF NOT EXISTS ips_whitelist (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        ip VARCHAR(45) NOT NULL,
+        motivo TEXT,
+        data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        criado_por VARCHAR(255),
+        UNIQUE KEY unique_ip (ip)
+      )
+    `);
+
+    // Tabela para tentativas de login falhas
+    await dbConnection.execute(`
+      CREATE TABLE IF NOT EXISTS tentativas_login_falhas (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        ip VARCHAR(45) NOT NULL,
+        username VARCHAR(255),
+        data_acesso TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        user_agent TEXT
+      )
+    `);
+
+    // Tabela para visitantes do site
+    await dbConnection.execute(`
+      CREATE TABLE IF NOT EXISTS visitantes (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        ip VARCHAR(45) NOT NULL,
+        pagina VARCHAR(255) NOT NULL,
+        user_agent TEXT,
+        referer TEXT,
+        data_acesso TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Tabela para informações de IP (cache de geolocalização)
+    await dbConnection.execute(`
+      CREATE TABLE IF NOT EXISTS ips_info (
+        ip VARCHAR(45) PRIMARY KEY,
+        pais VARCHAR(100),
+        pais_codigo VARCHAR(2),
+        regiao VARCHAR(100),
+        cidade VARCHAR(100),
+        postal VARCHAR(20),
+        provedor VARCHAR(255),
+        latitude DECIMAL(10, 6),
+        longitude DECIMAL(10, 6),
+        timezone VARCHAR(50),
+        ultima_atualizacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      )
+    `);
+
+    console.log('✅ Todas as tabelas verificadas/criadas com sucesso');
   } catch (error) {
     console.error('❌ Erro ao criar tabelas:', error);
     throw error;
@@ -229,6 +298,70 @@ async function getSystemStatus(key) {
   }
 }
 
+// Função para registrar acesso de visitante
+async function logVisitor(ip, pagina, userAgent, referer) {
+  try {
+    await dbConnection.execute(
+      'INSERT INTO visitantes (ip, pagina, user_agent, referer) VALUES (?, ?, ?, ?)',
+      [ip, pagina, userAgent, referer]
+    );
+    return true;
+  } catch (error) {
+    console.error('❌ Erro ao registrar visitante:', error);
+    return false;
+  }
+}
+
+// Função para registrar tentativa de login falha
+async function logFailedLoginAttempt(ip, username, userAgent) {
+  try {
+    await dbConnection.execute(
+      'INSERT INTO tentativas_login_falhas (ip, username, user_agent) VALUES (?, ?, ?)',
+      [ip, username, userAgent]
+    );
+    return true;
+  } catch (error) {
+    console.error('❌ Erro ao registrar tentativa de login falha:', error);
+    return false;
+  }
+}
+
+// Função para atualizar/criar informações de IP
+async function updateIPInfo(ip, geoData) {
+  try {
+    await dbConnection.execute(
+      'INSERT INTO ips_info (ip, pais, pais_codigo, regiao, cidade, postal, provedor, latitude, longitude, timezone) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+      'ON DUPLICATE KEY UPDATE ' +
+      'pais = VALUES(pais), ' +
+      'pais_codigo = VALUES(pais_codigo), ' +
+      'regiao = VALUES(regiao), ' +
+      'cidade = VALUES(cidade), ' +
+      'postal = VALUES(postal), ' +
+      'provedor = VALUES(provedor), ' +
+      'latitude = VALUES(latitude), ' +
+      'longitude = VALUES(longitude), ' +
+      'timezone = VALUES(timezone)',
+      [
+        ip,
+        geoData.country,
+        geoData.countryCode,
+        geoData.region,
+        geoData.city,
+        geoData.postal,
+        geoData.org,
+        geoData.lat,
+        geoData.lon,
+        geoData.timezone
+      ]
+    );
+    return true;
+  } catch (error) {
+    console.error('❌ Erro ao atualizar informações de IP:', error);
+    return false;
+  }
+}
+
 module.exports = {
   connectDB,
   dbConnection,
@@ -237,5 +370,8 @@ module.exports = {
   reconnectDB,
   logCronMessage,
   updateSystemStatus,
-  getSystemStatus
+  getSystemStatus,
+  logVisitor,
+  logFailedLoginAttempt,
+  updateIPInfo
 };

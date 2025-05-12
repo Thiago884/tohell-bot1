@@ -152,6 +152,103 @@ const slashCommands = [
         required: false
       }
     ]
+  },
+  // Novos comandos para sistema de IP
+  {
+    name: 'bloquear-ip',
+    description: 'Bloqueia um IP no sistema',
+    options: [
+      {
+        name: 'ip',
+        description: 'Endereço IP para bloquear',
+        type: ApplicationCommandOptionType.String,
+        required: true
+      },
+      {
+        name: 'motivo',
+        description: 'Motivo do bloqueio',
+        type: ApplicationCommandOptionType.String,
+        required: true
+      }
+    ]
+  },
+  {
+    name: 'consultar-ip',
+    description: 'Consulta informações sobre um IP',
+    options: [
+      {
+        name: 'ip',
+        description: 'Endereço IP para consultar',
+        type: ApplicationCommandOptionType.String,
+        required: true
+      }
+    ]
+  },
+  {
+    name: 'relatorio-seguranca',
+    description: 'Gera relatório de segurança',
+    options: [
+      {
+        name: 'periodo',
+        description: 'Período do relatório',
+        type: ApplicationCommandOptionType.String,
+        required: false,
+        choices: [
+          { name: 'Últimas 24 horas', value: '24h' },
+          { name: 'Últimos 7 dias', value: '7d' },
+          { name: 'Últimos 30 dias', value: '30d' }
+        ]
+      }
+    ]
+  },
+  {
+    name: 'ultimos-acessos',
+    description: 'Lista os últimos acessos ao site',
+    options: [
+      {
+        name: 'limite',
+        description: 'Número de registros a retornar (padrão: 10)',
+        type: ApplicationCommandOptionType.Integer,
+        min_value: 1,
+        max_value: 50,
+        required: false
+      },
+      {
+        name: 'pais',
+        description: 'Filtrar por país (código de 2 letras)',
+        type: ApplicationCommandOptionType.String,
+        required: false
+      }
+    ]
+  },
+  {
+    name: 'whitelist',
+    description: 'Gerencia a lista de IPs permitidos',
+    options: [
+      {
+        name: 'acao',
+        description: 'Ação a ser realizada',
+        type: ApplicationCommandOptionType.String,
+        required: true,
+        choices: [
+          { name: 'Adicionar IP', value: 'add' },
+          { name: 'Remover IP', value: 'remove' },
+          { name: 'Listar IPs', value: 'list' }
+        ]
+      },
+      {
+        name: 'ip',
+        description: 'Endereço IP (não necessário para listar)',
+        type: ApplicationCommandOptionType.String,
+        required: false
+      },
+      {
+        name: 'motivo',
+        description: 'Motivo para whitelist (opcional)',
+        type: ApplicationCommandOptionType.String,
+        required: false
+      }
+    ]
   }
 ];
 
