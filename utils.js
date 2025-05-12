@@ -713,7 +713,7 @@ async function safeSend(channel, content) {
 }
 
 // ==============================================
-// NOVAS FUNÇÕES PARA SISTEMA DE BLOQUEIO DE IP
+// FUNÇÕES PARA SISTEMA DE BLOQUEIO DE IP
 // ==============================================
 
 // Função para bloquear IP
@@ -963,7 +963,7 @@ module.exports = {
   checkUserPermission,
   notifyWebhook,
   ITEMS_PER_PAGE,
-  // Novas funções para sistema de IP
+  // Funções para sistema de IP
   blockIP,
   queryIP,
   getIPInfo,

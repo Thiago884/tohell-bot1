@@ -567,28 +567,41 @@ function setupEvents(client, db) {
 
               const embed = new EmbedBuilder()
                 .setColor(result.blocked ? '#FF0000' : result.whitelisted ? '#00FF00' : '#FFFF00')
-                .setTitle(`Informações do IP: ${ipToQuery}`)
+                .setTitle(`🌍 Informações do IP: ${ipToQuery}`)
                 .addFields(
                   { name: 'Status', 
                     value: result.blocked ? '🚫 Bloqueado' : result.whitelisted ? '✅ Whitelist' : '⚠️ Não bloqueado', 
                     inline: true 
                   },
                   { name: 'País', value: result.geoInfo?.country || 'Desconhecido', inline: true },
+                  { name: 'Código País', value: result.geoInfo?.countryCode || 'N/A', inline: true },
+                  { name: 'Região', value: result.geoInfo?.region || 'Desconhecida', inline: true },
                   { name: 'Cidade', value: result.geoInfo?.city || 'Desconhecida', inline: true },
-                  { name: 'Provedor', value: result.geoInfo?.org || 'Desconhecido', inline: true }
+                  { name: 'Código Postal', value: result.geoInfo?.postal || 'N/A', inline: true },
+                  { name: 'Provedor', value: result.geoInfo?.org || 'Desconhecido', inline: false }
                 );
 
               if (result.blocked) {
                 embed.addFields(
-                  { name: 'Motivo do Bloqueio', value: result.blocked.motivo || 'Não especificado' },
-                  { name: 'Data do Bloqueio', value: formatBrazilianDate(result.blocked.data_bloqueio) }
+                  { name: 'Motivo do Bloqueio', value: result.blocked.motivo || 'Não especificado', inline: false },
+                  { name: 'Bloqueado por', value: result.blocked.bloqueado_por || 'Sistema', inline: true },
+                  { name: 'Data do Bloqueio', value: formatBrazilianDate(result.blocked.data_bloqueio), inline: true }
                 );
               }
 
               if (result.whitelisted) {
                 embed.addFields(
-                  { name: 'Motivo da Whitelist', value: result.whitelisted.motivo || 'Não especificado' },
-                  { name: 'Data da Whitelist', value: formatBrazilianDate(result.whitelisted.data_criacao) }
+                  { name: 'Motivo da Whitelist', value: result.whitelisted.motivo || 'Não especificado', inline: false },
+                  { name: 'Adicionado por', value: result.whitelisted.criado_por || 'Sistema', inline: true },
+                  { name: 'Data da Whitelist', value: formatBrazilianDate(result.whitelisted.data_criacao), inline: true }
+                );
+              }
+
+              // Adicionar coordenadas se disponíveis
+              if (result.geoInfo?.coordinates) {
+                embed.addFields(
+                  { name: 'Coordenadas', value: result.geoInfo.coordinates, inline: true },
+                  { name: 'Fuso Horário', value: result.geoInfo.timezone || 'N/A', inline: true }
                 );
               }
 
