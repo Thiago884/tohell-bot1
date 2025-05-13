@@ -172,6 +172,18 @@ const slashCommands = [
       }
     ]
   },
+{
+  name: 'desbloquear-ip',
+  description: 'Remove um IP da lista de bloqueados',
+  options: [
+    {
+      name: 'ip',
+      description: 'Endereço IP para desbloquear',
+      type: ApplicationCommandOptionType.String,
+      required: true
+    }
+  ]
+},
   {
     name: 'consultar-ip',
     description: 'Consulta informações sobre um IP',
@@ -184,6 +196,7 @@ const slashCommands = [
       }
     ]
   },
+  
   {
     name: 'relatorio-seguranca',
     description: 'Gera relatório de segurança',

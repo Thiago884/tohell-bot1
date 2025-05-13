@@ -1,5 +1,5 @@
 const { Events, EmbedBuilder, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
-const { safeSend, searchCharacterWithCache, showRanking, searchCharacter, getCommandPermissions, addCommandPermission, removeCommandPermission, checkUserPermission, formatBrazilianDate, processImageUrls, blockIP, queryIP, getIPInfo, generateSecurityReport, getRecentAccess, manageWhitelist } = require('./utils');
+const { safeSend, searchCharacterWithCache, showRanking, searchCharacter, getCommandPermissions, addCommandPermission, removeCommandPermission, checkUserPermission, formatBrazilianDate, processImageUrls, blockIP, unblockIP, queryIP, getIPInfo, generateSecurityReport, getRecentAccess, manageWhitelist } = require('./utils');
 const { isShuttingDown } = require('./database');
 const { listPendingApplications, searchApplications, sendApplicationEmbed, approveApplication, rejectApplication, showHelp, createImageCarousel } = require('./commands');
 
@@ -545,6 +545,55 @@ function setupEvents(client, db) {
               console.error('Erro ao bloquear IP:', error);
               await interaction.editReply({
                 content: '❌ Ocorreu um erro ao bloquear o IP.',
+                ephemeral: true
+              }).catch(console.error);
+            }
+            break;
+
+          case 'desbloquear-ip':
+            const ipToUnblock = interaction.options.getString('ip');
+            
+            await interaction.deferReply();
+            
+            try {
+              const result = await unblockIP(ipToUnblock, db, interaction.user.id);
+              
+              if (!result.success) {
+                return interaction.editReply({
+                  content: `❌ ${result.message}`,
+                  ephemeral: true
+                }).catch(console.error);
+              }
+
+              const embed = new EmbedBuilder()
+                .setColor('#00FF00')
+                .setTitle('✅ IP Desbloqueado com Sucesso')
+                .addFields(
+                  { name: 'IP', value: ipToUnblock, inline: true },
+                  { name: 'Motivo Original', value: result.originalReason || 'Não especificado', inline: true }
+                )
+                .setTimestamp();
+
+              await interaction.editReply({ embeds: [embed] });
+
+              // Notificar canal de segurança
+              const securityChannel = await client.channels.fetch(process.env.SECURITY_CHANNEL_ID);
+              if (securityChannel) {
+                const notifyEmbed = new EmbedBuilder()
+                  .setColor('#FFA500')
+                  .setTitle('⚠️ IP Desbloqueado')
+                  .setDescription(`O IP ${ipToUnblock} foi desbloqueado por ${interaction.user.tag}`)
+                  .addFields(
+                    { name: 'Motivo Original', value: result.originalReason || 'Não especificado' }
+                  )
+                  .setTimestamp();
+                
+                await securityChannel.send({ embeds: [notifyEmbed] });
+              }
+            } catch (error) {
+              console.error('Erro ao desbloquear IP:', error);
+              await interaction.editReply({
+                content: '❌ Ocorreu um erro ao desbloquear o IP.',
                 ephemeral: true
               }).catch(console.error);
             }

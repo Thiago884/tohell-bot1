@@ -1,4 +1,14 @@
-const { EmbedBuilder, MessageFlags, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { 
+  EmbedBuilder, 
+  ActionRowBuilder, 
+  ButtonBuilder, 
+  ButtonStyle, 
+  ModalBuilder, 
+  TextInputBuilder, 
+  TextInputStyle,
+  ApplicationCommandOptionType,
+  MessageFlags
+} = require('discord.js');
 const axios = require('axios');
 const axiosRetry = require('axios-retry');
 const { JSDOM } = require('jsdom');
@@ -46,18 +56,17 @@ function isValidImageUrl(url) {
 // Função para processar URLs de imagens (corrigida)
 function processImageUrls(imageData) {
   try {
+    // Se for string, tentar parsear como JSON
     const urls = typeof imageData === 'string' ? JSON.parse(imageData || '[]') : imageData || [];
+    
+    // Converter para array se não for
     const urlArray = Array.isArray(urls) ? urls : [urls];
     
+    // Mapear para URLs completas se necessário
     return urlArray.map(url => {
       if (!url) return null;
-      // Se já for uma URL completa, retorna como está
-      if (url.startsWith('http')) return url;
-      // Remove barras iniciais para evitar duplicação
-      const cleanPath = url.replace(/^\/+/, '');
-      // Constrói URL completa com base no BASE_URL
-      return `${BASE_URL}${cleanPath}`;
-    }).filter(url => url !== null && isValidImageUrl(url));
+      return url.startsWith('http') ? url : `${BASE_URL}${url.replace(/^\/+/, '')}`;
+    }).filter(url => url !== null);
   } catch (error) {
     console.error('Erro ao processar URLs de imagem:', error);
     return [];
@@ -713,7 +722,7 @@ async function safeSend(channel, content) {
 }
 
 // ==============================================
-// FUNÇÕES PARA SISTEMA DE BLOQUEIO DE IP
+// FUNÇÕES PARA SISTEMA DE IP
 // ==============================================
 
 // Função para bloquear IP
@@ -755,6 +764,36 @@ async function blockIP(ip, motivo, dbConnection, userId) {
   } catch (error) {
     console.error('Erro ao bloquear IP:', error);
     return { success: false, message: 'Erro ao bloquear IP.' };
+  }
+}
+
+// Função para desbloquear IP
+async function unblockIP(ip, dbConnection, userId) {
+  try {
+    // Verifica se o IP está bloqueado
+    const [blocked] = await dbConnection.execute(
+      'SELECT * FROM ips_bloqueados WHERE ip = ?',
+      [ip]
+    );
+    
+    if (blocked.length === 0) {
+      return { success: false, message: 'Este IP não está bloqueado.' };
+    }
+
+    // Remove o bloqueio
+    await dbConnection.execute(
+      'DELETE FROM ips_bloqueados WHERE ip = ?',
+      [ip]
+    );
+
+    return { 
+      success: true, 
+      message: 'IP desbloqueado com sucesso!',
+      originalReason: blocked[0].motivo
+    };
+  } catch (error) {
+    console.error('Erro ao desbloquear IP:', error);
+    return { success: false, message: 'Erro ao desbloquear IP.' };
   }
 }
 
@@ -965,6 +1004,7 @@ module.exports = {
   ITEMS_PER_PAGE,
   // Funções para sistema de IP
   blockIP,
+  unblockIP,
   queryIP,
   getIPInfo,
   generateSecurityReport,
