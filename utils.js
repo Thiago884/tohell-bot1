@@ -30,6 +30,11 @@ const BASE_URL = process.env.BASE_URL || 'https://tohellguild.com.br/';
 const MAIN_GUILDS = ['ToHeLL_', 'ToHeLL2', 'ToHeLL3'];
 const MUCA_BRASIL_URL = 'https://www.mucabrasil.com.br/?go=guild&n=';
 const CACHE_TIME = 300; // 5 minutos em segundos
+const WEBHOOK_DELAY_MS = 1500; // Delay entre chamadas de webhook
+
+// Sistema de fila para webhooks
+const webhookQueue = [];
+let isProcessingWebhook = false;
 
 // Função para formatar data no padrão brasileiro com fuso horário
 function formatBrazilianDate(dateString) {
@@ -81,14 +86,90 @@ function extractValidImageUrls(jsonString) {
 // Função para responder a interações de forma segura
 async function safeInteractionReply(interaction, content) {
   try {
-    if (interaction.replied || interaction.deferred) {
-      return await interaction.editReply(content).catch(console.error);
+    if (interaction.replied) {
+      // Se já foi respondido, tenta editar
+      const message = await interaction.fetchReply().catch(() => null);
+      if (message && message.editable) {
+        return await message.edit(content).catch(() => null);
+      }
+      return null;
+    } else if (interaction.deferred) {
+      return await interaction.editReply(content).catch(() => null);
     } else {
-      return await interaction.reply(content).catch(console.error);
+      return await interaction.reply(content).catch(() => null);
     }
   } catch (error) {
     console.error('❌ Erro ao responder interação:', error);
     return null;
+  }
+}
+
+// Processador de fila de webhooks
+async function processWebhookQueue() {
+  if (isProcessingWebhook || webhookQueue.length === 0) return;
+  
+  isProcessingWebhook = true;
+  const webhookData = webhookQueue.shift();
+  
+  try {
+    await axios.post(webhookData.url, webhookData.payload, {
+      timeout: 5000,
+      headers: { 'Content-Type': 'application/json' }
+    });
+    
+    // Delay para evitar rate limit
+    await new Promise(resolve => setTimeout(resolve, WEBHOOK_DELAY_MS));
+  } catch (error) {
+    console.error('❌ Erro no webhook (fila):', error.message);
+    // Re-adiciona à fila se for um erro temporário
+    if (!error.response || error.response.status >= 500) {
+      webhookQueue.unshift(webhookData);
+    }
+  } finally {
+    isProcessingWebhook = false;
+    if (webhookQueue.length > 0) {
+      setImmediate(processWebhookQueue);
+    }
+  }
+}
+
+// Notificar no webhook com sistema de fila
+async function notifyWebhook(action, applicationId, applicationName, discordTag, motivo = '') {
+  if (!process.env.DISCORD_WEBHOOK_URL) return;
+  if (!action || !applicationId || !applicationName || !discordTag) {
+    console.error('❌ Parâmetros inválidos para notifyWebhook');
+    return;
+  }
+
+  const color = action === 'aprovado' ? 3066993 : 15158332;
+  const actionText = action === 'aprovado' ? 'Aprovada' : 'Rejeitada';
+  
+  const embed = {
+    title: `📢 Inscrição ${actionText}`,
+    description: `A inscrição de ${applicationName} foi ${action}`,
+    color: color,
+    fields: [
+      { name: 'ID', value: applicationId.toString(), inline: true },
+      { name: 'Status', value: actionText, inline: true },
+      { name: 'Discord', value: discordTag, inline: true },
+      { name: 'Via', value: 'Discord Bot', inline: true }
+    ],
+    timestamp: new Date().toISOString()
+  };
+  
+  if (action === 'rejeitado' && motivo) {
+    embed.fields.push({ name: 'Motivo', value: motivo, inline: false });
+  }
+  
+  // Adiciona à fila de webhooks
+  webhookQueue.push({
+    url: process.env.DISCORD_WEBHOOK_URL,
+    payload: { embeds: [embed] }
+  });
+  
+  // Inicia o processamento se não estiver em andamento
+  if (!isProcessingWebhook) {
+    processWebhookQueue();
   }
 }
 
@@ -668,43 +749,6 @@ async function checkUserPermission(interaction, commandName, dbConnection) {
   if (allowedRoles.length === 0) return true;
   
   return interaction.member?.roles?.cache?.some(role => allowedRoles.includes(role.id));
-}
-
-// Notificar no webhook
-async function notifyWebhook(action, applicationId, applicationName, discordTag, motivo = '') {
-  if (!process.env.DISCORD_WEBHOOK_URL) return;
-  if (!action || !applicationId || !applicationName || !discordTag) {
-    console.error('❌ Parâmetros inválidos para notifyWebhook');
-    return;
-  }
-
-  const color = action === 'aprovado' ? 3066993 : 15158332;
-  const actionText = action === 'aprovado' ? 'Aprovada' : 'Rejeitada';
-  
-  const embed = {
-    title: `📢 Inscrição ${actionText}`,
-    description: `A inscrição de ${applicationName} foi ${action}`,
-    color: color,
-    fields: [
-      { name: 'ID', value: applicationId.toString(), inline: true },
-      { name: 'Status', value: actionText, inline: true },
-      { name: 'Discord', value: discordTag, inline: true },
-      { name: 'Via', value: 'Discord Bot', inline: true }
-    ],
-    timestamp: new Date().toISOString()
-  };
-  
-  if (action === 'rejeitado' && motivo) {
-    embed.fields.push({ name: 'Motivo', value: motivo, inline: false });
-  }
-  
-  try {
-    await axios.post(process.env.DISCORD_WEBHOOK_URL, {
-      embeds: [embed]
-    }).catch(e => console.error('❌ Erro no webhook:', e.response?.data || e.message));
-  } catch (error) {
-    console.error('❌ Erro grave no webhook:', error);
-  }
 }
 
 // Envio seguro de mensagens

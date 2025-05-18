@@ -315,7 +315,7 @@ function setupEvents(client, db) {
     setInterval(() => checkNewApplications(client, db), 60000); // Verificar novas inscrições a cada 1 minuto
   });
 
-  // Evento interactionCreate
+  // Evento interactionCreate com tratamento de erros melhorado
   client.on(Events.InteractionCreate, async interaction => {
     if (isShuttingDown) return;
 
@@ -1065,15 +1065,27 @@ function setupEvents(client, db) {
       }
     } catch (error) {
       console.error('❌ Erro não tratado em InteractionCreate:', error);
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({
-          content: 'Ocorreu um erro interno. Por favor, tente novamente mais tarde.',
-          ephemeral: true
-        }).catch(console.error);
-      } else if (interaction.deferred) {
-        await interaction.editReply({
-          content: 'Ocorreu um erro interno. Por favor, tente novamente mais tarde.'
-        }).catch(console.error);
+      
+      // Verificar se já foi respondido
+      const alreadyReplied = interaction.replied || interaction.deferred;
+      
+      try {
+        if (!alreadyReplied) {
+          await interaction.reply({
+            content: 'Ocorreu um erro interno. Por favor, tente novamente mais tarde.',
+            ephemeral: true
+          }).catch(() => {});
+        } else {
+          // Tentar editar a resposta existente
+          const message = await interaction.fetchReply().catch(() => null);
+          if (message && message.editable) {
+            await message.edit({
+              content: 'Ocorreu um erro interno. Por favor, tente novamente mais tarde.'
+            }).catch(() => {});
+          }
+        }
+      } catch (nestedError) {
+        console.error('❌ Erro ao enviar mensagem de erro:', nestedError);
       }
     }
   });

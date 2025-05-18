@@ -9,7 +9,7 @@ const {
   ApplicationCommandOptionType,
   MessageFlags
 } = require('discord.js');
-const { formatBrazilianDate, safeSend, notifyWebhook, searchCharacterWithCache, calculateAdvancedStats, createCharEmbed } = require('./utils');
+const { formatBrazilianDate, safeSend, notifyWebhook, searchCharacterWithCache, calculateAdvancedStats, createCharEmbed, safeInteractionReply } = require('./utils');
 
 // Configuração da URL base para imagens
 const BASE_URL = process.env.BASE_URL || 'https://tohellguild.com.br/';
@@ -153,7 +153,6 @@ const slashCommands = [
       }
     ]
   },
-  // Novos comandos para sistema de IP
   {
     name: 'bloquear-ip',
     description: 'Bloqueia um IP no sistema',
@@ -172,18 +171,18 @@ const slashCommands = [
       }
     ]
   },
-{
-  name: 'desbloquear-ip',
-  description: 'Remove um IP da lista de bloqueados',
-  options: [
-    {
-      name: 'ip',
-      description: 'Endereço IP para desbloquear',
-      type: ApplicationCommandOptionType.String,
-      required: true
-    }
-  ]
-},
+  {
+    name: 'desbloquear-ip',
+    description: 'Remove um IP da lista de bloqueados',
+    options: [
+      {
+        name: 'ip',
+        description: 'Endereço IP para desbloquear',
+        type: ApplicationCommandOptionType.String,
+        required: true
+      }
+    ]
+  },
   {
     name: 'consultar-ip',
     description: 'Consulta informações sobre um IP',
@@ -196,7 +195,6 @@ const slashCommands = [
       }
     ]
   },
-  
   {
     name: 'relatorio-seguranca',
     description: 'Gera relatório de segurança',
@@ -290,7 +288,7 @@ async function createImageCarousel(interaction, images, applicationId) {
   const processedImages = processImageUrls(images);
   
   if (processedImages.length === 0) {
-    return interaction.reply({
+    return safeInteractionReply(interaction, {
       content: 'Nenhuma imagem disponível para exibição.',
       flags: MessageFlags.Ephemeral
     });
@@ -322,8 +320,7 @@ async function createImageCarousel(interaction, images, applicationId) {
       .setStyle(ButtonStyle.Danger)
   );
 
-  // Removido MessageFlags.Ephemeral para que todos vejam o carrossel
-  return interaction.reply({
+  return safeInteractionReply(interaction, {
     embeds: [embed],
     components: [row]
   });
@@ -334,7 +331,10 @@ async function listPendingApplications(context, args, dbConnection) {
   const page = args[0] ? parseInt(args[0]) : 1;
   
   if (isNaN(page) || page < 1) {
-    return context.reply({ content: 'Por favor, especifique um número de página válido.', flags: MessageFlags.Ephemeral });
+    return safeInteractionReply(context, { 
+      content: 'Por favor, especifique um número de página válido.', 
+      flags: MessageFlags.Ephemeral 
+    });
   }
 
   try {
@@ -347,11 +347,17 @@ async function listPendingApplications(context, args, dbConnection) {
     const totalPages = Math.ceil(total / 5);
 
     if (total === 0) {
-      return context.reply({ content: 'Não há inscrições pendentes no momento.', flags: MessageFlags.Ephemeral });
+      return safeInteractionReply(context, { 
+        content: 'Não há inscrições pendentes no momento.', 
+        flags: MessageFlags.Ephemeral 
+      });
     }
 
     if (page > totalPages) {
-      return context.reply({ content: `Apenas ${totalPages} páginas disponíveis.`, flags: MessageFlags.Ephemeral });
+      return safeInteractionReply(context, { 
+        content: `Apenas ${totalPages} páginas disponíveis.`, 
+        flags: MessageFlags.Ephemeral 
+      });
     }
 
     const [rows] = await dbConnection.execute(
@@ -364,8 +370,7 @@ async function listPendingApplications(context, args, dbConnection) {
       .setTitle(`Inscrições Pendentes - Página ${page}/${totalPages}`)
       .setFooter({ text: `Total de inscrições pendentes: ${total}` });
 
-    await context.deferReply();
-    await context.editReply({ embeds: [embed] });
+    await safeInteractionReply(context, { embeds: [embed] });
 
     for (const application of rows) {
       await sendApplicationEmbed(context.channel, application, dbConnection);
@@ -393,21 +398,30 @@ async function listPendingApplications(context, args, dbConnection) {
 
   } catch (error) {
     console.error('❌ Erro ao listar inscrições pendentes:', error);
-    await context.reply({ content: 'Ocorreu um erro ao listar as inscrições pendentes.', flags: MessageFlags.Ephemeral });
+    await safeInteractionReply(context, { 
+      content: 'Ocorreu um erro ao listar as inscrições pendentes.', 
+      flags: MessageFlags.Ephemeral 
+    });
   }
 }
 
 // Função para buscar inscrições
 async function searchApplications(context, args, dbConnection) {
   if (args.length === 0) {
-    return context.reply({ content: 'Por favor, especifique um termo de busca.', flags: MessageFlags.Ephemeral });
+    return safeInteractionReply(context, { 
+      content: 'Por favor, especifique um termo de busca.', 
+      flags: MessageFlags.Ephemeral 
+    });
   }
 
   const searchTerm = args[0];
   const page = args[1] ? parseInt(args[1]) : 1;
   
   if (isNaN(page) || page < 1) {
-    return context.reply({ content: 'Por favor, especifique um número de página válido.', flags: MessageFlags.Ephemeral });
+    return safeInteractionReply(context, { 
+      content: 'Por favor, especifique um número de página válido.', 
+      flags: MessageFlags.Ephemeral 
+    });
   }
 
   try {
@@ -428,11 +442,17 @@ async function searchApplications(context, args, dbConnection) {
     const totalPages = Math.ceil(total / 5);
 
     if (total === 0) {
-      return context.reply({ content: 'Nenhuma inscrição encontrada com esse termo de busca.', flags: MessageFlags.Ephemeral });
+      return safeInteractionReply(context, { 
+        content: 'Nenhuma inscrição encontrada com esse termo de busca.', 
+        flags: MessageFlags.Ephemeral 
+      });
     }
 
     if (page > totalPages) {
-      return context.reply({ content: `Apenas ${totalPages} páginas disponíveis para esta busca.`, flags: MessageFlags.Ephemeral });
+      return safeInteractionReply(context, { 
+        content: `Apenas ${totalPages} páginas disponíveis para esta busca.`, 
+        flags: MessageFlags.Ephemeral 
+      });
     }
 
     const [rowsPendentes] = await dbConnection.execute(
@@ -458,8 +478,7 @@ async function searchApplications(context, args, dbConnection) {
       .setTitle(`Resultados da busca por "${searchTerm}" - Página ${page}/${totalPages}`)
       .setFooter({ text: `Total de resultados: ${total}` });
 
-    await context.deferReply();
-    await context.editReply({ embeds: [embed] });
+    await safeInteractionReply(context, { embeds: [embed] });
 
     for (const application of rows) {
       await sendApplicationEmbed(context.channel, application, dbConnection);
@@ -487,7 +506,10 @@ async function searchApplications(context, args, dbConnection) {
 
   } catch (error) {
     console.error('❌ Erro ao buscar inscrições:', error);
-    await context.reply({ content: 'Ocorreu um erro ao buscar inscrições.', flags: MessageFlags.Ephemeral });
+    await safeInteractionReply(context, { 
+      content: 'Ocorreu um erro ao buscar inscrições.', 
+      flags: MessageFlags.Ephemeral 
+    });
   }
 }
 
@@ -561,20 +583,10 @@ async function showHelp(interaction) {
     )
     .setFooter({ text: 'ToHeLL Guild - Sistema de Inscrições' });
 
-  try {
-    if (!interaction.replied && !interaction.deferred) {
-      await interaction.reply({ 
-        embeds: [embed], 
-        flags: MessageFlags.Ephemeral 
-      });
-    } else if (interaction.deferred && !interaction.replied) {
-      await interaction.editReply({ 
-        embeds: [embed] 
-      });
-    }
-  } catch (error) {
-    console.error('❌ Erro ao mostrar ajuda:', error);
-  }
+  await safeInteractionReply(interaction, { 
+    embeds: [embed], 
+    flags: MessageFlags.Ephemeral 
+  });
 }
 
 // Função para aprovar inscrição
@@ -613,39 +625,40 @@ async function approveApplication(context, applicationId, dbConnection, user = n
 
     await notifyWebhook('aprovado', applicationId, application.nome, application.discord);
 
-    if (context.reply) {
-      await context.reply({ 
-        content: `Inscrição #${applicationId} aprovada com sucesso!`,
-        flags: MessageFlags.Ephemeral 
-      }).catch(console.error);
-    }
+    await safeInteractionReply(context, { 
+      content: `Inscrição #${applicationId} aprovada com sucesso!`,
+      flags: MessageFlags.Ephemeral 
+    });
 
     try {
-      const embed = context.message.embeds[0];
-      embed.setColor('#00FF00');
-      embed.setFooter({ text: `✅ Aprovado por ${user?.username || context.user?.username || 'Sistema'}` });
-      
-      await context.message.edit({ 
-        embeds: [embed],
-        components: []
-      }).catch(console.error);
+      // Verificar se a mensagem ainda existe e pode ser editada
+      if (context.message && context.message.editable) {
+        const embed = new EmbedBuilder(context.message.embeds[0]);
+        embed.setColor('#00FF00');
+        embed.setFooter({ text: `✅ Aprovado por ${user?.username || context.user?.username || 'Sistema'}` });
+        
+        await context.message.edit({ 
+          embeds: [embed],
+          components: []
+        }).catch(console.error);
+      }
     } catch (editError) {
       console.error('❌ Erro ao editar mensagem:', editError);
     }
 
     try {
-      await context.message.reactions.removeAll().catch(console.error);
+      if (context.message) {
+        await context.message.reactions.removeAll().catch(console.error);
+      }
     } catch (error) {
       console.error('❌ Erro ao remover reações:', error);
     }
   } catch (error) {
     console.error('❌ Erro ao aprovar inscrição:', error);
-    if (context.reply) {
-      await context.reply({ 
-        content: `Ocorreu um erro ao aprovar a inscrição #${applicationId}`,
-        flags: MessageFlags.Ephemeral 
-      }).catch(console.error);
-    }
+    await safeInteractionReply(context, { 
+      content: `Ocorreu um erro ao aprovar a inscrição #${applicationId}`,
+      flags: MessageFlags.Ephemeral 
+    });
   }
 }
 
@@ -670,44 +683,45 @@ async function rejectApplication(context, applicationId, reason, dbConnection, u
 
     await notifyWebhook('rejeitado', applicationId, application.nome, application.discord, reason);
 
-    if (context.reply) {
-      await context.reply({ 
-        content: `Inscrição #${applicationId} rejeitada com sucesso!`,
-        flags: MessageFlags.Ephemeral 
-      }).catch(console.error);
-    }
+    await safeInteractionReply(context, { 
+      content: `Inscrição #${applicationId} rejeitada com sucesso!`,
+      flags: MessageFlags.Ephemeral 
+    });
 
     try {
-      const embed = context.message.embeds[0];
-      embed.setColor('#FF0000');
-      
-      if (reason) {
-        embed.addFields({ name: 'Motivo da Rejeição', value: reason });
+      // Verificar se a mensagem ainda existe e pode ser editada
+      if (context.message && context.message.editable) {
+        const embed = new EmbedBuilder(context.message.embeds[0]);
+        embed.setColor('#FF0000');
+        
+        if (reason) {
+          embed.addFields({ name: 'Motivo da Rejeição', value: reason });
+        }
+        
+        embed.setFooter({ text: `❌ Rejeitado por ${user?.username || context.user?.username || 'Sistema'}` });
+        
+        await context.message.edit({ 
+          embeds: [embed],
+          components: []
+        }).catch(console.error);
       }
-      
-      embed.setFooter({ text: `❌ Rejeitado por ${user?.username || context.user?.username || 'Sistema'}` });
-      
-      await context.message.edit({ 
-        embeds: [embed],
-        components: []
-      }).catch(console.error);
     } catch (editError) {
       console.error('❌ Erro ao editar mensagem:', editError);
     }
 
     try {
-      await context.message.reactions.removeAll().catch(console.error);
+      if (context.message) {
+        await context.message.reactions.removeAll().catch(console.error);
+      }
     } catch (error) {
       console.error('❌ Erro ao remover reações:', error);
     }
   } catch (error) {
     console.error('❌ Erro ao rejeitar inscrição:', error);
-    if (context.reply) {
-      await context.reply({ 
-        content: `Ocorreu um erro ao rejeitar a inscrição #${applicationId}`,
-        flags: MessageFlags.Ephemeral 
-      }).catch(console.error);
-    }
+    await safeInteractionReply(context, { 
+      content: `Ocorreu um erro ao rejeitar a inscrição #${applicationId}`,
+      flags: MessageFlags.Ephemeral 
+    });
   }
 }
 
