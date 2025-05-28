@@ -769,7 +769,7 @@ async function safeSend(channel, content) {
 // FUNÇÕES PARA SISTEMA DE IP
 // ==============================================
 
-// Função para bloquear IP
+// Função para bloquear IP (atualizada)
 async function blockIP(ip, motivo, dbConnection, userId) {
   try {
     // Verifica se o IP já está bloqueado
@@ -788,21 +788,26 @@ async function blockIP(ip, motivo, dbConnection, userId) {
       return { success: false, message: 'Não foi possível obter informações do IP.' };
     }
 
-    // Insere no banco de dados
-    await dbConnection.execute(
-      'INSERT INTO ips_bloqueados (ip, motivo, pais, regiao, cidade, postal, provedor, bloqueado_por) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [
-        ip,
-        motivo,
-        geoInfo.country,
-        geoInfo.region,
-        geoInfo.city,
-        geoInfo.postal,
-        geoInfo.org,
-        userId
-      ]
+    // Verifica se a coluna bloqueado_por existe
+    const [columns] = await dbConnection.execute(
+      `SHOW COLUMNS FROM ips_bloqueados LIKE 'bloqueado_por'`
     );
+    
+    const hasBloqueadoPor = columns.length > 0;
+    
+    // Monta a query dinamicamente
+    let query = 'INSERT INTO ips_bloqueados (ip, motivo, pais, regiao, cidade, postal, provedor';
+    let values = [ip, motivo, geoInfo.country, geoInfo.region, geoInfo.city, geoInfo.postal, geoInfo.org];
+    
+    if (hasBloqueadoPor) {
+      query += ', bloqueado_por) VALUES (?, ?, ?, ?, ?, ?, ?, ?)';
+      values.push(userId);
+    } else {
+      query += ') VALUES (?, ?, ?, ?, ?, ?, ?)';
+    }
+
+    // Insere no banco de dados
+    await dbConnection.execute(query, values);
 
     return { success: true, message: 'IP bloqueado com sucesso!', geoInfo };
   } catch (error) {

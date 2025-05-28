@@ -148,7 +148,7 @@ async function createTables() {
       )
     `);
 
-    // Tabela para IPs bloqueados
+    // Tabela para IPs bloqueados (atualizada com bloqueado_por)
     await dbConnection.execute(`
       CREATE TABLE IF NOT EXISTS ips_bloqueados (
         id INT AUTO_INCREMENT PRIMARY KEY,
