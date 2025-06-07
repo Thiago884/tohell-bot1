@@ -31,7 +31,7 @@ const MAIN_GUILDS = ['ToHeLL_', 'ToHeLL2', 'ToHeLL3'];
 const MUCA_BRASIL_URL = 'https://www.mucabrasil.com.br/?go=guild&n=';
 const CACHE_TIME = 300; // 5 minutos em segundos
 const WEBHOOK_DELAY_MS = 1500; // Delay entre chamadas de webhook
-const NUMVERIFY_API_KEY = '92a8a50f3a787b49eecc7fc8356cbd46';
+const NUMVERIFY_API_KEY = process.env.NUMVERIFY_API_KEY || '92a8a50f3a787b49eecc7fc8356cbd46';
 
 // Sistema de fila para webhooks
 const webhookQueue = [];
@@ -505,7 +505,7 @@ async function searchCharacter(interaction, charName, dbConnection) {
   if (!charName || typeof charName !== 'string') {
     return interaction.reply({
       content: 'Por favor, forneça um nome de personagem válido.',
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 
@@ -514,7 +514,7 @@ async function searchCharacter(interaction, charName, dbConnection) {
     if (!dbConnection || !(await dbConnection.execute('SELECT 1').catch(() => false))) {
       return interaction.reply({
         content: 'Erro de conexão com o banco de dados. Por favor, tente novamente mais tarde.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
@@ -580,7 +580,7 @@ async function searchCharacter(interaction, charName, dbConnection) {
     if (!interaction.replied && !interaction.deferred) {
       await interaction.reply({
         content: 'Ocorreu um erro ao buscar o personagem. Por favor, tente novamente mais tarde.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     } else if (interaction.deferred) {
       await interaction.editReply({
@@ -1033,25 +1033,46 @@ async function manageWhitelist(action, ip, motivo, dbConnection, userId) {
   }
 }
 
-// Função para consultar número de telefone
+// Função para consultar número de telefone (atualizada)
 async function checkPhoneNumber(phoneNumber) {
   try {
+    // Normaliza o número removendo caracteres não numéricos
+    const normalizedNumber = phoneNumber.replace(/[^\d+]/g, '');
+    
+    // Verifica se o número está em formato brasileiro (sem código de país)
+    let formattedNumber = normalizedNumber;
+    if (/^(\d{2})(\d{8,9})$/.test(normalizedNumber)) {
+      formattedNumber = `+55${normalizedNumber}`;
+    } 
+    // Verifica se está em formato europeu (geralmente começa com + e código de país)
+    else if (/^\d{9,15}$/.test(normalizedNumber) && !normalizedNumber.startsWith('+')) {
+      // Assume que é um número europeu sem o +, adiciona o código do país padrão
+      formattedNumber = `+${normalizedNumber}`;
+    }
+    // Se já começa com +, assume que está em formato internacional
+    
     const response = await axios.get(`http://apilayer.net/api/validate`, {
       params: {
         access_key: NUMVERIFY_API_KEY,
-        number: phoneNumber,
+        number: formattedNumber,
         format: 1
       },
       timeout: 5000
     });
 
     if (response.data.valid) {
+      // Formata os números para exibição
+      const formats = {
+        br: response.data.local_format || formattedNumber,
+        eu: `+${response.data.country_code} ${response.data.local_format.replace(/\D/g, '')}`,
+        us: response.data.international_format || formattedNumber
+      };
+      
       return {
         success: true,
         data: {
           number: response.data.number,
-          localFormat: response.data.local_format,
-          internationalFormat: response.data.international_format,
+          formats, // Adiciona os formatos
           countryPrefix: response.data.country_prefix,
           countryCode: response.data.country_code,
           countryName: response.data.country_name,

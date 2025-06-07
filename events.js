@@ -327,7 +327,7 @@ function setupEvents(client, db) {
         if (!await checkUserPermission(interaction, interaction.commandName, db)) {
           return interaction.reply({
             content: '❌ Você não tem permissão para usar este comando.',
-            ephemeral: true
+            flags: MessageFlags.Ephemeral
           }).catch(console.error);
         }
 
@@ -440,7 +440,7 @@ function setupEvents(client, db) {
             if (!interaction.inGuild()) {
               return interaction.reply({
                 content: 'Este comando só pode ser usado em servidores.',
-                ephemeral: true
+                flags: MessageFlags.Ephemeral
               }).catch(console.error);
             }
 
@@ -448,7 +448,7 @@ function setupEvents(client, db) {
             if (!interaction.member || !interaction.member.permissions || !interaction.member.permissions.has('ADMINISTRATOR')) {
               return interaction.reply({
                 content: '❌ Este comando é restrito a administradores.',
-                ephemeral: true
+                flags: MessageFlags.Ephemeral
               }).catch(console.error);
             }
 
@@ -517,7 +517,7 @@ function setupEvents(client, db) {
               if (!result.success) {
                 return interaction.editReply({
                   content: `❌ ${result.message}`,
-                  ephemeral: true
+                  flags: MessageFlags.Ephemeral
                 }).catch(console.error);
               }
 
@@ -554,7 +554,7 @@ function setupEvents(client, db) {
               console.error('Erro ao bloquear IP:', error);
               await interaction.editReply({
                 content: '❌ Ocorreu um erro ao bloquear o IP.',
-                ephemeral: true
+                flags: MessageFlags.Ephemeral
               }).catch(console.error);
             }
             break;
@@ -570,7 +570,7 @@ function setupEvents(client, db) {
               if (!result.success) {
                 return interaction.editReply({
                   content: `❌ ${result.message}`,
-                  ephemeral: true
+                  flags: MessageFlags.Ephemeral
                 }).catch(console.error);
               }
 
@@ -603,7 +603,7 @@ function setupEvents(client, db) {
               console.error('Erro ao desbloquear IP:', error);
               await interaction.editReply({
                 content: '❌ Ocorreu um erro ao desbloquear o IP.',
-                ephemeral: true
+                flags: MessageFlags.Ephemeral
               }).catch(console.error);
             }
             break;
@@ -619,7 +619,7 @@ function setupEvents(client, db) {
               if (!result) {
                 return interaction.editReply({
                   content: '❌ Não foi possível consultar o IP.',
-                  ephemeral: true
+                  flags: MessageFlags.Ephemeral
                 }).catch(console.error);
               }
 
@@ -668,7 +668,7 @@ function setupEvents(client, db) {
               console.error('Erro ao consultar IP:', error);
               await interaction.editReply({
                 content: '❌ Ocorreu um erro ao consultar o IP.',
-                ephemeral: true
+                flags: MessageFlags.Ephemeral
               }).catch(console.error);
             }
             break;
@@ -684,7 +684,7 @@ function setupEvents(client, db) {
               if (!report) {
                 return interaction.editReply({
                   content: '❌ Não foi possível gerar o relatório.',
-                  ephemeral: true
+                  flags: MessageFlags.Ephemeral
                 }).catch(console.error);
               }
 
@@ -724,7 +724,7 @@ function setupEvents(client, db) {
               console.error('Erro ao gerar relatório:', error);
               await interaction.editReply({
                 content: '❌ Ocorreu um erro ao gerar o relatório.',
-                ephemeral: true
+                flags: MessageFlags.Ephemeral
               }).catch(console.error);
             }
             break;
@@ -741,7 +741,7 @@ function setupEvents(client, db) {
               if (!accesses || accesses.length === 0) {
                 return interaction.editReply({
                   content: '❌ Nenhum acesso encontrado com os filtros especificados.',
-                  ephemeral: true
+                  flags: MessageFlags.Ephemeral
                 }).catch(console.error);
               }
 
@@ -763,7 +763,7 @@ function setupEvents(client, db) {
               console.error('Erro ao buscar acessos:', error);
               await interaction.editReply({
                 content: '❌ Ocorreu um erro ao buscar os últimos acessos.',
-                ephemeral: true
+                flags: MessageFlags.Ephemeral
               }).catch(console.error);
             }
             break;
@@ -779,7 +779,7 @@ function setupEvents(client, db) {
               if (whitelistAction !== 'list' && !ipWhitelist) {
                 return interaction.editReply({
                   content: '❌ Por favor, especifique um IP para esta ação.',
-                  ephemeral: true
+                  flags: MessageFlags.Ephemeral
                 }).catch(console.error);
               }
 
@@ -788,7 +788,7 @@ function setupEvents(client, db) {
               if (!result.success) {
                 return interaction.editReply({
                   content: `❌ ${result.message}`,
-                  ephemeral: true
+                  flags: MessageFlags.Ephemeral
                 }).catch(console.error);
               }
 
@@ -796,7 +796,7 @@ function setupEvents(client, db) {
                 if (result.data.length === 0) {
                   return interaction.editReply({
                     content: 'Nenhum IP na whitelist.',
-                    ephemeral: true
+                    flags: MessageFlags.Ephemeral
                   }).catch(console.error);
                 }
 
@@ -817,7 +817,7 @@ function setupEvents(client, db) {
               } else {
                 await interaction.editReply({
                   content: `✅ ${result.message}`,
-                  ephemeral: true
+                  flags: MessageFlags.Ephemeral
                 }).catch(console.error);
 
                 // Notificar canal de segurança
@@ -840,7 +840,7 @@ function setupEvents(client, db) {
               console.error('Erro ao gerenciar whitelist:', error);
               await interaction.editReply({
                 content: '❌ Ocorreu um erro ao gerenciar a whitelist.',
-                ephemeral: true
+                flags: MessageFlags.Ephemeral
               }).catch(console.error);
             }
             break;
@@ -863,9 +863,11 @@ function setupEvents(client, db) {
                 .setColor('#0099ff')
                 .setTitle('📱 Informações do Telefone')
                 .addFields(
-                  { name: 'Número', value: result.data.number || 'N/A', inline: true },
-                  { name: 'Formato Local', value: result.data.localFormat || 'N/A', inline: true },
-                  { name: 'Formato Internacional', value: result.data.internationalFormat || 'N/A', inline: true },
+                  { name: 'Número Original', value: phoneNumber, inline: true },
+                  { name: 'Número Internacional', value: result.data.number || 'N/A', inline: true },
+                  { name: 'Formato Brasileiro', value: result.data.formats.br || 'N/A', inline: true },
+                  { name: 'Formato Europeu', value: result.data.formats.eu || 'N/A', inline: true },
+                  { name: 'Formato EUA/Internacional', value: result.data.formats.us || 'N/A', inline: true },
                   { name: 'País', value: `${result.data.countryName} (${result.data.countryCode})`, inline: true },
                   { name: 'Código do País', value: result.data.countryPrefix || 'N/A', inline: true },
                   { name: 'Localização', value: result.data.location || 'N/A', inline: true },
@@ -892,11 +894,11 @@ function setupEvents(client, db) {
         if (interaction.channel?.id !== process.env.ALLOWED_CHANNEL_ID) {
           return interaction.reply({ 
             content: 'Este comando só pode ser usado no canal de inscrições.', 
-            ephemeral: true 
+            flags: MessageFlags.Ephemeral 
           }).catch(() => {
             interaction.channel.send({
               content: 'Este comando só pode ser usado no canal de inscrições.',
-              ephemeral: true
+              flags: MessageFlags.Ephemeral
             }).catch(console.error);
           });
         }
@@ -940,7 +942,7 @@ function setupEvents(client, db) {
               if (rows.length === 0) {
                 return interaction.reply({
                   content: 'Inscrição não encontrada.',
-                  ephemeral: true
+                  flags: MessageFlags.Ephemeral
                 }).catch(console.error);
               }
               
@@ -962,7 +964,7 @@ function setupEvents(client, db) {
               console.error('❌ Erro ao buscar screenshots:', error);
               await interaction.reply({
                 content: 'Ocorreu um erro ao buscar as screenshots.',
-                ephemeral: true
+                flags: MessageFlags.Ephemeral
               }).catch(console.error);
             }
             return;
@@ -1086,7 +1088,7 @@ function setupEvents(client, db) {
           }
         } catch (error) {
           console.error('❌ Erro ao processar interação:', error);
-          interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', ephemeral: true }).catch(console.error);
+          interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', flags: MessageFlags.Ephemeral }).catch(console.error);
         }
       }
 
@@ -1095,7 +1097,7 @@ function setupEvents(client, db) {
         if (interaction.channel?.id !== process.env.ALLOWED_CHANNEL_ID) {
           return interaction.reply({ 
             content: 'Este comando só pode ser usado no canal de inscrições.', 
-            ephemeral: true 
+            flags: MessageFlags.Ephemeral 
           }).catch(console.error);
         }
 
@@ -1109,7 +1111,7 @@ function setupEvents(client, db) {
           }
         } catch (error) {
           console.error('❌ Erro ao processar modal:', error);
-          interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', ephemeral: true }).catch(console.error);
+          interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', flags: MessageFlags.Ephemeral }).catch(console.error);
         }
       }
     } catch (error) {
@@ -1122,7 +1124,7 @@ function setupEvents(client, db) {
         if (!alreadyReplied) {
           await interaction.reply({
             content: 'Ocorreu um erro interno. Por favor, tente novamente mais tarde.',
-            ephemeral: true
+            flags: MessageFlags.Ephemeral
           }).catch(() => {});
         } else {
           // Tentar editar a resposta existente
