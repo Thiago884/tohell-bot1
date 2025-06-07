@@ -131,7 +131,8 @@ const slashCommands = [
           { name: 'ranking', value: 'ranking' },
           { name: 'monitorar', value: 'monitorar' },
           { name: 'parar-monitorar', value: 'parar-monitorar' },
-          { name: 'listar-monitorados', value: 'listar-monitorados' }
+          { name: 'listar-monitorados', value: 'listar-monitorados' },
+          { name: 'consultar-telefone', value: 'consultar-telefone' }
         ]
       },
       {
@@ -260,7 +261,19 @@ const slashCommands = [
         required: false
       }
     ]
-  }
+  },
+{
+  name: 'consultar-telefone',
+  description: 'Consulta informações de um número de telefone',
+  options: [
+    {
+      name: 'telefone',
+      description: 'Número de telefone no formato internacional (ex: +5511999999999)',
+      type: ApplicationCommandOptionType.String,
+      required: true
+    }
+  ]
+}
 ];
 
 // Função para converter caminhos em URLs completas

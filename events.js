@@ -1,5 +1,5 @@
 const { Events, EmbedBuilder, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
-const { safeSend, searchCharacterWithCache, showRanking, searchCharacter, getCommandPermissions, addCommandPermission, removeCommandPermission, checkUserPermission, formatBrazilianDate, processImageUrls, blockIP, unblockIP, queryIP, getIPInfo, generateSecurityReport, getRecentAccess, manageWhitelist } = require('./utils');
+const { safeSend, searchCharacterWithCache, showRanking, searchCharacter, getCommandPermissions, addCommandPermission, removeCommandPermission, checkUserPermission, formatBrazilianDate, processImageUrls, blockIP, unblockIP, queryIP, getIPInfo, generateSecurityReport, getRecentAccess, manageWhitelist, checkPhoneNumber } = require('./utils');
 const { isShuttingDown } = require('./database');
 const { listPendingApplications, searchApplications, sendApplicationEmbed, approveApplication, rejectApplication, showHelp, createImageCarousel } = require('./commands');
 
@@ -436,7 +436,16 @@ function setupEvents(client, db) {
             break;
 
           case 'admin-permissoes':
-            if (!interaction.member.permissions.has('ADMINISTRATOR')) {
+            // Verificar se está em um servidor
+            if (!interaction.inGuild()) {
+              return interaction.reply({
+                content: 'Este comando só pode ser usado em servidores.',
+                ephemeral: true
+              }).catch(console.error);
+            }
+
+            // Verificar permissões
+            if (!interaction.member || !interaction.member.permissions || !interaction.member.permissions.has('ADMINISTRATOR')) {
               return interaction.reply({
                 content: '❌ Este comando é restrito a administradores.',
                 ephemeral: true
@@ -832,6 +841,46 @@ function setupEvents(client, db) {
               await interaction.editReply({
                 content: '❌ Ocorreu um erro ao gerenciar a whitelist.',
                 ephemeral: true
+              }).catch(console.error);
+            }
+            break;
+
+          case 'consultar-telefone':
+            const phoneNumber = interaction.options.getString('telefone');
+            
+            await interaction.deferReply({ ephemeral: true });
+            
+            try {
+              const result = await checkPhoneNumber(phoneNumber);
+              
+              if (!result.success) {
+                return interaction.editReply({
+                  content: result.message
+                }).catch(console.error);
+              }
+              
+              const embed = new EmbedBuilder()
+                .setColor('#0099ff')
+                .setTitle('📱 Informações do Telefone')
+                .addFields(
+                  { name: 'Número', value: result.data.number || 'N/A', inline: true },
+                  { name: 'Formato Local', value: result.data.localFormat || 'N/A', inline: true },
+                  { name: 'Formato Internacional', value: result.data.internationalFormat || 'N/A', inline: true },
+                  { name: 'País', value: `${result.data.countryName} (${result.data.countryCode})`, inline: true },
+                  { name: 'Código do País', value: result.data.countryPrefix || 'N/A', inline: true },
+                  { name: 'Localização', value: result.data.location || 'N/A', inline: true },
+                  { name: 'Operadora', value: result.data.carrier || 'N/A', inline: true },
+                  { name: 'Tipo de Linha', value: result.data.lineType || 'N/A', inline: true }
+                )
+                .setFooter({ text: 'Dados fornecidos por Numverify API' })
+                .setTimestamp();
+              
+              await interaction.editReply({ embeds: [embed] });
+              
+            } catch (error) {
+              console.error('Erro ao consultar telefone:', error);
+              await interaction.editReply({
+                content: 'Ocorreu um erro ao consultar o número. Por favor, tente novamente mais tarde.'
               }).catch(console.error);
             }
             break;

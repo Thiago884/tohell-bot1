@@ -31,6 +31,7 @@ const MAIN_GUILDS = ['ToHeLL_', 'ToHeLL2', 'ToHeLL3'];
 const MUCA_BRASIL_URL = 'https://www.mucabrasil.com.br/?go=guild&n=';
 const CACHE_TIME = 300; // 5 minutos em segundos
 const WEBHOOK_DELAY_MS = 1500; // Delay entre chamadas de webhook
+const NUMVERIFY_API_KEY = '92a8a50f3a787b49eecc7fc8356cbd46';
 
 // Sistema de fila para webhooks
 const webhookQueue = [];
@@ -1032,6 +1033,48 @@ async function manageWhitelist(action, ip, motivo, dbConnection, userId) {
   }
 }
 
+// Função para consultar número de telefone
+async function checkPhoneNumber(phoneNumber) {
+  try {
+    const response = await axios.get(`http://apilayer.net/api/validate`, {
+      params: {
+        access_key: NUMVERIFY_API_KEY,
+        number: phoneNumber,
+        format: 1
+      },
+      timeout: 5000
+    });
+
+    if (response.data.valid) {
+      return {
+        success: true,
+        data: {
+          number: response.data.number,
+          localFormat: response.data.local_format,
+          internationalFormat: response.data.international_format,
+          countryPrefix: response.data.country_prefix,
+          countryCode: response.data.country_code,
+          countryName: response.data.country_name,
+          location: response.data.location,
+          carrier: response.data.carrier,
+          lineType: response.data.line_type
+        }
+      };
+    } else {
+      return {
+        success: false,
+        message: 'Número de telefone inválido ou não encontrado.'
+      };
+    }
+  } catch (error) {
+    console.error('Erro na API Numverify:', error);
+    return {
+      success: false,
+      message: 'Erro ao consultar o número. Por favor, tente novamente mais tarde.'
+    };
+  }
+}
+
 module.exports = {
   formatBrazilianDate,
   isValidImageUrl,
@@ -1058,5 +1101,7 @@ module.exports = {
   getIPInfo,
   generateSecurityReport,
   getRecentAccess,
-  manageWhitelist
+  manageWhitelist,
+  // Nova função para consulta de telefone
+  checkPhoneNumber
 };
