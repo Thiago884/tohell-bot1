@@ -1061,18 +1061,10 @@ async function checkPhoneNumber(phoneNumber) {
     });
 
     if (response.data.valid) {
-      // Formata os números para exibição
-      const formats = {
-        br: response.data.local_format || formattedNumber,
-        eu: `+${response.data.country_code} ${response.data.local_format.replace(/\D/g, '')}`,
-        us: response.data.international_format || formattedNumber
-      };
-      
       return {
         success: true,
         data: {
           number: response.data.number,
-          formats, // Adiciona os formatos
           countryPrefix: response.data.country_prefix,
           countryCode: response.data.country_code,
           countryName: response.data.country_name,

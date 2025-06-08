@@ -848,26 +848,24 @@ function setupEvents(client, db) {
           case 'consultar-telefone':
             const phoneNumber = interaction.options.getString('telefone');
             
-            await interaction.deferReply({ ephemeral: true });
+            await interaction.deferReply();
             
             try {
               const result = await checkPhoneNumber(phoneNumber);
               
               if (!result.success) {
                 return interaction.editReply({
-                  content: result.message
+                  content: result.message,
+                  flags: MessageFlags.Ephemeral
                 }).catch(console.error);
               }
               
+              // Embed simplificado com informações básicas
               const embed = new EmbedBuilder()
                 .setColor('#0099ff')
                 .setTitle('📱 Informações do Telefone')
                 .addFields(
                   { name: 'Número Original', value: phoneNumber, inline: true },
-                  { name: 'Número Internacional', value: result.data.number || 'N/A', inline: true },
-                  { name: 'Formato Brasileiro', value: result.data.formats.br || 'N/A', inline: true },
-                  { name: 'Formato Europeu', value: result.data.formats.eu || 'N/A', inline: true },
-                  { name: 'Formato EUA/Internacional', value: result.data.formats.us || 'N/A', inline: true },
                   { name: 'País', value: `${result.data.countryName} (${result.data.countryCode})`, inline: true },
                   { name: 'Código do País', value: result.data.countryPrefix || 'N/A', inline: true },
                   { name: 'Localização', value: result.data.location || 'N/A', inline: true },
@@ -879,10 +877,22 @@ function setupEvents(client, db) {
               
               await interaction.editReply({ embeds: [embed] });
               
+              // Envia os formatos diretamente no canal (visível para todos)
+              const formatsMessage = `**Formatos do número ${phoneNumber}:**\n` +
+                                    `• Número Internacional: ${result.data.number || 'N/A'}\n` +
+                                    `• Formato Brasileiro: 0, 0XX${phoneNumber.replace(/^\+55/, '')}\n` +
+                                    `• Formato Europeu: +BR 00${phoneNumber.replace(/^\+55/, '')}\n` +
+                                    `• Formato EUA/Internacional: ${result.data.number || 'N/A'}`;
+              
+              await interaction.followUp({
+                content: formatsMessage
+              }).catch(console.error);
+              
             } catch (error) {
               console.error('Erro ao consultar telefone:', error);
               await interaction.editReply({
-                content: 'Ocorreu um erro ao consultar o número. Por favor, tente novamente mais tarde.'
+                content: 'Ocorreu um erro ao consultar o número. Por favor, tente novamente mais tarde.',
+                flags: MessageFlags.Ephemeral
               }).catch(console.error);
             }
             break;
