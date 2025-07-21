@@ -300,6 +300,18 @@ async function checkNewApplications(client, db) {
   }
 }
 
+// Função auxiliar para validar URLs de imagem
+function isValidImageUrl(url) {
+  if (!url) return false;
+  try {
+    const parsedUrl = new URL(url);
+    const allowedExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
+    return allowedExtensions.some(ext => parsedUrl.pathname.toLowerCase().endsWith(ext));
+  } catch {
+    return false;
+  }
+}
+
 // Configurar eventos
 function setupEvents(client, db) {
   const tracker = new CharacterTracker(db);
@@ -1046,8 +1058,14 @@ function setupEvents(client, db) {
             const embed = new EmbedBuilder()
               .setColor('#FF4500')
               .setTitle(`Screenshot #${currentIndex + 1} de ${totalImages}`)
-              .setImage(processedScreenshots[currentIndex]) // Usa a URL processada
               .setFooter({ text: `Inscrição #${applicationId}` });
+
+            // Verificar se a imagem é válida antes de adicionar ao embed
+            if (processedScreenshots[currentIndex] && isValidImageUrl(processedScreenshots[currentIndex])) {
+              embed.setImage(processedScreenshots[currentIndex]);
+            } else {
+              embed.setDescription('Imagem não disponível ou URL inválida');
+            }
             
             const row = new ActionRowBuilder().addComponents(
               new ButtonBuilder()

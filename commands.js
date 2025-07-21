@@ -302,13 +302,21 @@ async function createImageCarousel(interaction, images, applicationId) {
   
   if (processedImages.length === 0) {
     return safeInteractionReply(interaction, {
-      content: 'Nenhuma imagem disponível para exibição.',
+      content: 'Nenhuma imagem válida disponível para exibição.',
       flags: MessageFlags.Ephemeral
     });
   }
 
   const currentIndex = 0;
   const totalImages = processedImages.length;
+
+  // Verificar se a URL da imagem é válida
+  if (!processedImages[currentIndex] || !isValidImageUrl(processedImages[currentIndex])) {
+    return safeInteractionReply(interaction, {
+      content: 'A URL da imagem é inválida.',
+      flags: MessageFlags.Ephemeral
+    });
+  }
 
   const embed = new EmbedBuilder()
     .setColor('#FF4500')

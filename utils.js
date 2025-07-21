@@ -68,20 +68,23 @@ function processImageUrls(imageData) {
     // Converter para array se não for
     const urlArray = Array.isArray(urls) ? urls : [urls];
     
-    // Mapear para URLs completas se necessário
+    // Mapear para URLs completas se necessário e filtrar URLs inválidas
     return urlArray.map(url => {
       if (!url) return null;
-      return url.startsWith('http') ? url : `${BASE_URL}${url.replace(/^\/+/, '')}`;
+      
+      // Verifica se é uma URL válida
+      try {
+        let processedUrl = url.startsWith('http') ? url : `${BASE_URL}${url.replace(/^\/+/, '')}`;
+        new URL(processedUrl); // Isso vai lançar erro se não for URL válida
+        return processedUrl;
+      } catch {
+        return null;
+      }
     }).filter(url => url !== null);
   } catch (error) {
     console.error('Erro ao processar URLs de imagem:', error);
     return [];
   }
-}
-
-// Função para extrair URLs de imagens válidas
-function extractValidImageUrls(jsonString) {
-  return processImageUrls(jsonString);
 }
 
 // Função para responder a interações de forma segura
