@@ -1094,7 +1094,6 @@ async function checkPhoneNumber(phoneNumber) {
 module.exports = {
   formatBrazilianDate,
   isValidImageUrl,
-  extractValidImageUrls,
   processImageUrls,
   safeInteractionReply,
   safeSend,
