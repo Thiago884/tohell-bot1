@@ -9,7 +9,7 @@ const {
   ApplicationCommandOptionType,
   MessageFlags
 } = require('discord.js');
-const { formatBrazilianDate, safeSend, notifyWebhook, searchCharacterWithCache, calculateAdvancedStats, createCharEmbed, safeInteractionReply } = require('./utils');
+const { formatBrazilianDate, safeSend, notifyWebhook, searchCharacterWithCache, calculateAdvancedStats, createCharEmbed, safeInteractionReply, isValidImageUrl } = require('./utils');
 
 // Configuração da URL base para imagens
 const BASE_URL = process.env.BASE_URL || 'https://tohellguild.com.br/';
@@ -262,18 +262,18 @@ const slashCommands = [
       }
     ]
   },
-{
-  name: 'consultar-telefone',
-  description: 'Consulta informações de um número de telefone',
-  options: [
-    {
-      name: 'telefone',
-      description: 'Número de telefone no formato internacional (ex: +5511999999999)',
-      type: ApplicationCommandOptionType.String,
-      required: true
-    }
-  ]
-}
+  {
+    name: 'consultar-telefone',
+    description: 'Consulta informações de um número de telefone',
+    options: [
+      {
+        name: 'telefone',
+        description: 'Número de telefone no formato internacional (ex: +5511999999999)',
+        type: ApplicationCommandOptionType.String,
+        required: true
+      }
+    ]
+  }
 ];
 
 // Função para converter caminhos em URLs completas
