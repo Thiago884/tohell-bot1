@@ -6,148 +6,6 @@ const { listPendingApplications, searchApplications, sendApplicationEmbed, appro
 // Monitor de inscrições pendentes
 let lastCheckedApplications = new Date();
 
-// Sistema de tracking de personagens
-class CharacterTracker {
-  constructor(db) {
-    this.db = db;
-    this.trackedCharacters = new Map();
-    this.trackingInterval = null;
-  }
-
-  async startTracking() {
-    await this.loadTrackedCharacters();
-    this.trackingInterval = setInterval(() => this.checkTrackedCharacters(), 5 * 60 * 1000); // Verificar a cada 5 minutos
-    console.log('✅ Sistema de tracking iniciado');
-  }
-
-  async loadTrackedCharacters() {
-    try {
-      const [rows] = await this.db.execute('SELECT * FROM tracked_characters');
-      this.trackedCharacters = new Map(rows.map(row => [row.name.toLowerCase(), row]));
-      console.log(`✅ Carregados ${rows.length} personagens monitorados`);
-    } catch (error) {
-      console.error('❌ Erro ao carregar personagens monitorados:', error);
-    }
-  }
-
-  async checkTrackedCharacters() {
-    if (isShuttingDown) return;
-    
-    console.log('🔍 Verificando personagens monitorados...');
-    const notifications = [];
-    
-    for (const [nameLower, trackingData] of this.trackedCharacters) {
-      try {
-        const charName = trackingData.name;
-        const charData = await searchCharacterWithCache(charName, this.db);
-        
-        if (charData) {
-          const changes = [];
-          
-          if (charData.level !== trackingData.last_level) {
-            changes.push(`Level: ${trackingData.last_level || 'N/A'} → ${charData.level}`);
-          }
-          
-          if (charData.resets !== trackingData.last_resets) {
-            changes.push(`Resets: ${trackingData.last_resets || 'N/A'} → ${charData.resets}`);
-          }
-          
-          if (changes.length > 0) {
-            notifications.push({
-              trackingData,
-              charData,
-              changes
-            });
-            
-            await this.db.execute(
-              'UPDATE tracked_characters SET last_level = ?, last_resets = ? WHERE id = ?',
-              [charData.level, charData.resets, trackingData.id]
-            );
-          }
-        }
-      } catch (error) {
-        console.error(`❌ Erro ao verificar personagem ${trackingData.name}:`, error);
-      }
-    }
-    
-    await this.sendNotifications(notifications);
-  }
-
-  async sendNotifications(notifications) {
-    for (const { trackingData, charData, changes } of notifications) {
-      try {
-        const channel = trackingData.channel_id ? 
-          await client.channels.fetch(trackingData.channel_id) : 
-          await client.users.fetch(trackingData.discord_user_id).then(user => user.createDM());
-          
-        const embed = new EmbedBuilder()
-          .setColor('#00FF00')
-          .setTitle(`📢 Progresso de ${charData.name}`)
-          .setDescription(`O personagem ${charData.name} teve mudanças!`)
-          .addFields(
-            { name: '🏰 Guilda', value: charData.guild || 'Nenhuma', inline: true },
-            { name: 'Mudanças', value: changes.join('\n'), inline: false }
-          )
-          .setTimestamp();
-          
-        await channel.send({ embeds: [embed] });
-        console.log(`✅ Notificação enviada para ${trackingData.name}`);
-      } catch (error) {
-        console.error(`❌ Erro ao enviar notificação para ${trackingData.name}:`, error);
-      }
-    }
-  }
-
-  async addTracking(name, userId, channelId = null) {
-    try {
-      const charData = await searchCharacterWithCache(name, this.db);
-      if (!charData) {
-        throw new Error('Personagem não encontrado');
-      }
-      
-      await this.db.execute(
-        'INSERT INTO tracked_characters (name, discord_user_id, channel_id, last_level, last_resets) VALUES (?, ?, ?, ?, ?) ' +
-        'ON DUPLICATE KEY UPDATE channel_id = VALUES(channel_id), last_level = VALUES(last_level), last_resets = VALUES(last_resets)',
-        [name, userId, channelId, charData.level, charData.resets]
-      );
-      
-      await this.loadTrackedCharacters();
-      return true;
-    } catch (error) {
-      console.error('❌ Erro ao adicionar tracking:', error);
-      throw error;
-    }
-  }
-
-  async removeTracking(name, userId) {
-    try {
-      const [result] = await this.db.execute(
-        'DELETE FROM tracked_characters WHERE name = ? AND discord_user_id = ?',
-        [name, userId]
-      );
-      
-      await this.loadTrackedCharacters();
-      return result.affectedRows > 0;
-    } catch (error) {
-      console.error('❌ Erro ao remover tracking:', error);
-      throw error;
-    }
-  }
-
-  async listTracked(userId) {
-    try {
-      const [rows] = await this.db.execute(
-        'SELECT * FROM tracked_characters WHERE discord_user_id = ?',
-        [userId]
-      );
-      return rows;
-    } catch (error) {
-      console.error('❌ Erro ao listar personagens monitorados:', error);
-      throw error;
-    }
-  }
-}
-
 // Monitoramento de segurança
 async function setupSecurityMonitoring(client, db) {
   // Verifica tentativas suspeitas a cada 5 minutos
@@ -314,14 +172,11 @@ function isValidImageUrl(url) {
 
 // Configurar eventos
 function setupEvents(client, db) {
-  const tracker = new CharacterTracker(db);
-
   // Evento ready
   client.on(Events.ClientReady, async () => {
     console.log(`🤖 Bot conectado como ${client.user.tag}`);
     client.user.setActivity('/ajuda para comandos', { type: 'WATCHING' });
     
-    await tracker.startTracking();
     await setupSecurityMonitoring(client, db);
     await setupAutoCleanup(db);
     setInterval(() => checkNewApplications(client, db), 60000); // Verificar novas inscrições a cada 1 minuto
@@ -364,83 +219,6 @@ function setupEvents(client, db) {
           case 'ranking':
             const period = interaction.options.getString('período');
             await showRanking(interaction, period, db);
-            break;
-            
-          case 'monitorar':
-            const charToTrack = interaction.options.getString('nome');
-            const channel = interaction.options.getChannel('canal');
-            
-            await interaction.deferReply({ ephemeral: true }).catch(console.error);
-            
-            try {
-              await tracker.addTracking(
-                charToTrack, 
-                interaction.user.id, 
-                channel?.id
-              );
-              
-              await interaction.editReply({
-                content: `✅ Personagem "${charToTrack}" está sendo monitorado${channel ? ` no canal ${channel.name}` : ''}.`
-              }).catch(console.error);
-            } catch (error) {
-              await interaction.editReply({
-                content: `❌ Erro ao monitorar personagem: ${error.message}`
-              }).catch(console.error);
-            }
-            break;
-            
-          case 'parar-monitorar':
-            const charToStop = interaction.options.getString('nome');
-            
-            await interaction.deferReply({ ephemeral: true }).catch(console.error);
-            
-            try {
-              const removed = await tracker.removeTracking(charToStop, interaction.user.id);
-              
-              await interaction.editReply({
-                content: removed ? 
-                  `✅ Personagem "${charToStop}" não será mais monitorado.` :
-                  `❌ Personagem "${charToStop}" não estava sendo monitorado.`
-              }).catch(console.error);
-            } catch (error) {
-              await interaction.editReply({
-                content: `❌ Erro ao parar de monitorar: ${error.message}`
-              }).catch(console.error);
-            }
-            break;
-            
-          case 'listar-monitorados':
-            await interaction.deferReply({ ephemeral: true }).catch(console.error);
-            
-            try {
-              const tracked = await tracker.listTracked(interaction.user.id);
-              
-              if (tracked.length === 0) {
-                return interaction.editReply({
-                  content: 'Você não está monitorando nenhum personagem no momento.'
-                }).catch(console.error);
-              }
-              
-              const embed = new EmbedBuilder()
-                .setColor('#FFA500')
-                .setTitle('Personagens Monitorados')
-                .setDescription('Lista de personagens que você está monitorando:');
-                
-              tracked.forEach(char => {
-                embed.addFields({
-                  name: char.name,
-                  value: `Último level: ${char.last_level || 'N/A'}\n` +
-                         `Últimos resets: ${char.last_resets || 'N/A'}`,
-                  inline: true
-                });
-              });
-              
-              await interaction.editReply({ embeds: [embed] }).catch(console.error);
-            } catch (error) {
-              await interaction.editReply({
-                content: `❌ Erro ao listar personagens monitorados: ${error.message}`
-              }).catch(console.error);
-            }
             break;
             
           case 'ajuda':
@@ -1171,6 +949,5 @@ function setupEvents(client, db) {
 }
 
 module.exports = {
-  setupEvents,
-  CharacterTracker
+  setupEvents
 };

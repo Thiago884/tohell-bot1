@@ -69,22 +69,7 @@ async function createTables() {
         recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE CASCADE
       )
-    `);
-
-    // Tabela para personagens monitorados por usuários
-    await dbConnection.execute(`
-      CREATE TABLE IF NOT EXISTS tracked_characters (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        name VARCHAR(255) NOT NULL,
-        discord_user_id VARCHAR(255) NOT NULL,
-        channel_id VARCHAR(255),
-        last_level INT,
-        last_resets INT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE KEY unique_tracking (name, discord_user_id)
-      )
-    `);
-    
+    `);    
     // Tabela para permissões de comandos
     await dbConnection.execute(`
       CREATE TABLE IF NOT EXISTS command_permissions (

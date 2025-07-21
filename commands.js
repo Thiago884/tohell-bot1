@@ -78,40 +78,6 @@ const slashCommands = [
     ]
   },
   {
-    name: 'monitorar',
-    description: 'Monitora um personagem para receber notificações de progresso',
-    options: [
-      {
-        name: 'nome',
-        description: 'Nome do personagem para monitorar',
-        type: ApplicationCommandOptionType.String,
-        required: true
-      },
-      {
-        name: 'canal',
-        description: 'Canal para enviar notificações (opcional)',
-        type: ApplicationCommandOptionType.Channel,
-        required: false
-      }
-    ]
-  },
-  {
-    name: 'parar-monitorar',
-    description: 'Para de monitorar um personagem',
-    options: [
-      {
-        name: 'nome',
-        description: 'Nome do personagem para parar de monitorar',
-        type: ApplicationCommandOptionType.String,
-        required: true
-      }
-    ]
-  },
-  {
-    name: 'listar-monitorados',
-    description: 'Lista todos os personagens sendo monitorados'
-  },
-  {
     name: 'ajuda',
     description: 'Mostra todos os comandos disponíveis'
   },
@@ -129,9 +95,6 @@ const slashCommands = [
           { name: 'buscar', value: 'buscar' },
           { name: 'char', value: 'char' },
           { name: 'ranking', value: 'ranking' },
-          { name: 'monitorar', value: 'monitorar' },
-          { name: 'parar-monitorar', value: 'parar-monitorar' },
-          { name: 'listar-monitorados', value: 'listar-monitorados' },
           { name: 'consultar-telefone', value: 'consultar-telefone' }
         ]
       },
