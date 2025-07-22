@@ -229,7 +229,7 @@ function setupEvents(client, db) {
             await interaction.deferReply();
             
             try {
-              const chars = await get500RCharacters(db);
+              const { chars, totalChars, page, totalPages, lastUpdated } = await get500RCharacters(db);
               
               if (!chars || chars.length === 0) {
                 return interaction.editReply({
@@ -237,52 +237,49 @@ function setupEvents(client, db) {
                   flags: MessageFlags.Ephemeral
                 });
               }
-              
-              // Divide os personagens em grupos de 10 para múltiplos embeds
-              const charGroups = [];
-              for (let i = 0; i < chars.length; i += 10) {
-                charGroups.push(chars.slice(i, i + 10));
-              }
-              
-              // Cria os embeds
-              const embeds = charGroups.map((group, index) => {
-                const embed = new EmbedBuilder()
-                  .setColor('#FFA500')
-                  .setTitle(`🏆 Personagens 500+ Resets (${index * 10 + 1}-${Math.min((index + 1) * 10, chars.length)})`)
-                  .setDescription(`Total: ${chars.length} personagens`);
+
+              // Criar embed
+              const embed = new EmbedBuilder()
+                .setColor('#FFA500')
+                .setTitle('🏆 Personagens 500+ Resets')
+                .setDescription(`**Total:** ${totalChars} | **Página:** ${page}/${totalPages}`)
+                .setThumbnail('https://i.imgur.com/Mu4zW6A.png') // Logo opcional
+                .setFooter({ text: `Atualizado em ${formatBrazilianDate(lastUpdated)}` });
+
+              // Adicionar campos com userbars inline
+              chars.forEach((char, index) => {
+                const userbarUrl = `https://www.mucabrasil.com.br/forum/userbar.php?n=${encodeURIComponent(char.name)}&size=small&t=${Date.now()}`;
                 
-                // Adiciona os personagens como campos
-                group.forEach((char, i) => {
-                  embed.addFields({
-                    name: `${index * 10 + i + 1}. ${char.name}`,
-                    value: `🏰 ${char.guild} | 🔄 ${char.resets} resets`,
-                    inline: true
-                  });
+                embed.addFields({
+                  name: `#${(page - 1) * 5 + index + 1} ${char.name}`,
+                  value: `[🖼️ Userbar](${userbarUrl}) | 🏰 ${char.guild} | 🔄 ${char.resets} resets`,
+                  inline: true
                 });
-                
-                return embed;
               });
-              
-              // Prepara as userbars como attachments (uma por personagem)
-              const files = chars.map((char, index) => ({
-                attachment: `https://www.mucabrasil.com.br/forum/userbar.php?n=${encodeURIComponent(char.name)}&size=small&t=${Date.now()}`,
-                name: `userbar_${index}.png`
-              })).slice(0, 10); // Limita a 10 attachments por mensagem
-              
-              // Envia a primeira mensagem com os primeiros 10 personagens
-              await interaction.editReply({
-                embeds: [embeds[0]],
-                files: files.slice(0, 10)
+
+              // Botões
+              const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                  .setCustomId(`char500_prev_${page}`)
+                  .setLabel('Anterior')
+                  .setStyle(ButtonStyle.Primary)
+                  .setDisabled(page <= 1),
+                new ButtonBuilder()
+                  .setCustomId(`char500_next_${page}`)
+                  .setLabel('Próxima')
+                  .setStyle(ButtonStyle.Primary)
+                  .setDisabled(page >= totalPages),
+                new ButtonBuilder()
+                  .setCustomId('char500_close')
+                  .setLabel('Fechar')
+                  .setStyle(ButtonStyle.Danger)
+              );
+
+              await interaction.editReply({ 
+                embeds: [embed], 
+                components: [row] 
               });
-              
-              // Envia os embeds restantes em mensagens separadas
-              for (let i = 1; i < embeds.length; i++) {
-                await interaction.followUp({
-                  embeds: [embeds[i]],
-                  files: files.slice(i * 10, (i + 1) * 10)
-                });
-              }
-              
+
             } catch (error) {
               console.error('Erro no comando char500:', error);
               await interaction.editReply({
@@ -936,7 +933,7 @@ function setupEvents(client, db) {
 
           // Tratamento para navegação do comando char500
           if (interaction.customId.startsWith('char500_')) {
-            const [_, action, filter, pageStr] = interaction.customId.split('_');
+            const [_, action, pageStr] = interaction.customId.split('_');
             let page = parseInt(pageStr);
             
             await interaction.deferUpdate();
@@ -945,42 +942,31 @@ function setupEvents(client, db) {
               page--;
             } else if (action === 'next') {
               page++;
-            } else if (action === 'refresh') {
-              // Força atualização limpando o cache
-              await db.execute(
-                'DELETE FROM system_status WHERE key_name = "chars_500r"'
-              );
+            } else if (action === 'close') {
+              return interaction.message.delete().catch(console.error);
             }
             
             // Reutiliza a mesma função com os novos parâmetros
             const { chars, totalChars, page: currentPage, totalPages, lastUpdated } = 
-              await get500RCharacters(db, filter !== 'undefined' ? filter : '', page);
-            
-            // Prepara as novas userbars
-            const newUserbarUrls = chars.map(char => 
-              `https://www.mucabrasil.com.br/forum/userbar.php?n=${encodeURIComponent(char.name)}&t=${Date.now()}`
-            );
-            
-            const newFiles = newUserbarUrls.map((url, index) => ({
-              attachment: url,
-              name: `userbar_${index}.png`
-            }));
+              await get500RCharacters(db, page);
             
             // Atualiza o embed
             const embed = new EmbedBuilder(interaction.message.embeds[0]);
             embed.setFields([]); // Limpa os campos antigos
             
             // Atualiza a descrição
-            embed.setDescription(`Total: ${totalChars} | Página ${currentPage}/${totalPages}`);
+            embed.setDescription(`**Total:** ${totalChars} | **Página:** ${currentPage}/${totalPages}`);
             embed.setFooter({ 
-              text: `Atualizado em ${formatBrazilianDate(lastUpdated)} | Use os botões para navegar` 
+              text: `Atualizado em ${formatBrazilianDate(lastUpdated)}` 
             });
             
             // Adiciona os novos personagens
             chars.forEach((char, index) => {
+              const userbarUrl = `https://www.mucabrasil.com.br/forum/userbar.php?n=${encodeURIComponent(char.name)}&size=small&t=${Date.now()}`;
+              
               embed.addFields({
-                name: `${(currentPage - 1) * 10 + index + 1}. ${char.name}`,
-                value: `🏰 ${char.guild} | 🔄 ${char.resets} resets`,
+                name: `#${(currentPage - 1) * 5 + index + 1} ${char.name}`,
+                value: `[🖼️ Userbar](${userbarUrl}) | 🏰 ${char.guild} | 🔄 ${char.resets} resets`,
                 inline: true
               });
             });
@@ -988,25 +974,23 @@ function setupEvents(client, db) {
             // Atualiza os botões
             const row = new ActionRowBuilder().addComponents(
               new ButtonBuilder()
-                .setCustomId(`char500_prev_${filter}_${currentPage}`)
+                .setCustomId(`char500_prev_${currentPage}`)
                 .setLabel('Anterior')
                 .setStyle(ButtonStyle.Primary)
                 .setDisabled(currentPage <= 1),
               new ButtonBuilder()
-                .setCustomId(`char500_next_${filter}_${currentPage}`)
+                .setCustomId(`char500_next_${currentPage}`)
                 .setLabel('Próxima')
                 .setStyle(ButtonStyle.Primary)
                 .setDisabled(currentPage >= totalPages),
               new ButtonBuilder()
-                .setCustomId(`char500_refresh_${filter}`)
-                .setLabel('Atualizar')
-                .setStyle(ButtonStyle.Secondary)
-                .setEmoji('🔄')
+                .setCustomId('char500_close')
+                .setLabel('Fechar')
+                .setStyle(ButtonStyle.Danger)
             );
             
             await interaction.editReply({
               embeds: [embed],
-              files: newFiles,
               components: [row]
             });
             return;

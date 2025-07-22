@@ -1095,7 +1095,7 @@ async function checkPhoneNumber(phoneNumber) {
 // NOVAS FUNÇÕES PARA PERSONAGENS 500+ RESETS
 // ==============================================
 
-async function get500RCharacters(dbConnection) {
+async function get500RCharacters(dbConnection, page = 1, perPage = 5) {
   try {
     // Verifica cache primeiro (5 minutos)
     const cacheKey = 'chars_500r';
@@ -1104,27 +1104,41 @@ async function get500RCharacters(dbConnection) {
       [cacheKey]
     );
     
+    let chars;
     if (cacheRows.length > 0) {
-      return JSON.parse(cacheRows[0].key_value);
+      chars = JSON.parse(cacheRows[0].key_value);
+    } else {
+      // Busca todos personagens 500+ resets no banco de dados
+      const [result] = await dbConnection.execute(`
+        SELECT c.name, c.guild, c.last_resets as resets, c.last_seen as last_updated
+        FROM characters c
+        WHERE c.last_resets >= 500
+        AND c.guild NOT IN ('ToHeLL_', 'ToHeLL2')
+        ORDER BY c.last_resets DESC, c.last_level DESC
+      `);
+      
+      chars = result;
+      
+      // Salva no cache
+      await dbConnection.execute(
+        'INSERT INTO system_status (key_name, key_value) VALUES (?, ?) ' +
+        'ON DUPLICATE KEY UPDATE key_value = VALUES(key_value), updated_at = NOW()',
+        [cacheKey, JSON.stringify(chars)]
+      );
     }
     
-    // Busca todos personagens 500+ resets no banco de dados
-    const [chars] = await dbConnection.execute(`
-      SELECT c.name, c.guild, c.last_resets as resets, c.last_seen as last_updated
-      FROM characters c
-      WHERE c.last_resets >= 500
-      AND c.guild NOT IN ('ToHeLL_', 'ToHeLL2')
-      ORDER BY c.last_resets DESC, c.last_level DESC
-    `);
+    // Paginação
+    const totalChars = chars.length;
+    const totalPages = Math.ceil(totalChars / perPage);
+    const paginatedChars = chars.slice((page - 1) * perPage, page * perPage);
     
-    // Salva no cache
-    await dbConnection.execute(
-      'INSERT INTO system_status (key_name, key_value) VALUES (?, ?) ' +
-      'ON DUPLICATE KEY UPDATE key_value = VALUES(key_value), updated_at = NOW()',
-      [cacheKey, JSON.stringify(chars)]
-    );
-    
-    return chars;
+    return {
+      chars: paginatedChars,
+      totalChars,
+      page,
+      totalPages,
+      lastUpdated: new Date().toISOString()
+    };
   } catch (error) {
     console.error('Erro em get500RCharacters:', error);
     throw error;
