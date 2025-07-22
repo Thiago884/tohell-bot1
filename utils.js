@@ -1095,20 +1095,10 @@ async function checkPhoneNumber(phoneNumber) {
 // NOVAS FUNÇÕES PARA PERSONAGENS 500+ RESETS
 // ==============================================
 
-async function get500RCharacters(dbConnection, guildFilter = '', page = 1) {
+async function get500RCharacters(dbConnection) {
   try {
-    // Configurações
-    const perPage = 10;
-    const BASE_URL = 'https://www.mucabrasil.com.br/forum/userbar.php?n=';
-    
-    // Guildas que serão verificadas (removidas ToHeLL_ e ToHeLL2)
-    const guilds = [
-      'ToHeLL3', 'ToHeLL4', 'ToHeLL5', 
-      'ToHeLL6', 'ToHeLL7', 'ToHeLL8_', 'ToHeLL9', 'ToHeLL10'
-    ];
-    
     // Verifica cache primeiro (5 minutos)
-    const cacheKey = `500r_${guildFilter}_${page}`;
+    const cacheKey = 'chars_500r';
     const [cacheRows] = await dbConnection.execute(
       'SELECT key_value FROM system_status WHERE key_name = ? AND updated_at > DATE_SUB(NOW(), INTERVAL 5 MINUTE)',
       [cacheKey]
@@ -1118,141 +1108,26 @@ async function get500RCharacters(dbConnection, guildFilter = '', page = 1) {
       return JSON.parse(cacheRows[0].key_value);
     }
     
-    // Busca personagens 500+ resets no banco de dados
-    let query = `
+    // Busca todos personagens 500+ resets no banco de dados
+    const [chars] = await dbConnection.execute(`
       SELECT c.name, c.guild, c.last_resets as resets, c.last_seen as last_updated
       FROM characters c
       WHERE c.last_resets >= 500
-    `;
-    
-    let params = [];
-    
-    if (guildFilter) {
-      query += ' AND c.guild = ?';
-      params.push(guildFilter);
-    }
-    
-    query += ' ORDER BY c.last_resets DESC, c.last_level DESC LIMIT ? OFFSET ?';
-    params.push(perPage, (page - 1) * perPage);
-    
-    const [chars] = await dbConnection.execute(query, params);
-    
-    // Conta total de personagens
-    let countQuery = 'SELECT COUNT(*) as total FROM characters WHERE last_resets >= 500';
-    let countParams = [];
-    
-    if (guildFilter) {
-      countQuery += ' AND guild = ?';
-      countParams.push(guildFilter);
-    }
-    
-    const [total] = await dbConnection.execute(countQuery, countParams);
-    const totalChars = total[0].total;
-    const totalPages = Math.ceil(totalChars / perPage);
-    
-    // Prepara resultado
-    const result = {
-      chars,
-      totalChars,
-      page,
-      totalPages,
-      guildFilter,
-      lastUpdated: new Date().toISOString()
-    };
+      AND c.guild NOT IN ('ToHeLL_', 'ToHeLL2')
+      ORDER BY c.last_resets DESC, c.last_level DESC
+    `);
     
     // Salva no cache
     await dbConnection.execute(
       'INSERT INTO system_status (key_name, key_value) VALUES (?, ?) ' +
       'ON DUPLICATE KEY UPDATE key_value = VALUES(key_value), updated_at = NOW()',
-      [cacheKey, JSON.stringify(result)]
+      [cacheKey, JSON.stringify(chars)]
     );
     
-    return result;
+    return chars;
   } catch (error) {
     console.error('Erro em get500RCharacters:', error);
     throw error;
-  }
-}
-
-async function show500RCharacters(interaction, dbConnection) {
-  try {
-    const guildFilter = interaction.options.getString('guilda') || '';
-    const page = interaction.options.getInteger('pagina') || 1;
-    
-    await interaction.deferReply();
-    
-    const { chars, totalChars, page: currentPage, totalPages, guildFilter: filter, lastUpdated } = 
-      await get500RCharacters(dbConnection, guildFilter, page);
-    
-    if (chars.length === 0) {
-      return interaction.editReply({
-        content: `Nenhum personagem com 500+ resets encontrado${filter ? ` na guilda ${filter}` : ''}.`,
-        flags: MessageFlags.Ephemeral
-      });
-    }
-    
-    // Cria o embed principal
-    const embed = new EmbedBuilder()
-      .setColor('#FFA500')
-      .setTitle(`🏆 Personagens 500+ Resets ${filter ? `- ${filter}` : ''}`)
-      .setDescription(`Total: ${totalChars} | Página ${currentPage}/${totalPages}`)
-      .setFooter({ 
-        text: `Atualizado em ${formatBrazilianDate(lastUpdated)} | Use os botões para navegar` 
-      });
-    
-    // Adiciona as userbars como imagens no embed
-    const userbarUrls = chars.map(char => 
-      `https://www.mucabrasil.com.br/forum/userbar.php?n=${encodeURIComponent(char.name)}&t=${Date.now()}`
-    );
-    
-    // Como o Discord só permite 1 imagem por embed, vamos usar attachments
-    // Primeiro criamos uma mensagem com múltiplos attachments
-    const files = userbarUrls.map((url, index) => ({
-      attachment: url,
-      name: `userbar_${index}.png`
-    }));
-    
-    // Adiciona informações como campos no embed
-    chars.forEach((char, index) => {
-      embed.addFields({
-        name: `${(currentPage - 1) * 10 + index + 1}. ${char.name}`,
-        value: `🏰 ${char.guild} | 🔄 ${char.resets} resets`,
-        inline: true
-      });
-    });
-    
-    // Cria botões de navegação
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`char500_prev_${filter}_${currentPage}`)
-        .setLabel('Anterior')
-        .setStyle(ButtonStyle.Primary)
-        .setDisabled(currentPage <= 1),
-      new ButtonBuilder()
-        .setCustomId(`char500_next_${filter}_${currentPage}`)
-        .setLabel('Próxima')
-        .setStyle(ButtonStyle.Primary)
-        .setDisabled(currentPage >= totalPages),
-      new ButtonBuilder()
-        .setCustomId(`char500_refresh_${filter}`)
-        .setLabel('Atualizar')
-        .setStyle(ButtonStyle.Secondary)
-        .setEmoji('🔄')
-    );
-    
-    // Envia a mensagem com as imagens e o embed
-    await interaction.editReply({
-      embeds: [embed],
-      files: files,
-      components: [row]
-    });
-    
-  } catch (error) {
-    console.error('Erro em show500RCharacters:', error);
-    await interaction.editReply({
-      content: 'Ocorreu um erro ao buscar os personagens. Por favor, tente novamente mais tarde.',
-      flags: MessageFlags.Ephemeral
-    });
   }
 }
 
@@ -1285,6 +1160,5 @@ module.exports = {
   // Função para consulta de telefone
   checkPhoneNumber,
   // Novas funções para personagens 500+ resets
-  get500RCharacters,
-  show500RCharacters
+  get500RCharacters
 };

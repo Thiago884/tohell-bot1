@@ -237,36 +237,11 @@ const slashCommands = [
       }
     ]
   },
-  {
-    name: 'char500',
-    description: 'Lista personagens com 500+ resets',
-    options: [
-      {
-        name: 'guilda',
-        description: 'Filtrar por guilda específica',
-        type: ApplicationCommandOptionType.String,
-        required: false,
-        choices: [
-          { name: 'ToHeLL2', value: 'ToHeLL2' },
-          { name: 'ToHeLL3', value: 'ToHeLL3' },
-          { name: 'ToHeLL4', value: 'ToHeLL4' },
-          { name: 'ToHeLL5', value: 'ToHeLL5' },
-          { name: 'ToHeLL6', value: 'ToHeLL6' },
-          { name: 'ToHeLL7', value: 'ToHeLL7' },
-          { name: 'ToHeLL8_', value: 'ToHeLL8_' },
-          { name: 'ToHeLL9', value: 'ToHeLL9' },
-          { name: 'ToHeLL10', value: 'ToHeLL10' }
-        ]
-      },
-      {
-        name: 'pagina',
-        description: 'Número da página (1 por padrão)',
-        type: ApplicationCommandOptionType.Integer,
-        min_value: 1,
-        required: false
-      }
-    ]
-  }
+ // No array slashCommands, substitua o comando char500 por:
+{
+  name: 'char500',
+  description: 'Lista personagens com 500+ resets'
+}
 ];
 
 // Função para converter caminhos em URLs completas

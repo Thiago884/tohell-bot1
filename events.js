@@ -226,63 +226,70 @@ function setupEvents(client, db) {
             break;
 
           case 'char500':
-            const filter = interaction.options.getString('filtro') || '';
             await interaction.deferReply();
             
-            const { chars, totalChars, page: currentPage, totalPages, lastUpdated } = 
-              await get500RCharacters(db, filter, 1);
-            
-            const embed = new EmbedBuilder()
-              .setColor('#0099ff')
-              .setTitle(`🏆 Top 500 Resets ${filter ? `(${filter})` : ''}`)
-              .setDescription(`Total: ${totalChars} | Página ${currentPage}/${totalPages}`)
-              .setFooter({ 
-                text: `Atualizado em ${formatBrazilianDate(lastUpdated)} | Use os botões para navegar` 
+            try {
+              const chars = await get500RCharacters(db);
+              
+              if (!chars || chars.length === 0) {
+                return interaction.editReply({
+                  content: 'Nenhum personagem com 500+ resets encontrado.',
+                  flags: MessageFlags.Ephemeral
+                });
+              }
+              
+              // Divide os personagens em grupos de 10 para múltiplos embeds
+              const charGroups = [];
+              for (let i = 0; i < chars.length; i += 10) {
+                charGroups.push(chars.slice(i, i + 10));
+              }
+              
+              // Cria os embeds
+              const embeds = charGroups.map((group, index) => {
+                const embed = new EmbedBuilder()
+                  .setColor('#FFA500')
+                  .setTitle(`🏆 Personagens 500+ Resets (${index * 10 + 1}-${Math.min((index + 1) * 10, chars.length)})`)
+                  .setDescription(`Total: ${chars.length} personagens`);
+                
+                // Adiciona os personagens como campos
+                group.forEach((char, i) => {
+                  embed.addFields({
+                    name: `${index * 10 + i + 1}. ${char.name}`,
+                    value: `🏰 ${char.guild} | 🔄 ${char.resets} resets`,
+                    inline: true
+                  });
+                });
+                
+                return embed;
               });
-            
-            // Prepara as userbars
-            const userbarUrls = chars.map(char => 
-              `https://www.mucabrasil.com.br/forum/userbar.php?n=${encodeURIComponent(char.name)}&t=${Date.now()}`
-            );
-            
-            const files = userbarUrls.map((url, index) => ({
-              attachment: url,
-              name: `userbar_${index}.png`
-            }));
-            
-            // Adiciona os personagens ao embed
-            chars.forEach((char, index) => {
-              embed.addFields({
-                name: `${index + 1}. ${char.name}`,
-                value: `🏰 ${char.guild} | 🔄 ${char.resets} resets`,
-                inline: true
+              
+              // Prepara as userbars como attachments (uma por personagem)
+              const files = chars.map((char, index) => ({
+                attachment: `https://www.mucabrasil.com.br/forum/userbar.php?n=${encodeURIComponent(char.name)}&size=small&t=${Date.now()}`,
+                name: `userbar_${index}.png`
+              })).slice(0, 10); // Limita a 10 attachments por mensagem
+              
+              // Envia a primeira mensagem com os primeiros 10 personagens
+              await interaction.editReply({
+                embeds: [embeds[0]],
+                files: files.slice(0, 10)
               });
-            });
-            
-            // Cria os botões de navegação
-            const row = new ActionRowBuilder().addComponents(
-              new ButtonBuilder()
-                .setCustomId(`char500_prev_${filter}_${currentPage}`)
-                .setLabel('Anterior')
-                .setStyle(ButtonStyle.Primary)
-                .setDisabled(currentPage <= 1),
-              new ButtonBuilder()
-                .setCustomId(`char500_next_${filter}_${currentPage}`)
-                .setLabel('Próxima')
-                .setStyle(ButtonStyle.Primary)
-                .setDisabled(currentPage >= totalPages),
-              new ButtonBuilder()
-                .setCustomId(`char500_refresh_${filter}`)
-                .setLabel('Atualizar')
-                .setStyle(ButtonStyle.Secondary)
-                .setEmoji('🔄')
-            );
-            
-            await interaction.editReply({
-              embeds: [embed],
-              files: files,
-              components: [row]
-            });
+              
+              // Envia os embeds restantes em mensagens separadas
+              for (let i = 1; i < embeds.length; i++) {
+                await interaction.followUp({
+                  embeds: [embeds[i]],
+                  files: files.slice(i * 10, (i + 1) * 10)
+                });
+              }
+              
+            } catch (error) {
+              console.error('Erro no comando char500:', error);
+              await interaction.editReply({
+                content: 'Ocorreu um erro ao buscar os personagens. Por favor, tente novamente mais tarde.',
+                flags: MessageFlags.Ephemeral
+              });
+            }
             break;
 
           case 'admin-permissoes':
