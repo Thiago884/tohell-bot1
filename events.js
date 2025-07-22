@@ -1,5 +1,5 @@
 const { Events, EmbedBuilder, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
-const { safeSend, searchCharacterWithCache, showRanking, searchCharacter, getCommandPermissions, addCommandPermission, removeCommandPermission, checkUserPermission, formatBrazilianDate, processImageUrls, blockIP, unblockIP, queryIP, getIPInfo, generateSecurityReport, getRecentAccess, manageWhitelist, checkPhoneNumber } = require('./utils');
+const { safeSend, searchCharacterWithCache, showRanking, searchCharacter, getCommandPermissions, addCommandPermission, removeCommandPermission, checkUserPermission, formatBrazilianDate, processImageUrls, blockIP, unblockIP, queryIP, getIPInfo, generateSecurityReport, getRecentAccess, manageWhitelist, checkPhoneNumber, get500RCharacters } = require('./utils');
 const { isShuttingDown } = require('./database');
 const { listPendingApplications, searchApplications, sendApplicationEmbed, approveApplication, rejectApplication, showHelp, createImageCarousel } = require('./commands');
 
@@ -225,8 +225,67 @@ function setupEvents(client, db) {
             await showHelp(interaction);
             break;
 
+          case 'char500':
+            const filter = interaction.options.getString('filtro') || '';
+            await interaction.deferReply();
+            
+            const { chars, totalChars, page: currentPage, totalPages, lastUpdated } = 
+              await get500RCharacters(db, filter, 1);
+            
+            const embed = new EmbedBuilder()
+              .setColor('#0099ff')
+              .setTitle(`🏆 Top 500 Resets ${filter ? `(${filter})` : ''}`)
+              .setDescription(`Total: ${totalChars} | Página ${currentPage}/${totalPages}`)
+              .setFooter({ 
+                text: `Atualizado em ${formatBrazilianDate(lastUpdated)} | Use os botões para navegar` 
+              });
+            
+            // Prepara as userbars
+            const userbarUrls = chars.map(char => 
+              `https://www.mucabrasil.com.br/forum/userbar.php?n=${encodeURIComponent(char.name)}&t=${Date.now()}`
+            );
+            
+            const files = userbarUrls.map((url, index) => ({
+              attachment: url,
+              name: `userbar_${index}.png`
+            }));
+            
+            // Adiciona os personagens ao embed
+            chars.forEach((char, index) => {
+              embed.addFields({
+                name: `${index + 1}. ${char.name}`,
+                value: `🏰 ${char.guild} | 🔄 ${char.resets} resets`,
+                inline: true
+              });
+            });
+            
+            // Cria os botões de navegação
+            const row = new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId(`char500_prev_${filter}_${currentPage}`)
+                .setLabel('Anterior')
+                .setStyle(ButtonStyle.Primary)
+                .setDisabled(currentPage <= 1),
+              new ButtonBuilder()
+                .setCustomId(`char500_next_${filter}_${currentPage}`)
+                .setLabel('Próxima')
+                .setStyle(ButtonStyle.Primary)
+                .setDisabled(currentPage >= totalPages),
+              new ButtonBuilder()
+                .setCustomId(`char500_refresh_${filter}`)
+                .setLabel('Atualizar')
+                .setStyle(ButtonStyle.Secondary)
+                .setEmoji('🔄')
+            );
+            
+            await interaction.editReply({
+              embeds: [embed],
+              files: files,
+              components: [row]
+            });
+            break;
+
           case 'admin-permissoes':
-            // Verificar se está em um servidor
             if (!interaction.inGuild()) {
               return interaction.reply({
                 content: 'Este comando só pode ser usado em servidores.',
@@ -234,7 +293,6 @@ function setupEvents(client, db) {
               }).catch(console.error);
             }
 
-            // Verificar permissões
             if (!interaction.member || !interaction.member.permissions || !interaction.member.permissions.has('ADMINISTRATOR')) {
               return interaction.reply({
                 content: '❌ Este comando é restrito a administradores.',
@@ -866,6 +924,84 @@ function setupEvents(client, db) {
               embeds: [embed],
               components: [row]
             }).catch(console.error);
+            return;
+          }
+
+          // Tratamento para navegação do comando char500
+          if (interaction.customId.startsWith('char500_')) {
+            const [_, action, filter, pageStr] = interaction.customId.split('_');
+            let page = parseInt(pageStr);
+            
+            await interaction.deferUpdate();
+            
+            if (action === 'prev' && page > 1) {
+              page--;
+            } else if (action === 'next') {
+              page++;
+            } else if (action === 'refresh') {
+              // Força atualização limpando o cache
+              await db.execute(
+                'DELETE FROM system_status WHERE key_name = "chars_500r"'
+              );
+            }
+            
+            // Reutiliza a mesma função com os novos parâmetros
+            const { chars, totalChars, page: currentPage, totalPages, lastUpdated } = 
+              await get500RCharacters(db, filter !== 'undefined' ? filter : '', page);
+            
+            // Prepara as novas userbars
+            const newUserbarUrls = chars.map(char => 
+              `https://www.mucabrasil.com.br/forum/userbar.php?n=${encodeURIComponent(char.name)}&t=${Date.now()}`
+            );
+            
+            const newFiles = newUserbarUrls.map((url, index) => ({
+              attachment: url,
+              name: `userbar_${index}.png`
+            }));
+            
+            // Atualiza o embed
+            const embed = new EmbedBuilder(interaction.message.embeds[0]);
+            embed.setFields([]); // Limpa os campos antigos
+            
+            // Atualiza a descrição
+            embed.setDescription(`Total: ${totalChars} | Página ${currentPage}/${totalPages}`);
+            embed.setFooter({ 
+              text: `Atualizado em ${formatBrazilianDate(lastUpdated)} | Use os botões para navegar` 
+            });
+            
+            // Adiciona os novos personagens
+            chars.forEach((char, index) => {
+              embed.addFields({
+                name: `${(currentPage - 1) * 10 + index + 1}. ${char.name}`,
+                value: `🏰 ${char.guild} | 🔄 ${char.resets} resets`,
+                inline: true
+              });
+            });
+            
+            // Atualiza os botões
+            const row = new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId(`char500_prev_${filter}_${currentPage}`)
+                .setLabel('Anterior')
+                .setStyle(ButtonStyle.Primary)
+                .setDisabled(currentPage <= 1),
+              new ButtonBuilder()
+                .setCustomId(`char500_next_${filter}_${currentPage}`)
+                .setLabel('Próxima')
+                .setStyle(ButtonStyle.Primary)
+                .setDisabled(currentPage >= totalPages),
+              new ButtonBuilder()
+                .setCustomId(`char500_refresh_${filter}`)
+                .setLabel('Atualizar')
+                .setStyle(ButtonStyle.Secondary)
+                .setEmoji('🔄')
+            );
+            
+            await interaction.editReply({
+              embeds: [embed],
+              files: newFiles,
+              components: [row]
+            });
             return;
           }
 

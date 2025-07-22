@@ -9,7 +9,7 @@ const {
   ApplicationCommandOptionType,
   MessageFlags
 } = require('discord.js');
-const { formatBrazilianDate, safeSend, notifyWebhook, searchCharacterWithCache, calculateAdvancedStats, createCharEmbed, safeInteractionReply, isValidImageUrl } = require('./utils');
+const { formatBrazilianDate, safeSend, notifyWebhook, searchCharacterWithCache, calculateAdvancedStats, createCharEmbed, safeInteractionReply, isValidImageUrl, get500RCharacters } = require('./utils');
 
 // Configuração da URL base para imagens
 const BASE_URL = process.env.BASE_URL || 'https://tohellguild.com.br/';
@@ -234,6 +234,36 @@ const slashCommands = [
         description: 'Número de telefone no formato internacional (ex: +5511999999999)',
         type: ApplicationCommandOptionType.String,
         required: true
+      }
+    ]
+  },
+  {
+    name: 'char500',
+    description: 'Lista personagens com 500+ resets',
+    options: [
+      {
+        name: 'guilda',
+        description: 'Filtrar por guilda específica',
+        type: ApplicationCommandOptionType.String,
+        required: false,
+        choices: [
+          { name: 'ToHeLL2', value: 'ToHeLL2' },
+          { name: 'ToHeLL3', value: 'ToHeLL3' },
+          { name: 'ToHeLL4', value: 'ToHeLL4' },
+          { name: 'ToHeLL5', value: 'ToHeLL5' },
+          { name: 'ToHeLL6', value: 'ToHeLL6' },
+          { name: 'ToHeLL7', value: 'ToHeLL7' },
+          { name: 'ToHeLL8_', value: 'ToHeLL8_' },
+          { name: 'ToHeLL9', value: 'ToHeLL9' },
+          { name: 'ToHeLL10', value: 'ToHeLL10' }
+        ]
+      },
+      {
+        name: 'pagina',
+        description: 'Número da página (1 por padrão)',
+        type: ApplicationCommandOptionType.Integer,
+        min_value: 1,
+        required: false
       }
     ]
   }
