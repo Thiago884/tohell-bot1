@@ -242,10 +242,35 @@ function setupEvents(client, db) {
               const embeds = chars.map((char, index) => {
                 const userbarUrl = `https://www.mucabrasil.com.br/forum/userbar.php?n=${encodeURIComponent(char.name)}&size=small&t=${Date.now()}`;
                 
+                // Determinar o status e a data apropriada
+                let statusText = '';
+                if (char.status) {
+                  const statusDate = char.status_date ? formatBrazilianDate(char.status_date) : '';
+                  switch(char.status) {
+                    case 'novo':
+                      statusText = `🆕 Novo (desde ${statusDate})`;
+                      break;
+                    case 'saiu':
+                      statusText = `🚪 Saiu (em ${statusDate})`;
+                      break;
+                    case 'ativo':
+                      statusText = `✅ Ativo`;
+                      break;
+                    default:
+                      statusText = `❓ Status desconhecido`;
+                  }
+                } else {
+                  statusText = '❓ Não cadastrado';
+                }
+                
                 return new EmbedBuilder()
                   .setColor('#FFA500')
                   .setTitle(`🏆 ${char.name} — #${(page - 1) * 5 + index + 1}`)
-                  .setDescription(`🏰 **Guilda:** ${char.guild}\n🔄 **Resets:** ${char.resets}`)
+                  .setDescription(
+                    `🏰 **Guilda:** ${char.guild}\n` +
+                    `🔄 **Resets:** ${char.resets}\n` +
+                    `📌 **Status:** ${statusText}`
+                  )
                   .setImage(userbarUrl)
                   .setFooter({ text: `Atualizado em ${formatBrazilianDate(lastUpdated)}` });
               });
@@ -939,23 +964,44 @@ function setupEvents(client, db) {
               return interaction.message.delete().catch(console.error);
             }
             
-            // Reutiliza a mesma função com os novos parâmetros
             const { chars, totalChars, page: currentPage, totalPages, lastUpdated } = 
               await get500RCharacters(db, page);
             
-            // Criar múltiplos embeds atualizados
             const embeds = chars.map((char, index) => {
               const userbarUrl = `https://www.mucabrasil.com.br/forum/userbar.php?n=${encodeURIComponent(char.name)}&size=small&t=${Date.now()}`;
+              
+              let statusText = '';
+              if (char.status) {
+                const statusDate = char.status_date ? formatBrazilianDate(char.status_date) : '';
+                switch(char.status) {
+                  case 'novo':
+                    statusText = `🆕 Novo (desde ${statusDate})`;
+                    break;
+                  case 'saiu':
+                    statusText = `🚪 Saiu (em ${statusDate})`;
+                    break;
+                  case 'ativo':
+                    statusText = `✅ Ativo`;
+                    break;
+                  default:
+                    statusText = `❓ Status desconhecido`;
+                }
+              } else {
+                statusText = '❓ Não cadastrado';
+              }
               
               return new EmbedBuilder()
                 .setColor('#FFA500')
                 .setTitle(`🏆 ${char.name} — #${(currentPage - 1) * 5 + index + 1}`)
-                .setDescription(`🏰 **Guilda:** ${char.guild}\n🔄 **Resets:** ${char.resets}`)
+                .setDescription(
+                  `🏰 **Guilda:** ${char.guild}\n` +
+                  `🔄 **Resets:** ${char.resets}\n` +
+                  `📌 **Status:** ${statusText}`
+                )
                 .setImage(userbarUrl)
                 .setFooter({ text: `Atualizado em ${formatBrazilianDate(lastUpdated)}` });
             });
 
-            // Atualiza os botões
             const row = new ActionRowBuilder().addComponents(
               new ButtonBuilder()
                 .setCustomId(`char500_prev_${currentPage}`)
