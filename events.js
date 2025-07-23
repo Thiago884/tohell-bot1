@@ -238,26 +238,19 @@ function setupEvents(client, db) {
                 });
               }
 
-              // Criar embed
-              const embed = new EmbedBuilder()
-                .setColor('#FFA500')
-                .setTitle('🏆 Personagens 500+ Resets')
-                .setDescription(`**Total:** ${totalChars} | **Página:** ${page}/${totalPages}`)
-                .setThumbnail('https://i.imgur.com/Mu4zW6A.png') // Logo opcional
-                .setFooter({ text: `Atualizado em ${formatBrazilianDate(lastUpdated)}` });
-
-              // Adicionar campos com userbars inline
-              chars.forEach((char, index) => {
+              // Criar múltiplos embeds - um para cada personagem
+              const embeds = chars.map((char, index) => {
                 const userbarUrl = `https://www.mucabrasil.com.br/forum/userbar.php?n=${encodeURIComponent(char.name)}&size=small&t=${Date.now()}`;
                 
-                embed.addFields({
-                  name: `#${(page - 1) * 5 + index + 1} ${char.name}`,
-                  value: `[🖼️ Userbar](${userbarUrl}) | 🏰 ${char.guild} | 🔄 ${char.resets} resets`,
-                  inline: true
-                });
+                return new EmbedBuilder()
+                  .setColor('#FFA500')
+                  .setTitle(`🏆 ${char.name} — #${(page - 1) * 5 + index + 1}`)
+                  .setDescription(`🏰 **Guilda:** ${char.guild}\n🔄 **Resets:** ${char.resets}`)
+                  .setImage(userbarUrl)
+                  .setFooter({ text: `Atualizado em ${formatBrazilianDate(lastUpdated)}` });
               });
 
-              // Botões
+              // Botões de navegação
               const row = new ActionRowBuilder().addComponents(
                 new ButtonBuilder()
                   .setCustomId(`char500_prev_${page}`)
@@ -276,7 +269,8 @@ function setupEvents(client, db) {
               );
 
               await interaction.editReply({ 
-                embeds: [embed], 
+                content: `**Personagens 500+ Resets** (Página ${page}/${totalPages} - Total: ${totalChars})`,
+                embeds: embeds,
                 components: [row] 
               });
 
@@ -506,7 +500,6 @@ function setupEvents(client, db) {
                   { name: 'Data da Whitelist', value: formatBrazilianDate(result.whitelisted.data_criacao), inline: true }
                 );
               }
-
               // Adicionar coordenadas se disponíveis
               if (result.geoInfo?.coordinates) {
                 embed.addFields(
@@ -950,27 +943,18 @@ function setupEvents(client, db) {
             const { chars, totalChars, page: currentPage, totalPages, lastUpdated } = 
               await get500RCharacters(db, page);
             
-            // Atualiza o embed
-            const embed = new EmbedBuilder(interaction.message.embeds[0]);
-            embed.setFields([]); // Limpa os campos antigos
-            
-            // Atualiza a descrição
-            embed.setDescription(`**Total:** ${totalChars} | **Página:** ${currentPage}/${totalPages}`);
-            embed.setFooter({ 
-              text: `Atualizado em ${formatBrazilianDate(lastUpdated)}` 
-            });
-            
-            // Adiciona os novos personagens
-            chars.forEach((char, index) => {
+            // Criar múltiplos embeds atualizados
+            const embeds = chars.map((char, index) => {
               const userbarUrl = `https://www.mucabrasil.com.br/forum/userbar.php?n=${encodeURIComponent(char.name)}&size=small&t=${Date.now()}`;
               
-              embed.addFields({
-                name: `#${(currentPage - 1) * 5 + index + 1} ${char.name}`,
-                value: `[🖼️ Userbar](${userbarUrl}) | 🏰 ${char.guild} | 🔄 ${char.resets} resets`,
-                inline: true
-              });
+              return new EmbedBuilder()
+                .setColor('#FFA500')
+                .setTitle(`🏆 ${char.name} — #${(currentPage - 1) * 5 + index + 1}`)
+                .setDescription(`🏰 **Guilda:** ${char.guild}\n🔄 **Resets:** ${char.resets}`)
+                .setImage(userbarUrl)
+                .setFooter({ text: `Atualizado em ${formatBrazilianDate(lastUpdated)}` });
             });
-            
+
             // Atualiza os botões
             const row = new ActionRowBuilder().addComponents(
               new ButtonBuilder()
@@ -990,7 +974,8 @@ function setupEvents(client, db) {
             );
             
             await interaction.editReply({
-              embeds: [embed],
+              content: `**Personagens 500+ Resets** (Página ${currentPage}/${totalPages} - Total: ${totalChars})`,
+              embeds: embeds,
               components: [row]
             });
             return;
