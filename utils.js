@@ -1095,6 +1095,7 @@ async function checkPhoneNumber(phoneNumber) {
 // NOVAS FUNÇÕES PARA PERSONAGENS 500+ RESETS
 // ==============================================
 
+// utils.js - função get500RCharacters corrigida
 async function get500RCharacters(dbConnection, page = 1, perPage = 5) {
   try {
     // Verifica cache primeiro (5 minutos)
@@ -1104,10 +1105,25 @@ async function get500RCharacters(dbConnection, page = 1, perPage = 5) {
       [cacheKey]
     );
     
-    let chars;
+    let chars = [];
+    let lastUpdated = new Date().toISOString();
+    
     if (cacheRows.length > 0) {
-      chars = JSON.parse(cacheRows[0].key_value);
-    } else {
+      try {
+        // Verifica se o valor do cache é um JSON válido
+        if (typeof cacheRows[0].key_value === 'string') {
+          chars = JSON.parse(cacheRows[0].key_value);
+        } else if (Array.isArray(cacheRows[0].key_value)) {
+          chars = cacheRows[0].key_value;
+        }
+      } catch (error) {
+        console.error('Erro ao parsear cache, buscando dados frescos:', error);
+        chars = [];
+      }
+    }
+    
+    // Se não encontrou no cache ou o cache é inválido, busca no banco
+    if (chars.length === 0) {
       // Busca todos personagens 500+ resets no banco de dados
       const [result] = await dbConnection.execute(`
         SELECT c.name, c.guild, c.last_resets as resets, c.last_seen as last_updated
@@ -1118,13 +1134,18 @@ async function get500RCharacters(dbConnection, page = 1, perPage = 5) {
       `);
       
       chars = result;
+      lastUpdated = new Date().toISOString();
       
-      // Salva no cache
-      await dbConnection.execute(
-        'INSERT INTO system_status (key_name, key_value) VALUES (?, ?) ' +
-        'ON DUPLICATE KEY UPDATE key_value = VALUES(key_value), updated_at = NOW()',
-        [cacheKey, JSON.stringify(chars)]
-      );
+      // Salva no cache como JSON string
+      try {
+        await dbConnection.execute(
+          'INSERT INTO system_status (key_name, key_value) VALUES (?, ?) ' +
+          'ON DUPLICATE KEY UPDATE key_value = VALUES(key_value), updated_at = NOW()',
+          [cacheKey, JSON.stringify(chars)]
+        );
+      } catch (error) {
+        console.error('Erro ao salvar no cache:', error);
+      }
     }
     
     // Paginação
@@ -1137,11 +1158,18 @@ async function get500RCharacters(dbConnection, page = 1, perPage = 5) {
       totalChars,
       page,
       totalPages,
-      lastUpdated: new Date().toISOString()
+      lastUpdated
     };
   } catch (error) {
     console.error('Erro em get500RCharacters:', error);
-    throw error;
+    // Retorna um objeto vazio em caso de erro
+    return {
+      chars: [],
+      totalChars: 0,
+      page: 1,
+      totalPages: 1,
+      lastUpdated: new Date().toISOString()
+    };
   }
 }
 
