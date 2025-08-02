@@ -41,21 +41,21 @@ async function startBot() {
 
     // Configurar comandos e eventos
     console.log('⚙️ Configurando comandos e eventos...');
-    setupCommands(client); //
-    setupEvents(client, db); [cite_start]// [cite: 1]
+    setupCommands(client);
+    setupEvents(client, db);
 
     // Iniciar servidor
     const server = app.listen(PORT, () => {
-      [cite_start]console.log(`🌐 Servidor Express rodando na porta ${PORT}`); // [cite: 1]
+      console.log(`🌐 Servidor Express rodando na porta ${PORT}`);
     });
     
     // Login do bot
     console.log('🔑 Conectando ao Discord...');
-    await client.login(process.env.DISCORD_TOKEN); [cite_start]// [cite: 1]
+    await client.login(process.env.DISCORD_TOKEN);
     
     // Configurar shutdown graceful
-    process.on('SIGTERM', gracefulShutdown(server)); [cite_start]// [cite: 1]
-    process.on('SIGINT', gracefulShutdown(server)); [cite_start]// [cite: 1]
+    process.on('SIGTERM', gracefulShutdown(server));
+    process.on('SIGINT', gracefulShutdown(server));
     
   } catch (error) {
     console.error('❌ Erro fatal ao iniciar o bot:', error);
