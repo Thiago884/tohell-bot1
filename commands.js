@@ -501,7 +501,6 @@ async function searchApplications(context, args, dbConnection) {
     });
   }
 }
-
 // Função para enviar embed de inscrição
 async function sendApplicationEmbed(channel, application, dbConnection) {
   const screenshots = processImageUrls(application.screenshot_path);
@@ -539,7 +538,11 @@ async function sendApplicationEmbed(channel, application, dbConnection) {
       .setCustomId(`reject_${application.id}`)
       .setLabel('Rejeitar')
       .setStyle(ButtonStyle.Danger)
-      .setDisabled(application.status === 'aprovado')
+      .setDisabled(application.status === 'aprovado'),
+    new ButtonBuilder()
+      .setCustomId(`edit_application_${application.id}_${application.status || 'pendente'}`)
+      .setLabel('Editar')
+      .setStyle(ButtonStyle.Primary)
   );
 
   const msg = await safeSend(channel, { 

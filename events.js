@@ -1050,6 +1050,88 @@ function setupEvents(client, db) {
             
             await interaction.showModal(modal).catch(console.error);
           }
+
+          // Editar inscrição
+          if (interaction.customId.startsWith('edit_application_')) {
+            const [_, __, applicationId, status] = interaction.customId.split('_');
+            
+            try {
+              const table = status === 'aprovado' ? 'inscricoes' : 'inscricoes_pendentes';
+              
+              const [rows] = await db.execute(
+                `SELECT * FROM ${table} WHERE id = ?`,
+                [applicationId]
+              );
+              
+              if (rows.length === 0) {
+                return interaction.reply({
+                  content: 'Inscrição não encontrada.',
+                  flags: MessageFlags.Ephemeral
+                }).catch(console.error);
+              }
+              
+              const application = rows[0];
+              
+              // Criar modal para edição
+              const modal = new ModalBuilder()
+                .setCustomId(`edit_modal_${applicationId}_${status}`)
+                .setTitle(`Editar Inscrição #${applicationId}`);
+              
+              // Campos do modal
+              const nomeInput = new TextInputBuilder()
+                .setCustomId('nome_input')
+                .setLabel('Nome')
+                .setStyle(TextInputStyle.Short)
+                .setValue(application.nome || '')
+                .setRequired(true);
+              
+              const telefoneInput = new TextInputBuilder()
+                .setCustomId('telefone_input')
+                .setLabel('Telefone')
+                .setStyle(TextInputStyle.Short)
+                .setValue(application.telefone || '')
+                .setRequired(false);
+              
+              const discordInput = new TextInputBuilder()
+                .setCustomId('discord_input')
+                .setLabel('Discord')
+                .setStyle(TextInputStyle.Short)
+                .setValue(application.discord || '')
+                .setRequired(true);
+              
+              const charInput = new TextInputBuilder()
+                .setCustomId('char_input')
+                .setLabel('Char Principal')
+                .setStyle(TextInputStyle.Short)
+                .setValue(application.char_principal || '')
+                .setRequired(false);
+              
+              const guildInput = new TextInputBuilder()
+                .setCustomId('guild_input')
+                .setLabel('Guild Anterior')
+                .setStyle(TextInputStyle.Short)
+                .setValue(application.guild_anterior || '')
+                .setRequired(false);
+              
+              // Adicionar campos ao modal
+              modal.addComponents(
+                new ActionRowBuilder().addComponents(nomeInput),
+                new ActionRowBuilder().addComponents(telefoneInput),
+                new ActionRowBuilder().addComponents(discordInput),
+                new ActionRowBuilder().addComponents(charInput),
+                new ActionRowBuilder().addComponents(guildInput)
+              );
+              
+              await interaction.showModal(modal);
+            } catch (error) {
+              console.error('❌ Erro ao editar inscrição:', error);
+              await interaction.reply({
+                content: 'Ocorreu um erro ao preparar a edição.',
+                flags: MessageFlags.Ephemeral
+              }).catch(console.error);
+            }
+            return;
+          }
         } catch (error) {
           console.error('❌ Erro ao processar interação:', error);
           interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', flags: MessageFlags.Ephemeral }).catch(console.error);
@@ -1072,6 +1154,81 @@ function setupEvents(client, db) {
             
             await interaction.deferReply({ ephemeral: true }).catch(console.error);
             await rejectApplication(interaction, id, reason, db);
+          }
+
+          if (interaction.customId.startsWith('edit_modal_')) {
+            const [_, __, applicationId, status] = interaction.customId.split('_');
+            
+            try {
+              const table = status === 'aprovado' ? 'inscricoes' : 'inscricoes_pendentes';
+              
+              // Obter valores do modal
+              const nome = interaction.fields.getTextInputValue('nome_input');
+              const telefone = interaction.fields.getTextInputValue('telefone_input');
+              const discord = interaction.fields.getTextInputValue('discord_input');
+              const charPrincipal = interaction.fields.getTextInputValue('char_input');
+              const guildAnterior = interaction.fields.getTextInputValue('guild_input');
+              
+              // Atualizar no banco de dados
+              await db.execute(
+                `UPDATE ${table} SET 
+                  nome = ?, 
+                  telefone = ?, 
+                  discord = ?, 
+                  char_principal = ?, 
+                  guild_anterior = ? 
+                WHERE id = ?`,
+                [nome, telefone, discord, charPrincipal, guildAnterior, applicationId]
+              );
+              
+              // Buscar dados atualizados
+              const [updatedRows] = await db.execute(
+                `SELECT * FROM ${table} WHERE id = ?`,
+                [applicationId]
+              );
+              
+              if (updatedRows.length > 0) {
+                const updatedApplication = updatedRows[0];
+                let messageEdited = false;
+                
+                // Tentar editar a mensagem original primeiro
+                try {
+                  // Primeiro tentamos encontrar a mensagem original
+                  const message = await interaction.channel.messages.fetch(interaction.message.id).catch(() => null);
+                  
+                  if (message) {
+                    // Se encontramos a mensagem, deletamos e enviamos uma nova
+                    await message.delete().catch(() => {});
+                    await sendApplicationEmbed(interaction.channel, updatedApplication, db);
+                    messageEdited = true;
+                  }
+                } catch (error) {
+                  console.error('Erro ao editar mensagem original:', error);
+                }
+                
+                // Se não conseguiu editar, enviar nova mensagem
+                if (!messageEdited) {
+                  await sendApplicationEmbed(interaction.channel, updatedApplication, db);
+                }
+                
+                await interaction.reply({
+                  content: `Inscrição #${applicationId} atualizada com sucesso!`,
+                  flags: MessageFlags.Ephemeral
+                });
+              } else {
+                await interaction.reply({
+                  content: 'Inscrição não encontrada após atualização.',
+                  flags: MessageFlags.Ephemeral
+                });
+              }
+            } catch (error) {
+              console.error('❌ Erro ao salvar edição:', error);
+              await interaction.reply({
+                content: 'Ocorreu um erro ao salvar as alterações.',
+                flags: MessageFlags.Ephemeral
+              });
+            }
+            return;
           }
         } catch (error) {
           console.error('❌ Erro ao processar modal:', error);
