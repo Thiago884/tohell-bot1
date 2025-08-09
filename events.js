@@ -170,6 +170,102 @@ function isValidImageUrl(url) {
   }
 }
 
+// Função auxiliar para atualizar o editor de imagens
+async function updateImageEditor(interaction, state) {
+  const { images, applicationId, status } = state;
+  
+  try {
+    // Verifica se a interação já foi respondida
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.deferUpdate().catch(console.error);
+    }
+
+    // Criar embed atualizado
+    const embed = new EmbedBuilder()
+      .setColor('#0099ff')
+      .setTitle(`🖼️ Gerenciador de Imagens - Inscrição #${applicationId}`)
+      .setDescription('**Selecione as imagens que deseja remover**\nClique nos botões abaixo para gerenciar:');
+    
+    if (images.length > 0) {
+      embed.setImage(images[0]); // Mostra a primeira imagem como exemplo
+      embed.addFields({
+        name: `Imagens Atuais (${images.length})`,
+        value: 'Clique nos botões abaixo para remover imagens específicas'
+      });
+    } else {
+      embed.addFields({
+        name: 'Imagens Atuais',
+        value: 'Nenhuma imagem cadastrada'
+      });
+    }
+    
+    // Recriar os botões
+    const actionRow1 = new ActionRowBuilder();
+    const actionRow2 = new ActionRowBuilder();
+    
+    images.slice(0, 5).forEach((img, index) => {
+      actionRow1.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`img_remove_${applicationId}_${index}_${status}`)
+          .setLabel(`Remover #${index + 1}`)
+          .setStyle(ButtonStyle.Danger)
+          .setEmoji('❌')
+      );
+    });
+    
+    if (images.length > 5) {
+      images.slice(5, 10).forEach((img, index) => {
+        actionRow2.addComponents(
+          new ButtonBuilder()
+            .setCustomId(`img_remove_${applicationId}_${index + 5}_${status}`)
+            .setLabel(`Remover #${index + 6}`)
+            .setStyle(ButtonStyle.Danger)
+            .setEmoji('❌')
+        );
+      });
+    }
+    
+    const mainActionRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`img_add_${applicationId}_${status}`)
+        .setLabel('Adicionar Imagens')
+        .setStyle(ButtonStyle.Success)
+        .setEmoji('➕'),
+      new ButtonBuilder()
+        .setCustomId(`img_clear_${applicationId}_${status}`)
+        .setLabel('Limpar Todas')
+        .setStyle(ButtonStyle.Danger)
+        .setEmoji('🗑️'),
+      new ButtonBuilder()
+        .setCustomId(`img_save_${applicationId}_${status}`)
+        .setLabel('Salvar Alterações')
+        .setStyle(ButtonStyle.Primary)
+        .setEmoji('💾'),
+      new ButtonBuilder()
+        .setCustomId(`img_cancel_${applicationId}`)
+        .setLabel('Cancelar')
+        .setStyle(ButtonStyle.Secondary)
+        .setEmoji('✖️')
+    );
+    
+    // Atualizar a mensagem
+    await interaction.editReply({
+      embeds: [embed],
+      components: images.length > 0 ? 
+        [actionRow1, actionRow2, mainActionRow] : 
+        [mainActionRow]
+    });
+  } catch (error) {
+    console.error('❌ Erro ao atualizar editor de imagens:', error);
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({
+        content: 'Ocorreu um erro ao atualizar o editor de imagens.',
+        flags: MessageFlags.Ephemeral
+      }).catch(console.error);
+    }
+  }
+}
+
 // Configurar eventos
 function setupEvents(client, db) {
   // Evento ready
@@ -1139,6 +1235,11 @@ function setupEvents(client, db) {
             const [_, __, applicationId, status] = interaction.customId.split('_');
             
             try {
+              // Responder à interação primeiro
+              if (!interaction.replied && !interaction.deferred) {
+                await interaction.deferReply({ ephemeral: true }).catch(console.error);
+              }
+
               const table = status === 'aprovado' ? 'inscricoes' : 'inscricoes_pendentes';
               
               const [rows] = await db.execute(
@@ -1262,6 +1363,11 @@ function setupEvents(client, db) {
               
               collector.on('collect', async i => {
                 try {
+                  // Deferir a interação primeiro
+                  if (!i.replied && !i.deferred) {
+                    await i.deferUpdate().catch(console.error);
+                  }
+
                   if (i.customId.startsWith(`img_remove_${applicationId}_`)) {
                     // Remover imagem específica
                     const index = parseInt(i.customId.split('_')[3]);
@@ -1270,10 +1376,10 @@ function setupEvents(client, db) {
                       
                       // Atualizar a mensagem
                       await updateImageEditor(i, editingState);
-                      await i.reply({
+                      await i.followUp({
                         content: `Imagem #${index + 1} removida.`,
-                        flags: MessageFlags.Ephemeral
-                      });
+                        ephemeral: true
+                      }).catch(console.error);
                     }
                   } 
                   else if (i.customId.startsWith(`img_add_${applicationId}`)) {
@@ -1373,10 +1479,12 @@ function setupEvents(client, db) {
                   }
                 } catch (error) {
                   console.error('Erro ao processar interação de edição:', error);
-                  await i.reply({
-                    content: 'Ocorreu um erro ao processar sua ação.',
-                    flags: MessageFlags.Ephemeral
-                  }).catch(() => {});
+                  if (!i.replied && !i.deferred) {
+                    await i.reply({
+                      content: 'Ocorreu um erro ao processar sua ação.',
+                      ephemeral: true
+                    }).catch(() => {});
+                  }
                 }
               });
               
@@ -1386,10 +1494,12 @@ function setupEvents(client, db) {
               
             } catch (error) {
               console.error('❌ Erro ao editar imagens:', error);
-              await interaction.reply({
-                content: 'Ocorreu um erro ao preparar o editor de imagens.',
-                flags: MessageFlags.Ephemeral
-              }).catch(console.error);
+              if (!interaction.replied && !interaction.deferred) {
+                await interaction.reply({
+                  content: 'Ocorreu um erro ao preparar o editor de imagens.',
+                  flags: MessageFlags.Ephemeral
+                }).catch(console.error);
+              }
             }
             return;
           }
@@ -1521,87 +1631,6 @@ function setupEvents(client, db) {
         console.error('❌ Erro ao enviar mensagem de erro:', nestedError);
       }
     }
-  });
-}
-
-// Função auxiliar para atualizar o editor de imagens
-async function updateImageEditor(interaction, state) {
-  const { images, applicationId, status } = state;
-  
-  // Criar embed atualizado
-  const embed = new EmbedBuilder()
-    .setColor('#0099ff')
-    .setTitle(`🖼️ Gerenciador de Imagens - Inscrição #${applicationId}`)
-    .setDescription('**Selecione as imagens que deseja remover**\nClique nos botões abaixo para gerenciar:');
-  
-  if (images.length > 0) {
-    embed.setImage(images[0]); // Mostra a primeira imagem como exemplo
-    embed.addFields({
-      name: `Imagens Atuais (${images.length})`,
-      value: 'Clique nos botões abaixo para remover imagens específicas'
-    });
-  } else {
-    embed.addFields({
-      name: 'Imagens Atuais',
-      value: 'Nenhuma imagem cadastrada'
-    });
-  }
-  
-  // Recriar os botões
-  const actionRow1 = new ActionRowBuilder();
-  const actionRow2 = new ActionRowBuilder();
-  
-  images.slice(0, 5).forEach((img, index) => {
-    actionRow1.addComponents(
-      new ButtonBuilder()
-        .setCustomId(`img_remove_${applicationId}_${index}_${status}`)
-        .setLabel(`Remover #${index + 1}`)
-        .setStyle(ButtonStyle.Danger)
-        .setEmoji('❌')
-    );
-  });
-  
-  if (images.length > 5) {
-    images.slice(5, 10).forEach((img, index) => {
-      actionRow2.addComponents(
-        new ButtonBuilder()
-          .setCustomId(`img_remove_${applicationId}_${index + 5}_${status}`)
-          .setLabel(`Remover #${index + 6}`)
-          .setStyle(ButtonStyle.Danger)
-          .setEmoji('❌')
-      );
-    });
-  }
-  
-  const mainActionRow = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`img_add_${applicationId}_${status}`)
-      .setLabel('Adicionar Imagens')
-      .setStyle(ButtonStyle.Success)
-      .setEmoji('➕'),
-    new ButtonBuilder()
-      .setCustomId(`img_clear_${applicationId}_${status}`)
-      .setLabel('Limpar Todas')
-      .setStyle(ButtonStyle.Danger)
-      .setEmoji('🗑️'),
-    new ButtonBuilder()
-      .setCustomId(`img_save_${applicationId}_${status}`)
-      .setLabel('Salvar Alterações')
-      .setStyle(ButtonStyle.Primary)
-      .setEmoji('💾'),
-    new ButtonBuilder()
-      .setCustomId(`img_cancel_${applicationId}`)
-      .setLabel('Cancelar')
-      .setStyle(ButtonStyle.Secondary)
-      .setEmoji('✖️')
-  );
-  
-  // Atualizar a mensagem
-  await interaction.editReply({
-    embeds: [embed],
-    components: images.length > 0 ? 
-      [actionRow1, actionRow2, mainActionRow] : 
-      [mainActionRow]
   });
 }
 
