@@ -237,11 +237,10 @@ const slashCommands = [
       }
     ]
   },
- // No array slashCommands, substitua o comando char500 por:
-{
-  name: 'char500',
-  description: 'Lista personagens com 500+ resets'
-}
+  {
+    name: 'char500',
+    description: 'Lista personagens com 500+ resets'
+  }
 ];
 
 // Função para converter caminhos em URLs completas
@@ -501,16 +500,19 @@ async function searchApplications(context, args, dbConnection) {
     });
   }
 }
-// Função para enviar embed de inscrição
+
+// Função para enviar embed de inscrição (atualizada)
 async function sendApplicationEmbed(channel, application, dbConnection) {
   const screenshots = processImageUrls(application.screenshot_path);
   const screenshotLinks = screenshots.slice(0, 5).map((screenshot, index) => 
     `[Imagem ${index + 1}](${screenshot})`
   ).join('\n') || 'Nenhuma imagem enviada';
 
+  const isApproved = application.status === 'aprovado';
+  
   const embed = new EmbedBuilder()
-    .setColor(application.status === 'aprovado' ? '#00FF00' : '#FF4500')
-    .setTitle(`Inscrição #${application.id} (${application.status === 'aprovado' ? 'Aprovada' : 'Pendente'})`)
+    .setColor(isApproved ? '#00FF00' : '#FF4500')
+    .setTitle(`Inscrição #${application.id} (${isApproved ? 'Aprovada' : 'Pendente'})`)
     .setDescription(`**${application.nome}** deseja se juntar à guild!`)
     .addFields(
       { name: '📱 Telefone', value: application.telefone, inline: true },
@@ -521,7 +523,7 @@ async function sendApplicationEmbed(channel, application, dbConnection) {
       { name: '📅 Data', value: formatBrazilianDate(application.data_inscricao), inline: true },
       { name: '🌐 IP', value: application.ip || 'Não registrado', inline: true }
     )
-    .setFooter({ text: 'ToHeLL Guild - Use os botões para visualizar ou aprovar/rejeitar' });
+    .setFooter({ text: 'ToHeLL Guild - Use os botões para visualizar ou gerenciar' });
 
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -530,27 +532,31 @@ async function sendApplicationEmbed(channel, application, dbConnection) {
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(screenshots.length === 0),
     new ButtonBuilder()
-      .setCustomId(`approve_${application.id}`)
-      .setLabel('Aprovar')
-      .setStyle(ButtonStyle.Success)
-      .setDisabled(application.status === 'aprovado'),
-    new ButtonBuilder()
-      .setCustomId(`reject_${application.id}`)
-      .setLabel('Rejeitar')
-      .setStyle(ButtonStyle.Danger)
-      .setDisabled(application.status === 'aprovado'),
-    new ButtonBuilder()
-      .setCustomId(`edit_application_${application.id}_${application.status || 'pendente'}`)
-      .setLabel('Editar')
+      .setCustomId(`edit_images_${application.id}_${application.status || 'pendente'}`)
+      .setLabel('Editar Imagens')
       .setStyle(ButtonStyle.Primary)
   );
+
+  // Apenas adiciona botões de aprovar/rejeitar se não for aprovado
+  if (!isApproved) {
+    row.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`approve_${application.id}`)
+        .setLabel('Aprovar')
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(`reject_${application.id}`)
+        .setLabel('Rejeitar')
+        .setStyle(ButtonStyle.Danger)
+    );
+  }
 
   const msg = await safeSend(channel, { 
     embeds: [embed],
     components: [row]
   });
 
-  if (msg && application.status !== 'aprovado') {
+  if (msg && !isApproved) {
     try {
       await msg.react('👍');
       await msg.react('👎');

@@ -1132,6 +1132,124 @@ function setupEvents(client, db) {
             }
             return;
           }
+
+          // Novo handler para edição de imagens
+          if (interaction.customId.startsWith('edit_images_')) {
+            const [_, __, applicationId, status] = interaction.customId.split('_');
+            
+            try {
+              const table = status === 'aprovado' ? 'inscricoes' : 'inscricoes_pendentes';
+              
+              const [rows] = await db.execute(
+                `SELECT screenshot_path FROM ${table} WHERE id = ?`,
+                [applicationId]
+              );
+              
+              if (rows.length === 0) {
+                return interaction.reply({
+                  content: 'Inscrição não encontrada.',
+                  flags: MessageFlags.Ephemeral
+                }).catch(console.error);
+              }
+              
+              let screenshots = [];
+              try {
+                screenshots = typeof rows[0].screenshot_path === 'string' ? 
+                  JSON.parse(rows[0].screenshot_path || '[]') : 
+                  rows[0].screenshot_path || [];
+              } catch (e) {
+                screenshots = rows[0].screenshot_path ? [rows[0].screenshot_path] : [];
+              }
+              
+              // Criar modal de edição de imagens
+              const modal = new ModalBuilder()
+                .setCustomId(`edit_images_modal_${applicationId}_${status}`)
+                .setTitle(`Editar Imagens da Inscrição #${applicationId}`);
+              
+              // Adicionar instruções
+              const instructions = new TextInputBuilder()
+                .setCustomId('instructions')
+                .setLabel('Instruções')
+                .setStyle(TextInputStyle.Paragraph)
+                .setValue('Envie as novas imagens como anexos nesta mensagem após fechar este modal. As imagens atuais serão substituídas.')
+                .setRequired(false);
+              
+              // Lista de imagens atuais
+              const currentImages = new TextInputBuilder()
+                .setCustomId('current_images')
+                .setLabel('Imagens Atuais (apenas leitura)')
+                .setStyle(TextInputStyle.Paragraph)
+                .setValue(screenshots.map((url, idx) => `${idx + 1}. ${url}`).join('\n') || 'Nenhuma imagem')
+                .setRequired(false);
+              
+              modal.addComponents(
+                new ActionRowBuilder().addComponents(instructions),
+                new ActionRowBuilder().addComponents(currentImages)
+              );
+              
+              await interaction.showModal(modal);
+              
+              // Esperar pelo envio de arquivos após o modal
+              const filter = (m) => m.author.id === interaction.user.id && m.attachments.size > 0;
+              const collector = interaction.channel.createMessageCollector({ filter, time: 60000 });
+              
+              collector.on('collect', async (message) => {
+                try {
+                  const newImages = message.attachments.map(att => att.url);
+                  
+                  // Atualizar no banco de dados
+                  await db.execute(
+                    `UPDATE ${table} SET screenshot_path = ? WHERE id = ?`,
+                    [JSON.stringify(newImages), applicationId]
+                  );
+                  
+                  await message.reply({
+                    content: `Imagens da inscrição #${applicationId} atualizadas com sucesso!`,
+                    flags: MessageFlags.Ephemeral
+                  });
+                  
+                  // Atualizar a mensagem original
+                  const [updatedRows] = await db.execute(
+                    `SELECT * FROM ${table} WHERE id = ?`,
+                    [applicationId]
+                  );
+                  
+                  if (updatedRows.length > 0) {
+                    const originalMessage = await interaction.channel.messages.fetch(interaction.message.id).catch(() => null);
+                    if (originalMessage) {
+                      await originalMessage.delete().catch(() => {});
+                      await sendApplicationEmbed(interaction.channel, updatedRows[0], db);
+                    }
+                  }
+                  
+                  collector.stop();
+                } catch (error) {
+                  console.error('Erro ao atualizar imagens:', error);
+                  await message.reply({
+                    content: 'Ocorreu um erro ao atualizar as imagens.',
+                    flags: MessageFlags.Ephemeral
+                  });
+                }
+              });
+              
+              collector.on('end', (collected, reason) => {
+                if (reason === 'time' && collected.size === 0) {
+                  interaction.followUp({
+                    content: 'Tempo esgotado para envio de imagens. Nenhuma alteração foi feita.',
+                    flags: MessageFlags.Ephemeral
+                  }).catch(console.error);
+                }
+              });
+              
+            } catch (error) {
+              console.error('❌ Erro ao editar imagens:', error);
+              await interaction.reply({
+                content: 'Ocorreu um erro ao preparar a edição de imagens.',
+                flags: MessageFlags.Ephemeral
+              }).catch(console.error);
+            }
+            return;
+          }
         } catch (error) {
           console.error('❌ Erro ao processar interação:', error);
           interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', flags: MessageFlags.Ephemeral }).catch(console.error);

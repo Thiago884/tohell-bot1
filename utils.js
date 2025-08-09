@@ -59,7 +59,7 @@ function isValidImageUrl(url) {
   }
 }
 
-// Função para processar URLs de imagens (corrigida)
+// Função para processar URLs de imagens (atualizada)
 function processImageUrls(imageData) {
   try {
     // Se for string, tentar parsear como JSON
@@ -68,19 +68,19 @@ function processImageUrls(imageData) {
     // Converter para array se não for
     const urlArray = Array.isArray(urls) ? urls : [urls];
     
-    // Mapear para URLs completas se necessário e filtrar URLs inválidas
-    return urlArray.map(url => {
-      if (!url) return null;
-      
-      // Verifica se é uma URL válida
+    // Filtrar URLs válidas (Discord ou HTTP)
+    return urlArray.filter(url => {
+      if (!url) return false;
       try {
-        let processedUrl = url.startsWith('http') ? url : `${BASE_URL}${url.replace(/^\/+/, '')}`;
-        new URL(processedUrl); // Isso vai lançar erro se não for URL válida
-        return processedUrl;
+        const parsed = new URL(url);
+        return parsed.protocol === 'http:' || 
+               parsed.protocol === 'https:' ||
+               parsed.hostname === 'cdn.discordapp.com' ||
+               parsed.hostname === 'media.discordapp.net';
       } catch {
-        return null;
+        return false;
       }
-    }).filter(url => url !== null);
+    });
   } catch (error) {
     console.error('Erro ao processar URLs de imagem:', error);
     return [];
