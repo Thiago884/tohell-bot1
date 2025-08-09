@@ -1161,72 +1161,86 @@ function setupEvents(client, db) {
                 screenshots = rows[0].screenshot_path ? [rows[0].screenshot_path] : [];
               }
               
-              // Criar modal de edição de imagens
-              const modal = new ModalBuilder()
-                .setCustomId(`edit_images_modal_${applicationId}_${status}`)
-                .setTitle(`Editar Imagens da Inscrição #${applicationId}`);
+              // Criar mensagem de instrução para upload
+              const embed = new EmbedBuilder()
+                .setColor('#0099ff')
+                .setTitle(`📸 Editar Imagens - Inscrição #${applicationId}`)
+                .setDescription('Por favor, envie as novas imagens como anexos nesta conversa.\n\n' +
+                              '⚠️ As imagens atuais serão substituídas pelas novas.\n' +
+                              '⏳ Você tem 5 minutos para enviar as imagens.')
+                .addFields(
+                  { name: 'Imagens Atuais', value: screenshots.length > 0 ? 
+                    screenshots.map((url, i) => `${i+1}. [Link](${url})`).join('\n') : 
+                    'Nenhuma imagem cadastrada' }
+                );
               
-              // Adicionar instruções
-              const instructions = new TextInputBuilder()
-                .setCustomId('instructions')
-                .setLabel('Instruções')
-                .setStyle(TextInputStyle.Paragraph)
-                .setValue('Envie as novas imagens como anexos nesta mensagem após fechar este modal. As imagens atuais serão substituídas.')
-                .setRequired(false);
+              await interaction.reply({ 
+                embeds: [embed],
+                flags: MessageFlags.Ephemeral
+              });
               
-              // Lista de imagens atuais
-              const currentImages = new TextInputBuilder()
-                .setCustomId('current_images')
-                .setLabel('Imagens Atuais (apenas leitura)')
-                .setStyle(TextInputStyle.Paragraph)
-                .setValue(screenshots.map((url, idx) => `${idx + 1}. ${url}`).join('\n') || 'Nenhuma imagem')
-                .setRequired(false);
+              // Coletar novas imagens
+              const filter = m => m.author.id === interaction.user.id && m.attachments.size > 0;
+              const collector = interaction.channel.createMessageCollector({ 
+                filter, 
+                time: 300000, // 5 minutos
+                max: 10 // Máximo 10 imagens
+              });
               
-              modal.addComponents(
-                new ActionRowBuilder().addComponents(instructions),
-                new ActionRowBuilder().addComponents(currentImages)
-              );
-              
-              await interaction.showModal(modal);
-              
-              // Esperar pelo envio de arquivos após o modal
-              const filter = (m) => m.author.id === interaction.user.id && m.attachments.size > 0;
-              const collector = interaction.channel.createMessageCollector({ filter, time: 60000 });
-              
-              collector.on('collect', async (message) => {
+              collector.on('collect', async message => {
                 try {
-                  const newImages = message.attachments.map(att => att.url);
+                  const attachments = Array.from(message.attachments.values());
+                  const imageUrls = attachments.map(att => att.url);
+                  
+                  // Validar que são realmente imagens
+                  const validImages = imageUrls.filter(url => 
+                    /\.(jpg|jpeg|png|gif|webp)$/i.test(url)
+                  );
+                  
+                  if (validImages.length === 0) {
+                    await message.reply({
+                      content: 'Nenhuma imagem válida encontrada. Por favor, envie apenas imagens (JPG, PNG, GIF, WEBP).',
+                      flags: MessageFlags.Ephemeral
+                    });
+                    return;
+                  }
                   
                   // Atualizar no banco de dados
                   await db.execute(
                     `UPDATE ${table} SET screenshot_path = ? WHERE id = ?`,
-                    [JSON.stringify(newImages), applicationId]
+                    [JSON.stringify(validImages), applicationId]
                   );
                   
+                  // Confirmar atualização
                   await message.reply({
-                    content: `Imagens da inscrição #${applicationId} atualizadas com sucesso!`,
+                    content: `✅ ${validImages.length} imagem(ns) atualizada(s) com sucesso!`,
                     flags: MessageFlags.Ephemeral
                   });
                   
-                  // Atualizar a mensagem original
-                  const [updatedRows] = await db.execute(
+                  // Atualizar a mensagem original da inscrição
+                  const [updatedApp] = await db.execute(
                     `SELECT * FROM ${table} WHERE id = ?`,
                     [applicationId]
                   );
                   
-                  if (updatedRows.length > 0) {
-                    const originalMessage = await interaction.channel.messages.fetch(interaction.message.id).catch(() => null);
+                  if (updatedApp.length > 0) {
+                    const messages = await interaction.channel.messages.fetch({ limit: 50 });
+                    const originalMessage = messages.find(msg => 
+                      msg.embeds.length > 0 && 
+                      msg.embeds[0].title.includes(`Inscrição #${applicationId}`)
+                    );
+                    
                     if (originalMessage) {
                       await originalMessage.delete().catch(() => {});
-                      await sendApplicationEmbed(interaction.channel, updatedRows[0], db);
+                      await sendApplicationEmbed(interaction.channel, updatedApp[0], db);
                     }
                   }
                   
                   collector.stop();
                 } catch (error) {
-                  console.error('Erro ao atualizar imagens:', error);
+                  console.error('Erro ao processar imagens:', error);
                   await message.reply({
-                    content: 'Ocorreu um erro ao atualizar as imagens.',
+                    content: 'Ocorreu um erro ao processar as imagens. Por favor, tente novamente.',
                     flags: MessageFlags.Ephemeral
                   });
                 }
@@ -1235,7 +1249,7 @@ function setupEvents(client, db) {
               collector.on('end', (collected, reason) => {
                 if (reason === 'time' && collected.size === 0) {
                   interaction.followUp({
-                    content: 'Tempo esgotado para envio de imagens. Nenhuma alteração foi feita.',
+                    content: 'Tempo esgotado. Nenhuma imagem foi enviada.',
                     flags: MessageFlags.Ephemeral
                   }).catch(console.error);
                 }

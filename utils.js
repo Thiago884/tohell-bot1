@@ -49,13 +49,24 @@ function formatBrazilianDate(dateString) {
   }
 }
 
-// Função para validar URL de imagem
+// Função para validar URL de imagem (atualizada)
 function isValidImageUrl(url) {
+  if (!url) return false;
+  
   try {
-    new URL(url);
-    return /\.(jpg|jpeg|png|gif|webp)$/i.test(url);
+    const parsed = new URL(url);
+    const validHosts = [
+      'cdn.discordapp.com',
+      'media.discordapp.net',
+      new URL(BASE_URL).hostname
+    ];
+    
+    // Verifica se é um host permitido ou se é uma URL de imagem válida
+    return validHosts.includes(parsed.hostname) || 
+           /\.(jpg|jpeg|png|gif|webp)(\?.*)?$/i.test(url);
   } catch {
-    return false;
+    // Se não for uma URL válida, verifica se termina com extensão de imagem
+    return /\.(jpg|jpeg|png|gif|webp)$/i.test(url);
   }
 }
 
@@ -68,19 +79,16 @@ function processImageUrls(imageData) {
     // Converter para array se não for
     const urlArray = Array.isArray(urls) ? urls : [urls];
     
-    // Filtrar URLs válidas (Discord ou HTTP)
-    return urlArray.filter(url => {
-      if (!url) return false;
-      try {
-        const parsed = new URL(url);
-        return parsed.protocol === 'http:' || 
-               parsed.protocol === 'https:' ||
-               parsed.hostname === 'cdn.discordapp.com' ||
-               parsed.hostname === 'media.discordapp.net';
-      } catch {
-        return false;
-      }
-    });
+    // Mapear para URLs completas se necessário e filtrar vazios
+    return urlArray.map(url => {
+      if (!url) return null;
+      // Se já é uma URL completa, retorna como está
+      if (url.startsWith('http')) return url;
+      // Se começa com /, adiciona base URL
+      if (url.startsWith('/')) return `${BASE_URL}${url.substring(1)}`;
+      // Caso contrário, assume que é um caminho relativo
+      return `${BASE_URL}${url}`;
+    }).filter(url => url !== null);
   } catch (error) {
     console.error('Erro ao processar URLs de imagem:', error);
     return [];
