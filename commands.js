@@ -501,7 +501,7 @@ async function searchApplications(context, args, dbConnection) {
   }
 }
 
-// Função para enviar embed de inscrição (atualizada)
+// Função para enviar embed de inscrição (atualizada com botão melhorado)
 async function sendApplicationEmbed(channel, application, dbConnection) {
   const screenshots = processImageUrls(application.screenshot_path);
   const screenshotLinks = screenshots.slice(0, 5).map((screenshot, index) => 
@@ -533,8 +533,9 @@ async function sendApplicationEmbed(channel, application, dbConnection) {
       .setDisabled(screenshots.length === 0),
     new ButtonBuilder()
       .setCustomId(`edit_images_${application.id}_${application.status || 'pendente'}`)
-      .setLabel('Editar Imagens')
+      .setLabel('🖼️ Editar Imagens')
       .setStyle(ButtonStyle.Primary)
+      .setEmoji('🖼️')
   );
 
   // Apenas adiciona botões de aprovar/rejeitar se não for aprovado
