@@ -257,10 +257,15 @@ async function updateImageEditor(interaction, state) {
     });
   } catch (error) {
     console.error('❌ Erro ao atualizar editor de imagens:', error);
+    // Verifica se já foi respondido antes de tentar responder novamente
     if (!interaction.replied && !interaction.deferred) {
       await interaction.reply({
         content: 'Ocorreu um erro ao atualizar o editor de imagens.',
         flags: MessageFlags.Ephemeral
+      }).catch(console.error);
+    } else if (interaction.deferred) {
+      await interaction.editReply({
+        content: 'Ocorreu um erro ao atualizar o editor de imagens.'
       }).catch(console.error);
     }
   }
@@ -1494,10 +1499,15 @@ function setupEvents(client, db) {
               
             } catch (error) {
               console.error('❌ Erro ao editar imagens:', error);
+              // Verifica o estado da interação antes de responder
               if (!interaction.replied && !interaction.deferred) {
                 await interaction.reply({
                   content: 'Ocorreu um erro ao preparar o editor de imagens.',
                   flags: MessageFlags.Ephemeral
+                }).catch(console.error);
+              } else if (interaction.deferred) {
+                await interaction.editReply({
+                  content: 'Ocorreu um erro ao preparar o editor de imagens.'
                 }).catch(console.error);
               }
             }
