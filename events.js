@@ -525,6 +525,7 @@ function setupEvents(client, db) {
                   { name: 'Data da Whitelist', value: formatBrazilianDate(result.whitelisted.data_criacao), inline: true }
                 );
               }
+
               // Adicionar coordenadas se disponíveis
               if (result.geoInfo?.coordinates) {
                 embed.addFields(
@@ -1164,29 +1165,19 @@ function setupEvents(client, db) {
               // Processa as URLs para garantir que são absolutas
               const processedImages = processImageUrls(currentImages);
               
-              // Criar embed com pré-visualização
+              // Criar embed com visualização das imagens
               const embed = new EmbedBuilder()
                 .setColor('#0099ff')
-                .setTitle(`📸 Editor de Imagens - Inscrição #${applicationId}`)
-                .setDescription('**Instruções:**\n'
-                  + '1. Envie as novas imagens como anexos nesta conversa\n'
-                  + '2. Você pode enviar várias imagens de uma vez\n'
-                  + '3. Reorganize as imagens arrastando as miniaturas\n'
-                  + '4. Clique em "Confirmar" quando terminar\n\n'
-                  + '⚠️ As imagens atuais serão substituídas pelas novas.')
-                .setFooter({ text: 'Você tem 5 minutos para completar esta ação' });
+                .setTitle(`🖼️ Gerenciador de Imagens - Inscrição #${applicationId}`)
+                .setDescription('**Selecione as imagens que deseja remover**\nClique nos botões abaixo para gerenciar:');
               
-              // Adicionar miniaturas das imagens atuais se existirem
+              // Adicionar miniaturas das imagens atuais
               if (processedImages.length > 0) {
+                embed.setImage(processedImages[0]); // Mostra a primeira imagem como exemplo
                 embed.addFields({
-                  name: 'Imagens Atuais (Clique para visualizar)',
-                  value: processedImages.map((url, i) => `${i+1}. [Imagem ${i+1}](${url})`).join('\n')
+                  name: `Imagens Atuais (${processedImages.length})`,
+                  value: 'Clique nos botões abaixo para remover imagens específicas'
                 });
-                
-                // Adicionar primeira imagem como thumbnail se for válida
-                if (isValidImageUrl(processedImages[0])) {
-                  embed.setThumbnail(processedImages[0]);
-                }
               } else {
                 embed.addFields({
                   name: 'Imagens Atuais',
@@ -1194,131 +1185,158 @@ function setupEvents(client, db) {
                 });
               }
               
-              // Botões de ação
-              const actionRow = new ActionRowBuilder().addComponents(
+              // Criar botões de ação
+              const actionRow1 = new ActionRowBuilder();
+              const actionRow2 = new ActionRowBuilder();
+              
+              // Botões para remover imagens específicas (máximo 5 por linha)
+              processedImages.slice(0, 5).forEach((img, index) => {
+                actionRow1.addComponents(
+                  new ButtonBuilder()
+                    .setCustomId(`img_remove_${applicationId}_${index}_${status}`)
+                    .setLabel(`Remover #${index + 1}`)
+                    .setStyle(ButtonStyle.Danger)
+                    .setEmoji('❌')
+                );
+              });
+              
+              if (processedImages.length > 5) {
+                processedImages.slice(5, 10).forEach((img, index) => {
+                  actionRow2.addComponents(
+                    new ButtonBuilder()
+                      .setCustomId(`img_remove_${applicationId}_${index + 5}_${status}`)
+                      .setLabel(`Remover #${index + 6}`)
+                      .setStyle(ButtonStyle.Danger)
+                      .setEmoji('❌')
+                  );
+                });
+              }
+              
+              // Botões principais
+              const mainActionRow = new ActionRowBuilder().addComponents(
                 new ButtonBuilder()
-                  .setCustomId(`img_confirm_${applicationId}_${status}`)
-                  .setLabel('✅ Confirmar')
-                  .setStyle(ButtonStyle.Success),
-                new ButtonBuilder()
-                  .setCustomId(`img_cancel_${applicationId}`)
-                  .setLabel('❌ Cancelar')
-                  .setStyle(ButtonStyle.Danger),
+                  .setCustomId(`img_add_${applicationId}_${status}`)
+                  .setLabel('Adicionar Imagens')
+                  .setStyle(ButtonStyle.Success)
+                  .setEmoji('➕'),
                 new ButtonBuilder()
                   .setCustomId(`img_clear_${applicationId}_${status}`)
-                  .setLabel('🗑️ Limpar Tudo')
+                  .setLabel('Limpar Todas')
+                  .setStyle(ButtonStyle.Danger)
+                  .setEmoji('🗑️'),
+                new ButtonBuilder()
+                  .setCustomId(`img_save_${applicationId}_${status}`)
+                  .setLabel('Salvar Alterações')
+                  .setStyle(ButtonStyle.Primary)
+                  .setEmoji('💾'),
+                new ButtonBuilder()
+                  .setCustomId(`img_cancel_${applicationId}`)
+                  .setLabel('Cancelar')
                   .setStyle(ButtonStyle.Secondary)
+                  .setEmoji('✖️')
               );
               
+              // Enviar mensagem com os componentes
               await interaction.reply({ 
                 embeds: [embed],
-                components: [actionRow],
+                components: processedImages.length > 0 ? 
+                  [actionRow1, actionRow2, mainActionRow] : 
+                  [mainActionRow],
                 flags: MessageFlags.Ephemeral
               });
               
-              // Objeto para armazenar o estado das imagens durante a edição
-              const editState = {
-                userId: interaction.user.id,
-                applicationId,
-                status,
+              // Criar um coletor de interações
+              const filter = i => i.user.id === interaction.user.id;
+              const collector = interaction.channel.createMessageComponentCollector({ 
+                filter, 
+                time: 300000 // 5 minutos
+              });
+              
+              // Estado das imagens durante a edição
+              let editingState = {
                 images: [...processedImages],
-                startTime: Date.now()
+                status,
+                applicationId,
+                table
               };
               
-              // Função para atualizar a mensagem com o estado atual
-              const updateEditMessage = async () => {
-                const updatedEmbed = new EmbedBuilder()
-                  .setColor('#0099ff')
-                  .setTitle(`📸 Editor de Imagens - Inscrição #${applicationId}`)
-                  .setDescription('**Imagens para upload:**\n'
-                    + (editState.images.length > 0 
-                      ? editState.images.map((url, i) => `${i+1}. [Imagem ${i+1}](${url})`).join('\n')
-                      : 'Nenhuma imagem adicionada ainda'))
-                  .setFooter({ 
-                    text: `Tempo restante: ${Math.max(0, 300 - Math.floor((Date.now() - editState.startTime)/1000))}s | Arraste para reordenar` 
-                  });
-                
-                if (editState.images.length > 0 && isValidImageUrl(editState.images[0])) {
-                  updatedEmbed.setThumbnail(editState.images[0]);
-                }
-                
+              collector.on('collect', async i => {
                 try {
-                  await interaction.editReply({
-                    embeds: [updatedEmbed],
-                    components: [actionRow]
-                  });
-                } catch (error) {
-                  console.error('Erro ao atualizar mensagem de edição:', error);
-                }
-              };
-              
-              // Coletor de mensagens para upload de imagens
-              const messageFilter = m => m.author.id === interaction.user.id && m.attachments.size > 0;
-              const messageCollector = interaction.channel.createMessageCollector({ 
-                filter: messageFilter, 
-                time: 300000, // 5 minutos
-              });
-              
-              // Coletor de interações para botões
-              const buttonFilter = i => i.user.id === interaction.user.id && 
-                (i.customId.startsWith(`img_confirm_${applicationId}`) || 
-                 i.customId.startsWith(`img_cancel_${applicationId}`) ||
-                 i.customId.startsWith(`img_clear_${applicationId}`));
-              
-              const buttonCollector = interaction.channel.createMessageComponentCollector({
-                filter: buttonFilter,
-                time: 300000
-              });
-              
-              messageCollector.on('collect', async message => {
-                try {
-                  // Adiciona todas as imagens válidas
-                  const newImages = Array.from(message.attachments.values())
-                    .filter(att => isValidImageUrl(att.url))
-                    .map(att => att.url);
-                  
-                  if (newImages.length > 0) {
-                    editState.images = [...editState.images, ...newImages];
-                    await updateEditMessage();
-                    
-                    // Confirmação de recebimento
-                    await message.reply({
-                      content: `✅ ${newImages.length} imagem(ns) adicionada(s)! Total: ${editState.images.length}`,
-                      flags: MessageFlags.Ephemeral
-                    }).catch(console.error);
-                  } else {
-                    await message.reply({
-                      content: 'Nenhuma imagem válida encontrada. Por favor, envie apenas imagens (JPG, PNG, GIF, WEBP).',
-                      flags: MessageFlags.Ephemeral
-                    }).catch(console.error);
-                  }
-                  
-                  // Delete a mensagem do usuário para manter o chat limpo
-                  await message.delete().catch(() => {});
-                } catch (error) {
-                  console.error('Erro ao processar mensagem:', error);
-                }
-              });
-              
-              buttonCollector.on('collect', async buttonInteraction => {
-                try {
-                  if (buttonInteraction.customId.startsWith(`img_confirm_${applicationId}`)) {
-                    // Confirmar e salvar
-                    if (editState.images.length === 0) {
-                      await buttonInteraction.reply({
-                        content: 'Nenhuma imagem para salvar. Adicione imagens antes de confirmar.',
+                  if (i.customId.startsWith(`img_remove_${applicationId}_`)) {
+                    // Remover imagem específica
+                    const index = parseInt(i.customId.split('_')[3]);
+                    if (index >= 0 && index < editingState.images.length) {
+                      editingState.images.splice(index, 1);
+                      
+                      // Atualizar a mensagem
+                      await updateImageEditor(i, editingState);
+                      await i.reply({
+                        content: `Imagem #${index + 1} removida.`,
                         flags: MessageFlags.Ephemeral
                       });
-                      return;
                     }
+                  } 
+                  else if (i.customId.startsWith(`img_add_${applicationId}`)) {
+                    // Adicionar novas imagens
+                    await i.reply({
+                      content: 'Envie as novas imagens como anexos nesta conversa. Você pode enviar várias de uma vez.',
+                      flags: MessageFlags.Ephemeral
+                    });
                     
+                    // Coletor de mensagens com imagens
+                    const msgFilter = m => m.author.id === i.user.id && m.attachments.size > 0;
+                    const msgCollector = i.channel.createMessageCollector({ 
+                      filter: msgFilter, 
+                      time: 60000 // 1 minuto
+                    });
+                    
+                    msgCollector.on('collect', async m => {
+                      const newImages = Array.from(m.attachments.values())
+                        .filter(att => isValidImageUrl(att.url))
+                        .map(att => att.url);
+                      
+                      if (newImages.length > 0) {
+                        editingState.images = [...editingState.images, ...newImages];
+                        await updateImageEditor(i, editingState);
+                        await m.reply({
+                          content: `✅ ${newImages.length} imagem(ns) adicionada(s)! Total: ${editingState.images.length}`,
+                          flags: MessageFlags.Ephemeral
+                        });
+                      } else {
+                        await m.reply({
+                          content: 'Nenhuma imagem válida encontrada. Por favor, envie apenas imagens (JPG, PNG, GIF, WEBP).',
+                          flags: MessageFlags.Ephemeral
+                        });
+                      }
+                      
+                      await m.delete().catch(() => {});
+                    });
+                    
+                    msgCollector.on('end', () => {
+                      i.editReply({
+                        content: 'Tempo para adicionar imagens encerrado.',
+                        flags: MessageFlags.Ephemeral
+                      }).catch(() => {});
+                    });
+                  }
+                  else if (i.customId.startsWith(`img_clear_${applicationId}`)) {
+                    // Limpar todas as imagens
+                    editingState.images = [];
+                    await updateImageEditor(i, editingState);
+                    await i.reply({
+                      content: 'Todas as imagens foram removidas.',
+                      flags: MessageFlags.Ephemeral
+                    });
+                  }
+                  else if (i.customId.startsWith(`img_save_${applicationId}`)) {
+                    // Salvar alterações
                     await db.execute(
                       `UPDATE ${table} SET screenshot_path = ? WHERE id = ?`,
-                      [JSON.stringify(editState.images), applicationId]
+                      [JSON.stringify(editingState.images), applicationId]
                     );
                     
-                    await buttonInteraction.reply({
-                      content: `✅ ${editState.images.length} imagem(ns) salva(s) com sucesso!`,
+                    await i.reply({
+                      content: `✅ Alterações salvas com sucesso! Total de imagens: ${editingState.images.length}`,
                       flags: MessageFlags.Ephemeral
                     });
                     
@@ -1341,54 +1359,35 @@ function setupEvents(client, db) {
                       }
                     }
                     
-                    // Encerrar coletores
-                    messageCollector.stop();
-                    buttonCollector.stop();
-                    
-                    // Deletar mensagem de edição
+                    collector.stop();
                     await interaction.deleteReply().catch(() => {});
-                    
-                  } else if (buttonInteraction.customId.startsWith(`img_cancel_${applicationId}`)) {
-                    // Cancelar
-                    await buttonInteraction.reply({
-                      content: 'Edição de imagens cancelada.',
+                  }
+                  else if (i.customId.startsWith(`img_cancel_${applicationId}`)) {
+                    // Cancelar edição
+                    await i.reply({
+                      content: 'Edição cancelada. Nenhuma alteração foi salva.',
                       flags: MessageFlags.Ephemeral
                     });
-                    
-                    messageCollector.stop();
-                    buttonCollector.stop();
+                    collector.stop();
                     await interaction.deleteReply().catch(() => {});
-                    
-                  } else if (buttonInteraction.customId.startsWith(`img_clear_${applicationId}`)) {
-                    // Limpar tudo
-                    editState.images = [];
-                    await updateEditMessage();
-                    
-                    await buttonInteraction.reply({
-                      content: 'Todas as imagens foram removidas. Adicione novas imagens ou cancele.',
-                      flags: MessageFlags.Ephemeral
-                    });
                   }
                 } catch (error) {
-                  console.error('Erro ao processar botão:', error);
+                  console.error('Erro ao processar interação de edição:', error);
+                  await i.reply({
+                    content: 'Ocorreu um erro ao processar sua ação.',
+                    flags: MessageFlags.Ephemeral
+                  }).catch(() => {});
                 }
               });
               
-              messageCollector.on('end', (collected, reason) => {
-                if (reason === 'time') {
-                  interaction.followUp({
-                    content: 'Tempo esgotado. A edição de imagens foi encerrada.',
-                    flags: MessageFlags.Ephemeral
-                  }).catch(console.error);
-                }
-                // Limpar a mensagem de edição se ainda existir
+              collector.on('end', () => {
                 interaction.deleteReply().catch(() => {});
               });
               
             } catch (error) {
               console.error('❌ Erro ao editar imagens:', error);
               await interaction.reply({
-                content: 'Ocorreu um erro ao preparar a edição de imagens.',
+                content: 'Ocorreu um erro ao preparar o editor de imagens.',
                 flags: MessageFlags.Ephemeral
               }).catch(console.error);
             }
@@ -1522,6 +1521,87 @@ function setupEvents(client, db) {
         console.error('❌ Erro ao enviar mensagem de erro:', nestedError);
       }
     }
+  });
+}
+
+// Função auxiliar para atualizar o editor de imagens
+async function updateImageEditor(interaction, state) {
+  const { images, applicationId, status } = state;
+  
+  // Criar embed atualizado
+  const embed = new EmbedBuilder()
+    .setColor('#0099ff')
+    .setTitle(`🖼️ Gerenciador de Imagens - Inscrição #${applicationId}`)
+    .setDescription('**Selecione as imagens que deseja remover**\nClique nos botões abaixo para gerenciar:');
+  
+  if (images.length > 0) {
+    embed.setImage(images[0]); // Mostra a primeira imagem como exemplo
+    embed.addFields({
+      name: `Imagens Atuais (${images.length})`,
+      value: 'Clique nos botões abaixo para remover imagens específicas'
+    });
+  } else {
+    embed.addFields({
+      name: 'Imagens Atuais',
+      value: 'Nenhuma imagem cadastrada'
+    });
+  }
+  
+  // Recriar os botões
+  const actionRow1 = new ActionRowBuilder();
+  const actionRow2 = new ActionRowBuilder();
+  
+  images.slice(0, 5).forEach((img, index) => {
+    actionRow1.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`img_remove_${applicationId}_${index}_${status}`)
+        .setLabel(`Remover #${index + 1}`)
+        .setStyle(ButtonStyle.Danger)
+        .setEmoji('❌')
+    );
+  });
+  
+  if (images.length > 5) {
+    images.slice(5, 10).forEach((img, index) => {
+      actionRow2.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`img_remove_${applicationId}_${index + 5}_${status}`)
+          .setLabel(`Remover #${index + 6}`)
+          .setStyle(ButtonStyle.Danger)
+          .setEmoji('❌')
+      );
+    });
+  }
+  
+  const mainActionRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`img_add_${applicationId}_${status}`)
+      .setLabel('Adicionar Imagens')
+      .setStyle(ButtonStyle.Success)
+      .setEmoji('➕'),
+    new ButtonBuilder()
+      .setCustomId(`img_clear_${applicationId}_${status}`)
+      .setLabel('Limpar Todas')
+      .setStyle(ButtonStyle.Danger)
+      .setEmoji('🗑️'),
+    new ButtonBuilder()
+      .setCustomId(`img_save_${applicationId}_${status}`)
+      .setLabel('Salvar Alterações')
+      .setStyle(ButtonStyle.Primary)
+      .setEmoji('💾'),
+    new ButtonBuilder()
+      .setCustomId(`img_cancel_${applicationId}`)
+      .setLabel('Cancelar')
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji('✖️')
+  );
+  
+  // Atualizar a mensagem
+  await interaction.editReply({
+    embeds: [embed],
+    components: images.length > 0 ? 
+      [actionRow1, actionRow2, mainActionRow] : 
+      [mainActionRow]
   });
 }
 

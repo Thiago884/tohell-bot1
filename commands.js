@@ -533,7 +533,7 @@ async function sendApplicationEmbed(channel, application, dbConnection) {
       .setDisabled(screenshots.length === 0),
     new ButtonBuilder()
       .setCustomId(`edit_images_${application.id}_${application.status || 'pendente'}`)
-      .setLabel('🖼️ Editar Imagens')
+      .setLabel('Gerenciar Imagens')
       .setStyle(ButtonStyle.Primary)
       .setEmoji('🖼️')
   );
