@@ -176,6 +176,11 @@ async function updateImageEditor(interaction, state) {
   
   try {
     // Verifica se a interação já foi respondida
+    if (interaction.replied && !interaction.message) {
+      return;
+    }
+
+    // Se não foi respondida nem deferida, deferir
     if (!interaction.replied && !interaction.deferred) {
       await interaction.deferUpdate().catch(console.error);
     }
@@ -428,7 +433,7 @@ function setupEvents(client, db) {
             const action = interaction.options.getString('acao');
             const role = interaction.options.getRole('cargo');
 
-            await interaction.deferReply({ ephemeral: true }).catch(console.error);
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(console.error);
 
             try {
               if (action === 'list') {
@@ -1240,10 +1245,13 @@ function setupEvents(client, db) {
             const [_, __, applicationId, status] = interaction.customId.split('_');
             
             try {
-              // Responder à interação primeiro
-              if (!interaction.replied && !interaction.deferred) {
-                await interaction.deferReply({ ephemeral: true }).catch(console.error);
+              // Verificar se a interação já foi respondida
+              if (interaction.replied || interaction.deferred) {
+                return;
               }
+
+              // Responder à interação primeiro
+              await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(console.error);
 
               const table = status === 'aprovado' ? 'inscricoes' : 'inscricoes_pendentes';
               
@@ -1253,7 +1261,7 @@ function setupEvents(client, db) {
               );
               
               if (rows.length === 0) {
-                return interaction.reply({
+                return interaction.editReply({
                   content: 'Inscrição não encontrada.',
                   flags: MessageFlags.Ephemeral
                 }).catch(console.error);
@@ -1343,12 +1351,11 @@ function setupEvents(client, db) {
               );
               
               // Enviar mensagem com os componentes
-              await interaction.reply({ 
+              await interaction.editReply({ 
                 embeds: [embed],
                 components: processedImages.length > 0 ? 
                   [actionRow1, actionRow2, mainActionRow] : 
-                  [mainActionRow],
-                flags: MessageFlags.Ephemeral
+                  [mainActionRow]
               });
               
               // Criar um coletor de interações
@@ -1368,10 +1375,13 @@ function setupEvents(client, db) {
               
               collector.on('collect', async i => {
                 try {
-                  // Deferir a interação primeiro
-                  if (!i.replied && !i.deferred) {
-                    await i.deferUpdate().catch(console.error);
+                  // Verificar se a interação já foi respondida
+                  if (i.replied || i.deferred) {
+                    return;
                   }
+
+                  // Deferir a interação primeiro
+                  await i.deferUpdate().catch(console.error);
 
                   if (i.customId.startsWith(`img_remove_${applicationId}_`)) {
                     // Remover imagem específica
@@ -1383,7 +1393,7 @@ function setupEvents(client, db) {
                       await updateImageEditor(i, editingState);
                       await i.followUp({
                         content: `Imagem #${index + 1} removida.`,
-                        ephemeral: true
+                        flags: MessageFlags.Ephemeral
                       }).catch(console.error);
                     }
                   } 
@@ -1487,7 +1497,7 @@ function setupEvents(client, db) {
                   if (!i.replied && !i.deferred) {
                     await i.reply({
                       content: 'Ocorreu um erro ao processar sua ação.',
-                      ephemeral: true
+                      flags: MessageFlags.Ephemeral
                     }).catch(() => {});
                   }
                 }
@@ -1533,7 +1543,7 @@ function setupEvents(client, db) {
             const id = interaction.customId.split('_')[2];
             const reason = interaction.fields.getTextInputValue('reject_reason');
             
-            await interaction.deferReply({ ephemeral: true }).catch(console.error);
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(console.error);
             await rejectApplication(interaction, id, reason, db);
           }
 
