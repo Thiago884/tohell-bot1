@@ -10,7 +10,11 @@ const dbConfig = {
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
-  timezone: 'Z' // Usar UTC para evitar problemas com fusos horários
+  timezone: 'Z', // Usar UTC para evitar problemas com fusos horários
+  reconnect: true,
+  acquireTimeout: 60000,
+  timeout: 60000,
+  connectTimeout: 10000
 };
 
 let dbConnection;
@@ -27,17 +31,19 @@ async function connectDB() {
     
     // Verificação periódica da conexão
     setInterval(async () => {
+      if (isShuttingDown) return;
+      
       try {
         await dbConnection.query('SELECT 1');
       } catch (err) {
-        console.error('❌ Erro na verificação de conexão com o DB:', err);
+        console.error('❌ Erro na verificação de conexão com o DB:', err.message);
         await reconnectDB();
       }
     }, 60000); // Verificar a cada 1 minuto
     
     return dbConnection;
   } catch (error) {
-    console.error('❌ Erro ao conectar ao banco de dados:', error);
+    console.error('❌ Erro ao conectar ao banco de dados:', error.message);
     await reconnectDB();
   }
 }
@@ -216,13 +222,18 @@ async function reconnectDB() {
   console.log('🔄 Tentando reconectar ao banco de dados...');
   try {
     if (dbConnection) {
-      await dbConnection.end().catch(() => {});
+      try {
+        await dbConnection.end().catch(() => {});
+      } catch (endError) {
+        console.log('⚠️ Erro ao encerrar conexão anterior:', endError.message);
+      }
     }
+    
     dbConnection = await mysql.createPool(dbConfig);
     console.log('✅ Reconectado ao banco de dados com sucesso');
     return dbConnection;
   } catch (err) {
-    console.error('❌ Falha na reconexão com o DB:', err);
+    console.error('❌ Falha na reconexão com o DB:', err.message);
     // Tentar novamente após 5 segundos
     setTimeout(reconnectDB, 5000);
     return null;
@@ -240,10 +251,42 @@ async function checkConnection() {
   }
 }
 
+// Função para verificar se a conexão está ativa
+async function isConnectionActive() {
+  try {
+    if (!dbConnection) return false;
+    await dbConnection.execute('SELECT 1');
+    return true;
+  } catch (error) {
+    console.log('⚠️ Conexão com DB não está ativa:', error.message);
+    return false;
+  }
+}
+
+// Função para executar query com verificação de conexão
+async function executeQuery(query, params = []) {
+  try {
+    if (!await isConnectionActive()) {
+      console.log('🔄 Reconectando ao DB antes da query...');
+      await reconnectDB();
+    }
+    
+    if (!dbConnection) {
+      throw new Error('Conexão com DB não disponível');
+    }
+    
+    const [result] = await dbConnection.execute(query, params);
+    return result;
+  } catch (error) {
+    console.error('❌ Erro na execução da query:', error.message);
+    throw error;
+  }
+}
+
 // Função para registrar logs do cron
 async function logCronMessage(message) {
   try {
-    await dbConnection.execute(
+    await executeQuery(
       'INSERT INTO cron_logs (message) VALUES (?)',
       [message]
     );
@@ -257,7 +300,7 @@ async function logCronMessage(message) {
 // Função para atualizar status do sistema
 async function updateSystemStatus(key, value) {
   try {
-    await dbConnection.execute(
+    await executeQuery(
       'INSERT INTO system_status (key_name, key_value) VALUES (?, ?) ' +
       'ON DUPLICATE KEY UPDATE key_value = VALUES(key_value)',
       [key, value]
@@ -272,7 +315,7 @@ async function updateSystemStatus(key, value) {
 // Função para obter status do sistema
 async function getSystemStatus(key) {
   try {
-    const [rows] = await dbConnection.execute(
+    const [rows] = await executeQuery(
       'SELECT key_value FROM system_status WHERE key_name = ?',
       [key]
     );
@@ -286,7 +329,7 @@ async function getSystemStatus(key) {
 // Função para registrar acesso de visitante
 async function logVisitor(ip, pagina, userAgent, referer) {
   try {
-    await dbConnection.execute(
+    await executeQuery(
       'INSERT INTO visitantes (ip, pagina, user_agent, referer) VALUES (?, ?, ?, ?)',
       [ip, pagina, userAgent, referer]
     );
@@ -300,7 +343,7 @@ async function logVisitor(ip, pagina, userAgent, referer) {
 // Função para registrar tentativa de login falha
 async function logFailedLoginAttempt(ip, username, userAgent) {
   try {
-    await dbConnection.execute(
+    await executeQuery(
       'INSERT INTO tentativas_login_falhas (ip, username, user_agent) VALUES (?, ?, ?)',
       [ip, username, userAgent]
     );
@@ -314,7 +357,7 @@ async function logFailedLoginAttempt(ip, username, userAgent) {
 // Função para atualizar/criar informações de IP
 async function updateIPInfo(ip, geoData) {
   try {
-    await dbConnection.execute(
+    await executeQuery(
       'INSERT INTO ips_info (ip, pais, pais_codigo, regiao, cidade, postal, provedor, latitude, longitude, timezone) ' +
       'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
       'ON DUPLICATE KEY UPDATE ' +
@@ -347,16 +390,47 @@ async function updateIPInfo(ip, geoData) {
   }
 }
 
+// Função para buscar inscrições pendentes (usada pelo checkNewApplications)
+async function getPendingApplicationsSince(lastChecked) {
+  try {
+    const [rows] = await executeQuery(
+      'SELECT * FROM inscricoes_pendentes WHERE data_inscricao > ? ORDER BY data_inscricao DESC',
+      [lastChecked]
+    );
+    return rows;
+  } catch (error) {
+    console.error('❌ Erro ao buscar inscrições pendentes:', error);
+    return [];
+  }
+}
+
+// Função para fechar a conexão gracefulmente
+async function closeConnection() {
+  isShuttingDown = true;
+  if (dbConnection) {
+    try {
+      await dbConnection.end();
+      console.log('🔌 Conexão com DB encerrada gracefulmente');
+    } catch (error) {
+      console.error('❌ Erro ao encerrar conexão com DB:', error);
+    }
+  }
+}
+
 module.exports = {
   connectDB,
   dbConnection,
   isShuttingDown,
   checkConnection,
   reconnectDB,
+  isConnectionActive,
+  executeQuery,
   logCronMessage,
   updateSystemStatus,
   getSystemStatus,
   logVisitor,
   logFailedLoginAttempt,
-  updateIPInfo
+  updateIPInfo,
+  getPendingApplicationsSince,
+  closeConnection
 };

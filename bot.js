@@ -5,7 +5,7 @@ require('dotenv').config();
 // Importações dos outros módulos
 const { setupCommands } = require('./commands');
 const { setupEvents } = require('./events');
-const { connectDB, isShuttingDown } = require('./database');
+const { connectDB } = require('./database');
 
 // Configurações do bot
 const client = new Client({
@@ -27,6 +27,9 @@ app.get('/health', (_, res) => res.status(200).json({ status: 'healthy' }));
 
 // Variável para armazenar a conexão com o banco de dados
 let db;
+
+// Variável global para controle de shutdown
+let isShuttingDown = false;
 
 // Inicialização do bot
 async function startBot() {
@@ -67,7 +70,7 @@ async function startBot() {
 function gracefulShutdown(server) {
   return async (signal) => {
     console.log(`🛑 Recebido ${signal}, encerrando graceful...`);
-    isShuttingDown = true;
+    isShuttingDown = true; // Atualiza a variável global
     
     try {
       // Desconectar o bot do Discord

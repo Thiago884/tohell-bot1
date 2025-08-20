@@ -131,7 +131,8 @@ async function checkNewApplications(client, db) {
   if (isShuttingDown) return;
   
   try {
-    if (!db) {
+    // Verifica se a conexão com o banco está válida
+    if (!db || !(await db.execute('SELECT 1').catch(() => false))) {
       console.log('⚠️ Conexão com o banco de dados não está disponível, tentando reconectar...');
       return;
     }
@@ -154,7 +155,11 @@ async function checkNewApplications(client, db) {
       }
     }
   } catch (error) {
-    console.error('❌ Erro ao verificar novas inscrições:', error);
+    if (error.message.includes('Pool is closed') || error.code === 'POOL_CLOSED') {
+      console.log('⚠️ Pool de conexão fechado, aguardando reconexão...');
+    } else {
+      console.error('❌ Erro ao verificar novas inscrições:', error);
+    }
   }
 }
 
@@ -285,7 +290,20 @@ function setupEvents(client, db) {
     
     await setupSecurityMonitoring(client, db);
     await setupAutoCleanup(db);
-    setInterval(() => checkNewApplications(client, db), 60000); // Verificar novas inscrições a cada 1 minuto
+    
+    // Intervalo com verificação de conexão
+    setInterval(async () => {
+      if (isShuttingDown) return;
+      
+      // Verifica se a conexão está ativa antes de executar
+      try {
+        if (db && await db.execute('SELECT 1').catch(() => false)) {
+          await checkNewApplications(client, db);
+        }
+      } catch (error) {
+        console.log('⚠️ Conexão não disponível para verificação de inscrições');
+      }
+    }, 60000);
   });
 
   // Evento interactionCreate com tratamento de erros melhorado
