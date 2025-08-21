@@ -11,9 +11,10 @@ const dbConfig = {
   connectionLimit: 10,
   queueLimit: 0,
   timezone: 'Z', // Usar UTC para evitar problemas com fusos horários
-  reconnect: true,
-  acquireTimeout: 60000,
-  timeout: 60000,
+  // REMOVIDAS AS OPÇÕES OBSOLETAS:
+  // reconnect: true,
+  // acquireTimeout: 60000,
+  // timeout: 60000,
   connectTimeout: 10000
 };
 
