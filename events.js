@@ -175,112 +175,6 @@ function isValidImageUrl(url) {
   }
 }
 
-// Função auxiliar para atualizar o editor de imagens
-async function updateImageEditor(interaction, state) {
-  const { images, applicationId, status } = state;
-  
-  try {
-    // Verifica se a interação já foi respondida
-    if (interaction.replied && !interaction.message) {
-      return;
-    }
-
-    // Se não foi respondida nem deferida, deferir
-    if (!interaction.replied && !interaction.deferred) {
-      await interaction.deferUpdate().catch(console.error);
-    }
-
-    // Criar embed atualizado
-    const embed = new EmbedBuilder()
-      .setColor('#0099ff')
-      .setTitle(`🖼️ Gerenciador de Imagens - Inscrição #${applicationId}`)
-      .setDescription('**Selecione as imagens que deseja remover**\nClique nos botões abaixo para gerenciar:');
-    
-    if (images.length > 0) {
-      embed.setImage(images[0]); // Mostra a primeira imagem como exemplo
-      embed.addFields({
-        name: `Imagens Atuais (${images.length})`,
-        value: 'Clique nos botões abaixo para remover imagens específicas'
-      });
-    } else {
-      embed.addFields({
-        name: 'Imagens Atuais',
-        value: 'Nenhuma imagem cadastrada'
-      });
-    }
-    
-    // Recriar os botões
-    const actionRow1 = new ActionRowBuilder();
-    const actionRow2 = new ActionRowBuilder();
-    
-    images.slice(0, 5).forEach((img, index) => {
-      actionRow1.addComponents(
-        new ButtonBuilder()
-          .setCustomId(`img_remove_${applicationId}_${index}_${status}`)
-          .setLabel(`Remover #${index + 1}`)
-          .setStyle(ButtonStyle.Danger)
-          .setEmoji('❌')
-      );
-    });
-    
-    if (images.length > 5) {
-      images.slice(5, 10).forEach((img, index) => {
-        actionRow2.addComponents(
-          new ButtonBuilder()
-            .setCustomId(`img_remove_${applicationId}_${index + 5}_${status}`)
-            .setLabel(`Remover #${index + 6}`)
-            .setStyle(ButtonStyle.Danger)
-            .setEmoji('❌')
-        );
-      });
-    }
-    
-    const mainActionRow = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`img_add_${applicationId}_${status}`)
-        .setLabel('Adicionar Imagens')
-        .setStyle(ButtonStyle.Success)
-        .setEmoji('➕'),
-      new ButtonBuilder()
-        .setCustomId(`img_clear_${applicationId}_${status}`)
-        .setLabel('Limpar Todas')
-        .setStyle(ButtonStyle.Danger)
-        .setEmoji('🗑️'),
-      new ButtonBuilder()
-        .setCustomId(`img_save_${applicationId}_${status}`)
-        .setLabel('Salvar Alterações')
-        .setStyle(ButtonStyle.Primary)
-        .setEmoji('💾'),
-      new ButtonBuilder()
-        .setCustomId(`img_cancel_${applicationId}`)
-        .setLabel('Cancelar')
-        .setStyle(ButtonStyle.Secondary)
-        .setEmoji('✖️')
-    );
-    
-    // Atualizar a mensagem
-    await interaction.editReply({
-      embeds: [embed],
-      components: images.length > 0 ? 
-        [actionRow1, actionRow2, mainActionRow] : 
-        [mainActionRow]
-    });
-  } catch (error) {
-    console.error('❌ Erro ao atualizar editor de imagens:', error);
-    // Verifica se já foi respondido antes de tentar responder novamente
-    if (!interaction.replied && !interaction.deferred) {
-      await interaction.reply({
-        content: 'Ocorreu um erro ao atualizar o editor de imagens.',
-        flags: MessageFlags.Ephemeral
-      }).catch(console.error);
-    } else if (interaction.deferred) {
-      await interaction.editReply({
-        content: 'Ocorreu um erro ao atualizar o editor de imagens.'
-      }).catch(console.error);
-    }
-  }
-}
-
 // Configurar eventos
 function setupEvents(client, db) {
   // Evento ready
@@ -982,209 +876,19 @@ function setupEvents(client, db) {
             if (action === 'close') {
               try {
                 await interaction.message.delete().catch(error => {
-                  if (error.code !== 10008) { // Ignora erro de mensagem desconhecida
-                    console.error('Erro ao deletar mensagem do carrossel:', error);
-                  }
+                  if (error.code !== 10008) throw error; // Ignora "Unknown Message" error
                 });
-                return;
               } catch (error) {
-                if (error.code !== 10008) {
-                  console.error('Erro ao deletar mensagem do carrossel:', error);
-                }
-                return;
+                console.error('Erro ao fechar carrossel:', error);
               }
+              return;
             }
             
-            // Primeiro verifica na tabela de pendentes
-            let [rows] = await db.execute(
-              'SELECT screenshot_path FROM inscricoes_pendentes WHERE id = ?',
-              [applicationId]
-            );
-            
-            // Se não encontrou, verifica na tabela de aprovados
-            if (rows.length === 0) {
-              [rows] = await db.execute(
-                'SELECT screenshot_path FROM inscricoes WHERE id = ?',
-                [applicationId]
-              );
-            }
-            
-            if (rows.length === 0) {
-              console.log(`Inscrição ${applicationId} não encontrada em nenhuma tabela`);
-              return interaction.update({
-                content: 'As screenshots não estão mais disponíveis.',
-                embeds: [],
-                components: []
-              }).catch(console.error);
-            }
-            
-            let screenshots = [];
-            try {
-              screenshots = typeof rows[0].screenshot_path === 'string' ? 
-                JSON.parse(rows[0].screenshot_path || '[]') : 
-                rows[0].screenshot_path || [];
-            } catch (e) {
-              screenshots = rows[0].screenshot_path ? [rows[0].screenshot_path] : [];
-            }
-            
-            // Processa as URLs para garantir que são absolutas
-            const processedScreenshots = processImageUrls(screenshots);
-            
-            const totalImages = processedScreenshots.length;
-            
-            if (action === 'prev' && currentIndex > 0) {
-              currentIndex--;
-            } else if (action === 'next' && currentIndex < totalImages - 1) {
-              currentIndex++;
-            }
-            
-            const embed = new EmbedBuilder()
-              .setColor('#FF4500')
-              .setTitle(`Screenshot #${currentIndex + 1} de ${totalImages}`)
-              .setFooter({ text: `Inscrição #${applicationId}` });
-
-            // Verificar se a imagem é válida antes de adicionar ao embed
-            if (processedScreenshots[currentIndex] && isValidImageUrl(processedScreenshots[currentIndex])) {
-              embed.setImage(processedScreenshots[currentIndex]);
-            } else {
-              embed.setDescription('Imagem não disponível ou URL inválida');
-            }
-            
-            const row = new ActionRowBuilder().addComponents(
-              new ButtonBuilder()
-                .setCustomId(`carousel_prev_${applicationId}_${currentIndex}`)
-                .setLabel('Anterior')
-                .setStyle(ButtonStyle.Primary)
-                .setDisabled(currentIndex === 0),
-              new ButtonBuilder()
-                .setCustomId(`carousel_next_${applicationId}_${currentIndex}`)
-                .setLabel('Próxima')
-                .setStyle(ButtonStyle.Primary)
-                .setDisabled(currentIndex === totalImages - 1),
-              new ButtonBuilder()
-                .setCustomId(`carousel_close_${applicationId}`)
-                .setLabel('Fechar')
-                .setStyle(ButtonStyle.Danger)
-            );
-            
-            await interaction.update({
-              embeds: [embed],
-              components: [row]
-            }).catch(console.error);
-            return;
-          }
-
-          // Tratamento para navegação do comando char500
-          if (interaction.customId.startsWith('char500_')) {
-            const [_, action, pageStr] = interaction.customId.split('_');
-            let page = parseInt(pageStr);
-            
-            await interaction.deferUpdate();
-            
-            if (action === 'prev' && page > 1) {
-              page--;
-            } else if (action === 'next') {
-              page++;
-            } else if (action === 'close') {
-              return interaction.message.delete().catch(console.error);
-            }
-            
-            const { chars, totalChars, page: currentPage, totalPages, lastUpdated } = 
-              await get500RCharacters(db, page);
-            
-            const embeds = chars.map((char, index) => {
-              const userbarUrl = `https://www.mucabrasil.com.br/forum/userbar.php?n=${encodeURIComponent(char.name)}&size=small&t=${Date.now()}`;
-              
-              let statusText = '';
-              if (char.status) {
-                const statusDate = char.status_date ? formatBrazilianDate(char.status_date) : '';
-                switch(char.status) {
-                  case 'novo':
-                    statusText = `🆕 Novo (desde ${statusDate})`;
-                    break;
-                  case 'saiu':
-                    statusText = `🚪 Saiu (em ${statusDate})`;
-                    break;
-                  case 'ativo':
-                    statusText = `✅ Ativo`;
-                    break;
-                  default:
-                    statusText = `❓ Status desconhecido`;
-                }
-              } else {
-                statusText = '❓ Não cadastrado';
-              }
-              
-              return new EmbedBuilder()
-                .setColor('#FFA500')
-                .setTitle(`🏆 ${char.name} — #${(currentPage - 1) * 5 + index + 1}`)
-                .setDescription(
-                  `🏰 **Guilda:** ${char.guild}\n` +
-                  `🔄 **Resets:** ${char.resets}\n` +
-                  `📌 **Status:** ${statusText}`
-                )
-                .setImage(userbarUrl)
-                .setFooter({ text: `Atualizado em ${formatBrazilianDate(lastUpdated)}` });
-            });
-
-            const row = new ActionRowBuilder().addComponents(
-              new ButtonBuilder()
-                .setCustomId(`char500_prev_${currentPage}`)
-                .setLabel('Anterior')
-                .setStyle(ButtonStyle.Primary)
-                .setDisabled(currentPage <= 1),
-              new ButtonBuilder()
-                .setCustomId(`char500_next_${currentPage}`)
-                .setLabel('Próxima')
-                .setStyle(ButtonStyle.Primary)
-                .setDisabled(currentPage >= totalPages),
-              new ButtonBuilder()
-                .setCustomId('char500_close')
-                .setLabel('Fechar')
-                .setStyle(ButtonStyle.Danger)
-            );
-            
-            await interaction.editReply({
-              content: `**Personagens 500+ Resets** (Página ${currentPage}/${totalPages} - Total: ${totalChars})`,
-              embeds: embeds,
-              components: [row]
-            });
-            return;
-          }
-
-          // Aprovar/rejeitar inscrição
-          const [action, id] = interaction.customId.split('_');
-          
-          if (action === 'approve') {
-            await approveApplication(interaction, id, db);
-          } else if (action === 'reject') {
-            const modal = new ModalBuilder()
-              .setCustomId(`reject_reason_${id}`)
-              .setTitle('Motivo da Rejeição');
-            
-            const reasonInput = new TextInputBuilder()
-              .setCustomId('reject_reason')
-              .setLabel('Por que esta inscrição está sendo rejeitada?')
-              .setStyle(TextInputStyle.Paragraph)
-              .setRequired(true)
-              .setMinLength(10)
-              .setMaxLength(500);
-            
-            const actionRow = new ActionRowBuilder().addComponents(reasonInput);
-            modal.addComponents(actionRow);
-            
-            await interaction.showModal(modal).catch(console.error);
-          }
-
-          // Editar inscrição
-          if (interaction.customId.startsWith('edit_application_')) {
-            const [_, __, applicationId, status] = interaction.customId.split('_');
+            const table = interaction.message.embeds[0].title.includes('Aprovado') ? 'inscricoes' : 'inscricoes_pendentes';
             
             try {
-              const table = status === 'aprovado' ? 'inscricoes' : 'inscricoes_pendentes';
-              
               const [rows] = await db.execute(
-                `SELECT * FROM ${table} WHERE id = ?`,
+                `SELECT screenshot_path FROM ${table} WHERE id = ?`,
                 [applicationId]
               );
               
@@ -1195,483 +899,328 @@ function setupEvents(client, db) {
                 }).catch(console.error);
               }
               
-              const application = rows[0];
+              let screenshots = [];
+              try {
+                screenshots = typeof rows[0].screenshot_path === 'string' ? 
+                  JSON.parse(rows[0].screenshot_path || '[]') : 
+                  rows[0].screenshot_path || [];
+              } catch (e) {
+                screenshots = rows[0].screenshot_path ? [rows[0].screenshot_path] : [];
+              }
               
-              // Criar modal para edição
-              const modal = new ModalBuilder()
-                .setCustomId(`edit_modal_${applicationId}_${status}`)
-                .setTitle(`Editar Inscrição #${applicationId}`);
+              // Processa as URLs para garantir que são absolutas
+              const processedScreenshots = processImageUrls(screenshots);
               
-              // Campos do modal
-              const nomeInput = new TextInputBuilder()
-                .setCustomId('nome_input')
-                .setLabel('Nome')
-                .setStyle(TextInputStyle.Short)
-                .setValue(application.nome || '')
-                .setRequired(true);
+              if (processedScreenshots.length === 0) {
+                return interaction.reply({
+                  content: 'Nenhuma screenshot disponível.',
+                  flags: MessageFlags.Ephemeral
+                }).catch(console.error);
+              }
               
-              const telefoneInput = new TextInputBuilder()
-                .setCustomId('telefone_input')
-                .setLabel('Telefone')
-                .setStyle(TextInputStyle.Short)
-                .setValue(application.telefone || '')
-                .setRequired(false);
+              // Atualiza o índice
+              if (action === 'prev') {
+                currentIndex = (currentIndex - 1 + processedScreenshots.length) % processedScreenshots.length;
+              } else if (action === 'next') {
+                currentIndex = (currentIndex + 1) % processedScreenshots.length;
+              }
               
-              const discordInput = new TextInputBuilder()
-                .setCustomId('discord_input')
-                .setLabel('Discord')
-                .setStyle(TextInputStyle.Short)
-                .setValue(application.discord || '')
-                .setRequired(true);
+              // Atualiza a mensagem
+              const embed = new EmbedBuilder()
+                .setColor('#0099ff')
+                .setTitle(`Screenshots da Inscrição ${applicationId}${table === 'inscricoes' ? ' (Aprovado)' : ''}`)
+                .setImage(processedScreenshots[currentIndex])
+                .setFooter({ text: `Imagem ${currentIndex + 1} de ${processedScreenshots.length}` });
               
-              const charInput = new TextInputBuilder()
-                .setCustomId('char_input')
-                .setLabel('Char Principal')
-                .setStyle(TextInputStyle.Short)
-                .setValue(application.char_principal || '')
-                .setRequired(false);
-              
-              const guildInput = new TextInputBuilder()
-                .setCustomId('guild_input')
-                .setLabel('Guild Anterior')
-                .setStyle(TextInputStyle.Short)
-                .setValue(application.guild_anterior || '')
-                .setRequired(false);
-              
-              // Adicionar campos ao modal
-              modal.addComponents(
-                new ActionRowBuilder().addComponents(nomeInput),
-                new ActionRowBuilder().addComponents(telefoneInput),
-                new ActionRowBuilder().addComponents(discordInput),
-                new ActionRowBuilder().addComponents(charInput),
-                new ActionRowBuilder().addComponents(guildInput)
+              const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                  .setCustomId(`carousel_prev_${applicationId}_${currentIndex}`)
+                  .setLabel('◀️')
+                  .setStyle(ButtonStyle.Primary),
+                new ButtonBuilder()
+                  .setCustomId(`carousel_close_${applicationId}_${currentIndex}`)
+                  .setLabel('❌ Fechar')
+                  .setStyle(ButtonStyle.Danger),
+                new ButtonBuilder()
+                  .setCustomId(`carousel_next_${applicationId}_${currentIndex}`)
+                  .setLabel('▶️')
+                  .setStyle(ButtonStyle.Primary)
               );
               
-              await interaction.showModal(modal);
+              await interaction.update({
+                embeds: [embed],
+                components: [row]
+              }).catch(console.error);
+              
             } catch (error) {
-              console.error('❌ Erro ao editar inscrição:', error);
+              console.error('❌ Erro ao navegar screenshots:', error);
               await interaction.reply({
-                content: 'Ocorreu um erro ao preparar a edição.',
+                content: 'Ocorreu um erro ao navegar as screenshots.',
                 flags: MessageFlags.Ephemeral
               }).catch(console.error);
             }
             return;
           }
 
-          // Novo handler para edição de imagens
-          if (interaction.customId.startsWith('edit_images_')) {
-            const [_, __, applicationId, status] = interaction.customId.split('_');
+          if (interaction.customId.startsWith('char500_')) {
+            const [_, action, pageStr] = interaction.customId.split('_');
             
-            try {
-              // Verificar se a interação já foi respondida
-              if (interaction.replied || interaction.deferred) {
-                return;
-              }
-
-              // Responder à interação primeiro
-              await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(console.error);
-
-              const table = status === 'aprovado' ? 'inscricoes' : 'inscricoes_pendentes';
-              
-              const [rows] = await db.execute(
-                `SELECT screenshot_path FROM ${table} WHERE id = ?`,
-                [applicationId]
-              );
-              
-              if (rows.length === 0) {
-                return interaction.editReply({
-                  content: 'Inscrição não encontrada.',
-                  flags: MessageFlags.Ephemeral
-                }).catch(console.error);
-              }
-              
-              let currentImages = [];
+            if (action === 'close') {
               try {
-                currentImages = typeof rows[0].screenshot_path === 'string' ? 
-                  JSON.parse(rows[0].screenshot_path || '[]') : 
-                  rows[0].screenshot_path || [];
-              } catch (e) {
-                currentImages = rows[0].screenshot_path ? [rows[0].screenshot_path] : [];
-              }
-              
-              // Processa as URLs para garantir que são absolutas
-              const processedImages = processImageUrls(currentImages);
-              
-              // Criar embed com visualização das imagens
-              const embed = new EmbedBuilder()
-                .setColor('#0099ff')
-                .setTitle(`🖼️ Gerenciador de Imagens - Inscrição #${applicationId}`)
-                .setDescription('**Selecione as imagens que deseja remover**\nClique nos botões abaixo para gerenciar:');
-              
-              // Adicionar miniaturas das imagens atuais
-              if (processedImages.length > 0) {
-                embed.setImage(processedImages[0]); // Mostra a primeira imagem como exemplo
-                embed.addFields({
-                  name: `Imagens Atuais (${processedImages.length})`,
-                  value: 'Clique nos botões abaixo para remover imagens específicas'
+                await interaction.message.delete().catch(error => {
+                  if (error.code !== 10008) throw error; // Ignora "Unknown Message" error
                 });
-              } else {
-                embed.addFields({
-                  name: 'Imagens Atuais',
-                  value: 'Nenhuma imagem cadastrada'
-                });
+              } catch (error) {
+                console.error('Erro ao fechar lista de personagens:', error);
               }
-              
-              // Criar botões de ação
-              const actionRow1 = new ActionRowBuilder();
-              const actionRow2 = new ActionRowBuilder();
-              
-              // Botões para remover imagens específicas (máximo 5 por linha)
-              processedImages.slice(0, 5).forEach((img, index) => {
-                actionRow1.addComponents(
-                  new ButtonBuilder()
-                    .setCustomId(`img_remove_${applicationId}_${index}_${status}`)
-                    .setLabel(`Remover #${index + 1}`)
-                    .setStyle(ButtonStyle.Danger)
-                    .setEmoji('❌')
-                );
-              });
-              
-              if (processedImages.length > 5) {
-                processedImages.slice(5, 10).forEach((img, index) => {
-                  actionRow2.addComponents(
-                    new ButtonBuilder()
-                      .setCustomId(`img_remove_${applicationId}_${index + 5}_${status}`)
-                      .setLabel(`Remover #${index + 6}`)
-                      .setStyle(ButtonStyle.Danger)
-                      .setEmoji('❌')
-                  );
-                });
-              }
-              
-              // Botões principais
-              const mainActionRow = new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                  .setCustomId(`img_add_${applicationId}_${status}`)
-                  .setLabel('Adicionar Imagens')
-                  .setStyle(ButtonStyle.Success)
-                  .setEmoji('➕'),
-                new ButtonBuilder()
-                  .setCustomId(`img_clear_${applicationId}_${status}`)
-                  .setLabel('Limpar Todas')
-                  .setStyle(ButtonStyle.Danger)
-                  .setEmoji('🗑️'),
-                new ButtonBuilder()
-                  .setCustomId(`img_save_${applicationId}_${status}`)
-                  .setLabel('Salvar Alterações')
-                  .setStyle(ButtonStyle.Primary)
-                  .setEmoji('💾'),
-                new ButtonBuilder()
-                  .setCustomId(`img_cancel_${applicationId}`)
-                  .setLabel('Cancelar')
-                  .setStyle(ButtonStyle.Secondary)
-                  .setEmoji('✖️')
-              );
-              
-              // Enviar mensagem com os componentes
-              await interaction.editReply({ 
-                embeds: [embed],
-                components: processedImages.length > 0 ? 
-                  [actionRow1, actionRow2, mainActionRow] : 
-                  [mainActionRow]
-              });
-              
-              // Criar um coletor de interações
-              const filter = i => i.user.id === interaction.user.id;
-              const collector = interaction.channel.createMessageComponentCollector({ 
-                filter, 
-                time: 300000 // 5 minutos
-              });
-              
-              // Estado das imagens durante a edição
-              let editingState = {
-                images: [...processedImages],
-                status,
-                applicationId,
-                table
-              };
-              
-              collector.on('collect', async i => {
-                try {
-                  // Verificar se a interação já foi respondida
-                  if (i.replied || i.deferred) {
-                    return;
-                  }
-
-                  // Deferir a interação primeiro
-                  await i.deferUpdate().catch(console.error);
-
-                  if (i.customId.startsWith(`img_remove_${applicationId}_`)) {
-                    // Remover imagem específica
-                    const index = parseInt(i.customId.split('_')[3]);
-                    if (index >= 0 && index < editingState.images.length) {
-                      editingState.images.splice(index, 1);
-                      
-                      // Atualizar a mensagem
-                      await updateImageEditor(i, editingState);
-                      await i.followUp({
-                        content: `Imagem #${index + 1} removida.`,
-                        flags: MessageFlags.Ephemeral
-                      }).catch(console.error);
-                    }
-                  } 
-                  else if (i.customId.startsWith(`img_add_${applicationId}`)) {
-                    // Adicionar novas imagens
-                    await i.reply({
-                      content: 'Envie as novas imagens como anexos nesta conversa. Você pode enviar várias de uma vez.',
-                      flags: MessageFlags.Ephemeral
-                    });
-                    
-                    // Coletor de mensagens com imagens
-                    const msgFilter = m => m.author.id === i.user.id && m.attachments.size > 0;
-                    const msgCollector = i.channel.createMessageCollector({ 
-                      filter: msgFilter, 
-                      time: 60000 // 1 minuto
-                    });
-                    
-                    msgCollector.on('collect', async m => {
-                      const newImages = Array.from(m.attachments.values())
-                        .filter(att => isValidImageUrl(att.url))
-                        .map(att => att.url);
-                      
-                      if (newImages.length > 0) {
-                        editingState.images = [...editingState.images, ...newImages];
-                        await updateImageEditor(i, editingState);
-                        await m.reply({
-                          content: `✅ ${newImages.length} imagem(ns) adicionada(s)! Total: ${editingState.images.length}`,
-                          flags: MessageFlags.Ephemeral
-                        });
-                      } else {
-                        await m.reply({
-                          content: 'Nenhuma imagem válida encontrada. Por favor, envie apenas imagens (JPG, PNG, GIF, WEBP).',
-                          flags: MessageFlags.Ephemeral
-                        });
-                      }
-                      
-                      await m.delete().catch(() => {});
-                    });
-                    
-                    msgCollector.on('end', () => {
-                      i.editReply({
-                        content: 'Tempo para adicionar imagens encerrado.',
-                        flags: MessageFlags.Ephemeral
-                      }).catch(() => {});
-                    });
-                  }
-                  else if (i.customId.startsWith(`img_clear_${applicationId}`)) {
-                    // Limpar todas as imagens
-                    editingState.images = [];
-                    await updateImageEditor(i, editingState);
-                    await i.reply({
-                      content: 'Todas as imagens foram removidas.',
-                      flags: MessageFlags.Ephemeral
-                    });
-                  }
-                  else if (i.customId.startsWith(`img_save_${applicationId}`)) {
-                    // Salvar alterações
-                    await db.execute(
-                      `UPDATE ${table} SET screenshot_path = ? WHERE id = ?`,
-                      [JSON.stringify(editingState.images), applicationId]
-                    );
-                    
-                    await i.reply({
-                      content: `✅ Alterações salvas com sucesso! Total de imagens: ${editingState.images.length}`,
-                      flags: MessageFlags.Ephemeral
-                    });
-                    
-                    // Atualizar a mensagem original da inscrição
-                    const [updatedApp] = await db.execute(
-                      `SELECT * FROM ${table} WHERE id = ?`,
-                      [applicationId]
-                    );
-                    
-                    if (updatedApp.length > 0) {
-                      const messages = await interaction.channel.messages.fetch({ limit: 50 });
-                      const originalMessage = messages.find(msg => 
-                        msg.embeds.length > 0 && 
-                        msg.embeds[0].title.includes(`Inscrição #${applicationId}`)
-                      );
-                      
-                      if (originalMessage) {
-                        await originalMessage.delete().catch(() => {});
-                        await sendApplicationEmbed(interaction.channel, updatedApp[0], db);
-                      }
-                    }
-                    
-                    collector.stop();
-                    await interaction.deleteReply().catch(() => {});
-                  }
-                  else if (i.customId.startsWith(`img_cancel_${applicationId}`)) {
-                    // Cancelar edição
-                    await i.reply({
-                      content: 'Edição cancelada. Nenhuma alteração foi salva.',
-                      flags: MessageFlags.Ephemeral
-                    });
-                    collector.stop();
-                    await interaction.deleteReply().catch(() => {});
-                  }
-                } catch (error) {
-                  console.error('Erro ao processar interação de edição:', error);
-                  if (!i.replied && !i.deferred) {
-                    await i.reply({
-                      content: 'Ocorreu um erro ao processar sua ação.',
-                      flags: MessageFlags.Ephemeral
-                    }).catch(() => {});
-                  }
-                }
-              });
-              
-              collector.on('end', () => {
-                interaction.deleteReply().catch(() => {});
-              });
-              
-            } catch (error) {
-              console.error('❌ Erro ao editar imagens:', error);
-              // Verifica o estado da interação antes de responder
-              if (!interaction.replied && !interaction.deferred) {
-                await interaction.reply({
-                  content: 'Ocorreu um erro ao preparar o editor de imagens.',
-                  flags: MessageFlags.Ephemeral
-                }).catch(console.error);
-              } else if (interaction.deferred) {
-                await interaction.editReply({
-                  content: 'Ocorreu um erro ao preparar o editor de imagens.'
-                }).catch(console.error);
-              }
+              return;
             }
-            return;
-          }
-        } catch (error) {
-          console.error('❌ Erro ao processar interação:', error);
-          interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', flags: MessageFlags.Ephemeral }).catch(console.error);
-        }
-      }
-
-      // Modais
-      if (interaction.isModalSubmit()) {
-        if (interaction.channel?.id !== process.env.ALLOWED_CHANNEL_ID) {
-          return interaction.reply({ 
-            content: 'Este comando só pode ser usado no canal de inscrições.', 
-            flags: MessageFlags.Ephemeral 
-          }).catch(console.error);
-        }
-
-        try {
-          if (interaction.customId.startsWith('reject_reason_')) {
-            const id = interaction.customId.split('_')[2];
-            const reason = interaction.fields.getTextInputValue('reject_reason');
             
-            await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(console.error);
-            await rejectApplication(interaction, id, reason, db);
-          }
-
-          if (interaction.customId.startsWith('edit_modal_')) {
-            const [_, __, applicationId, status] = interaction.customId.split('_');
+            let page = parseInt(pageStr);
+            
+            if (action === 'prev') {
+              page = Math.max(1, page - 1);
+            } else if (action === 'next') {
+              page = page + 1;
+            }
+            
+            await interaction.deferUpdate();
             
             try {
-              const table = status === 'aprovado' ? 'inscricoes' : 'inscricoes_pendentes';
+              const { chars, totalChars, totalPages, lastUpdated } = await get500RCharacters(db, page);
               
-              // Obter valores do modal
-              const nome = interaction.fields.getTextInputValue('nome_input');
-              const telefone = interaction.fields.getTextInputValue('telefone_input');
-              const discord = interaction.fields.getTextInputValue('discord_input');
-              const charPrincipal = interaction.fields.getTextInputValue('char_input');
-              const guildAnterior = interaction.fields.getTextInputValue('guild_input');
-              
-              // Atualizar no banco de dados
-              await db.execute(
-                `UPDATE ${table} SET 
-                  nome = ?, 
-                  telefone = ?, 
-                  discord = ?, 
-                  char_principal = ?, 
-                  guild_anterior = ? 
-                WHERE id = ?`,
-                [nome, telefone, discord, charPrincipal, guildAnterior, applicationId]
-              );
-              
-              // Buscar dados atualizados
-              const [updatedRows] = await db.execute(
-                `SELECT * FROM ${table} WHERE id = ?`,
-                [applicationId]
-              );
-              
-              if (updatedRows.length > 0) {
-                const updatedApplication = updatedRows[0];
-                let messageEdited = false;
-                
-                // Tentar editar a mensagem original primeiro
-                try {
-                  // Primeiro tentamos encontrar a mensagem original
-                  const message = await interaction.channel.messages.fetch(interaction.message.id).catch(() => null);
-                  
-                  if (message) {
-                    // Se encontramos a mensagem, deletamos e enviamos uma nova
-                    await message.delete().catch(() => {});
-                    await sendApplicationEmbed(interaction.channel, updatedApplication, db);
-                    messageEdited = true;
-                  }
-                } catch (error) {
-                  console.error('Erro ao editar mensagem original:', error);
-                }
-                
-                // Se não conseguiu editar, enviar nova mensagem
-                if (!messageEdited) {
-                  await sendApplicationEmbed(interaction.channel, updatedApplication, db);
-                }
-                
-                await interaction.reply({
-                  content: `Inscrição #${applicationId} atualizada com sucesso!`,
-                  flags: MessageFlags.Ephemeral
-                });
-              } else {
-                await interaction.reply({
-                  content: 'Inscrição não encontrada após atualização.',
+              if (!chars || chars.length === 0) {
+                return interaction.editReply({
+                  content: 'Nenhum personagem com 500+ resets encontrado.',
                   flags: MessageFlags.Ephemeral
                 });
               }
+
+              // Criar múltiplos embeds - um para cada personagem
+              const embeds = chars.map((char, index) => {
+                const userbarUrl = `https://www.mucabrasil.com.br/forum/userbar.php?n=${encodeURIComponent(char.name)}&size=small&t=${Date.now()}`;
+                
+                // Determinar o status e a data apropriada
+                let statusText = '';
+                if (char.status) {
+                  const statusDate = char.status_date ? formatBrazilianDate(char.status_date) : '';
+                  switch(char.status) {
+                    case 'novo':
+                      statusText = `🆕 Novo (desde ${statusDate})`;
+                      break;
+                    case 'saiu':
+                      statusText = `🚪 Saiu (em ${statusDate})`;
+                      break;
+                    case 'ativo':
+                      statusText = `✅ Ativo`;
+                      break;
+                    default:
+                      statusText = `❓ Status desconhecido`;
+                  }
+                } else {
+                  statusText = '❓ Não cadastrado';
+                }
+                
+                return new EmbedBuilder()
+                  .setColor('#FFA500')
+                  .setTitle(`🏆 ${char.name} — #${(page - 1) * 5 + index + 1}`)
+                  .setDescription(
+                    `🏰 **Guilda:** ${char.guild}\n` +
+                    `🔄 **Resets:** ${char.resets}\n` +
+                    `📌 **Status:** ${statusText}`
+                  )
+                  .setImage(userbarUrl)
+                  .setFooter({ text: `Atualizado em ${formatBrazilianDate(lastUpdated)}` });
+              });
+
+              // Botões de navegação
+              const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                  .setCustomId(`char500_prev_${page}`)
+                  .setLabel('Anterior')
+                  .setStyle(ButtonStyle.Primary)
+                  .setDisabled(page <= 1),
+                new ButtonBuilder()
+                  .setCustomId(`char500_next_${page}`)
+                  .setLabel('Próxima')
+                  .setStyle(ButtonStyle.Primary)
+                  .setDisabled(page >= totalPages),
+                new ButtonBuilder()
+                  .setCustomId('char500_close')
+                  .setLabel('Fechar')
+                  .setStyle(ButtonStyle.Danger)
+              );
+
+              await interaction.editReply({ 
+                content: `**Personagens 500+ Resets** (Página ${page}/${totalPages} - Total: ${totalChars})`,
+                embeds: embeds,
+                components: [row] 
+              });
+
             } catch (error) {
-              console.error('❌ Erro ao salvar edição:', error);
-              await interaction.reply({
-                content: 'Ocorreu um erro ao salvar as alterações.',
+              console.error('Erro ao navegar lista de personagens:', error);
+              await interaction.editReply({
+                content: 'Ocorreu um erro ao navegar a lista de personagens.',
                 flags: MessageFlags.Ephemeral
               });
             }
             return;
           }
+
+          // Botões de aprovação/rejeição
+          if (interaction.customId.startsWith('approve_') || interaction.customId.startsWith('reject_')) {
+            const action = interaction.customId.startsWith('approve_') ? 'approve' : 'reject';
+            const applicationId = interaction.customId.split('_')[1];
+            
+            if (!await checkUserPermission(interaction, 'admin', db)) {
+              return interaction.reply({
+                content: '❌ Você não tem permissão para realizar esta ação.',
+                flags: MessageFlags.Ephemeral
+              }).catch(console.error);
+            }
+            
+            try {
+              await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+              
+              const [rows] = await db.execute(
+                'SELECT * FROM inscricoes_pendentes WHERE id = ?',
+                [applicationId]
+              );
+              
+              if (rows.length === 0) {
+                return interaction.editReply({
+                  content: '❌ Inscrição não encontrada.'
+                }).catch(console.error);
+              }
+              
+              const application = rows[0];
+              
+              if (action === 'approve') {
+                await approveApplication(interaction, application, db);
+              } else {
+                await rejectApplication(interaction, application, db);
+              }
+              
+              // Remove a mensagem original com os botões
+              try {
+                await interaction.message.delete().catch(error => {
+                  if (error.code !== 10008) throw error; // Ignora "Unknown Message" error
+                });
+              } catch (error) {
+                console.error('Erro ao deletar mensagem:', error);
+              }
+              
+            } catch (error) {
+              console.error(`❌ Erro ao ${action === 'approve' ? 'aprovar' : 'rejeitar'} inscrição:`, error);
+              await interaction.editReply({
+                content: `❌ Ocorreu um erro ao processar a inscrição.`
+              }).catch(console.error);
+            }
+          }
         } catch (error) {
-          console.error('❌ Erro ao processar modal:', error);
-          interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', flags: MessageFlags.Ephemeral }).catch(console.error);
+          console.error('❌ Erro ao processar interação de botão:', error);
+          await interaction.reply({
+            content: 'Ocorreu um erro ao processar sua solicitação.',
+            flags: MessageFlags.Ephemeral
+          }).catch(console.error);
+        }
+      }
+
+      // Modals
+      if (interaction.isModalSubmit()) {
+        if (interaction.customId.startsWith('reject_modal_')) {
+          const applicationId = interaction.customId.split('_')[2];
+          
+          if (!await checkUserPermission(interaction, 'admin', db)) {
+            return interaction.reply({
+              content: '❌ Você não tem permissão para realizar esta ação.',
+              flags: MessageFlags.Ephemeral
+            }).catch(console.error);
+          }
+          
+          try {
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+            
+            const motivo = interaction.fields.getTextInputValue('motivo_rejeicao');
+            
+            const [rows] = await db.execute(
+              'SELECT * FROM inscricoes_pendentes WHERE id = ?',
+              [applicationId]
+            );
+            
+            if (rows.length === 0) {
+              return interaction.editReply({
+                content: '❌ Inscrição não encontrada.'
+              }).catch(console.error);
+            }
+            
+            const application = rows[0];
+            
+            // Envia DM com motivo da rejeição
+            try {
+              const user = await client.users.fetch(application.discord_id);
+              await user.send({
+                content: `❌ Sua inscrição para a guilda foi **rejeitada**.\n**Motivo:** ${motivo}\n\nVocê pode se inscrever novamente após corrigir os problemas.`
+              });
+            } catch (dmError) {
+              console.error('❌ Não foi possível enviar DM:', dmError);
+            }
+            
+            // Remove da tabela de pendentes
+            await db.execute(
+              'DELETE FROM inscricoes_pendentes WHERE id = ?',
+              [applicationId]
+            );
+            
+            // Registra no histórico
+            await db.execute(
+              'INSERT INTO historico_inscricoes (discord_id, discord_name, char_name, nivel, resets, guild, screenshot_path, status, motivo, moderador_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+              [application.discord_id, application.discord_name, application.char_name, application.nivel, application.resets, application.guild, application.screenshot_path, 'rejeitado', motivo, interaction.user.id]
+            );
+            
+            await interaction.editReply({
+              content: '✅ Inscrição rejeitada com sucesso.'
+            }).catch(console.error);
+            
+            // Remove a mensagem original com os botões
+            try {
+              await interaction.message.delete().catch(error => {
+                if (error.code !== 10008) throw error; // Ignora "Unknown Message" error
+              });
+            } catch (error) {
+              console.error('Erro ao deletar mensagem:', error);
+            }
+            
+          } catch (error) {
+            console.error('❌ Erro ao processar modal de rejeição:', error);
+            await interaction.editReply({
+              content: '❌ Ocorreu um erro ao processar a rejeição.'
+            }).catch(console.error);
+          }
         }
       }
     } catch (error) {
-      console.error('❌ Erro não tratado em InteractionCreate:', error);
-      
-      // Verificar se já foi respondido
-      const alreadyReplied = interaction.replied || interaction.deferred;
-      
-      try {
-        if (!alreadyReplied) {
-          await interaction.reply({
-            content: 'Ocorreu um erro interno. Por favor, tente novamente mais tarde.',
-            flags: MessageFlags.Ephemeral
-          }).catch(() => {});
-        } else {
-          // Tentar editar a resposta existente
-          const message = await interaction.fetchReply().catch(() => null);
-          if (message && message.editable) {
-            await message.edit({
-              content: 'Ocorreu um erro interno. Por favor, tente novamente mais tarde.'
-            }).catch(() => {});
-          }
-        }
-      } catch (nestedError) {
-        console.error('❌ Erro ao enviar mensagem de erro:', nestedError);
+      console.error('❌ Erro não tratado em interactionCreate:', error);
+      if (interaction.isRepliable()) {
+        await interaction.reply({
+          content: 'Ocorreu um erro inesperado ao processar sua solicitação.',
+          flags: MessageFlags.Ephemeral
+        }).catch(console.error);
       }
     }
   });
+
+  // Evento de erro
+  client.on(Events.Error, error => {
+    console.error('❌ Erro do cliente Discord:', error);
+  });
+
+  // Evento de warn
+  client.on(Events.Warn, info => {
+    console.warn('⚠️ Aviso do Discord:', info);
+  });
+
+  console.log('✅ Eventos configurados com sucesso');
 }
 
-module.exports = {
-  setupEvents
-};
+module.exports = { setupEvents };

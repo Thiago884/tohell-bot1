@@ -337,7 +337,6 @@ async function listPendingApplications(context, args, dbConnection) {
     if (total === 0) {
       return safeInteractionReply(context, { 
         content: 'Não há inscrições pendentes no momento.', 
-        flags: MessageFlags.Ephemeral 
       });
     }
 
@@ -501,7 +500,7 @@ async function searchApplications(context, args, dbConnection) {
   }
 }
 
-// Função para enviar embed de inscrição (atualizada com botão melhorado)
+// Função para enviar embed de inscrição (atualizada sem botão de gerenciar)
 async function sendApplicationEmbed(channel, application, dbConnection) {
   const screenshots = processImageUrls(application.screenshot_path);
   const screenshotLinks = screenshots.slice(0, 5).map((screenshot, index) => 
@@ -530,12 +529,7 @@ async function sendApplicationEmbed(channel, application, dbConnection) {
       .setCustomId(`view_screenshots_${application.id}_${application.status || 'pendente'}`)
       .setLabel('Visualizar Screenshots')
       .setStyle(ButtonStyle.Secondary)
-      .setDisabled(screenshots.length === 0),
-    new ButtonBuilder()
-      .setCustomId(`edit_images_${application.id}_${application.status || 'pendente'}`)
-      .setLabel('Gerenciar Imagens')
-      .setStyle(ButtonStyle.Primary)
-      .setEmoji('🖼️')
+      .setDisabled(screenshots.length === 0)
   );
 
   // Apenas adiciona botões de aprovar/rejeitar se não for aprovado
