@@ -316,6 +316,14 @@ async function createImageCarousel(interaction, images, applicationId) {
 
 // Função para listar inscrições pendentes com paginação
 async function listPendingApplications(context, args, dbConnection) {
+  // Verificação de conexão com o banco de dados
+  if (!dbConnection || !(await dbConnection.checkConnection())) {
+    return safeInteractionReply(context, { 
+      content: '❌ Conexão com o banco de dados não disponível. Tente novamente em alguns instantes.', 
+      flags: MessageFlags.Ephemeral 
+    });
+  }
+  
   const page = args[0] ? parseInt(args[0]) : 1;
   
   if (isNaN(page) || page < 1) {
@@ -395,6 +403,14 @@ async function listPendingApplications(context, args, dbConnection) {
 
 // Função para buscar inscrições
 async function searchApplications(context, args, dbConnection) {
+  // Verificação de conexão com o banco de dados
+  if (!dbConnection || !(await dbConnection.checkConnection())) {
+    return safeInteractionReply(context, { 
+      content: '❌ Conexão com o banco de dados não disponível. Tente novamente em alguns instantes.', 
+      flags: MessageFlags.Ephemeral 
+    });
+  }
+  
   if (args.length === 0) {
     return safeInteractionReply(context, { 
       content: 'Por favor, especifique um termo de busca.', 
@@ -503,6 +519,13 @@ async function searchApplications(context, args, dbConnection) {
 
 // Função para enviar embed de inscrição (atualizada com botão melhorado)
 async function sendApplicationEmbed(channel, application, dbConnection) {
+  // Verificação de conexão com o banco de dados
+  if (!dbConnection || !(await dbConnection.checkConnection())) {
+    return safeSend(channel, { 
+      content: '❌ Conexão com o banco de dados não disponível. Tente novamente em alguns instantes.'
+    });
+  }
+  
   const screenshots = processImageUrls(application.screenshot_path);
   const screenshotLinks = screenshots.slice(0, 5).map((screenshot, index) => 
     `[Imagem ${index + 1}](${screenshot})`
@@ -590,6 +613,14 @@ async function showHelp(interaction) {
 
 // Função para aprovar inscrição
 async function approveApplication(context, applicationId, dbConnection, user = null) {
+  // Verificação de conexão com o banco de dados
+  if (!dbConnection || !(await dbConnection.checkConnection())) {
+    return safeInteractionReply(context, { 
+      content: '❌ Conexão com o banco de dados não disponível. Tente novamente em alguns instantes.', 
+      flags: MessageFlags.Ephemeral 
+    });
+  }
+  
   try {
     const [rows] = await dbConnection.execute(
       'SELECT * FROM inscricoes_pendentes WHERE id = ?',
@@ -663,6 +694,14 @@ async function approveApplication(context, applicationId, dbConnection, user = n
 
 // Função para rejeitar inscrição
 async function rejectApplication(context, applicationId, reason, dbConnection, user = null) {
+  // Verificação de conexão com o banco de dados
+  if (!dbConnection || !(await dbConnection.checkConnection())) {
+    return safeInteractionReply(context, { 
+      content: '❌ Conexão com o banco de dados não disponível. Tente novamente em alguns instantes.', 
+      flags: MessageFlags.Ephemeral 
+    });
+  }
+  
   try {
     const [rows] = await dbConnection.execute(
       'SELECT * FROM inscricoes_pendentes WHERE id = ?',

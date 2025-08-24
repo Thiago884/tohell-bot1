@@ -8,9 +8,17 @@ let lastCheckedApplications = new Date();
 
 // Monitoramento de segurança
 async function setupSecurityMonitoring(client, db) {
-  // Verifica tentativas suspeitas a cada 5 minutos
-  setInterval(async () => {
-    if (isShuttingDown) return;
+  let securityInterval;
+  
+  // Função para executar a verificação de segurança
+  const runSecurityCheck = async () => {
+    if (isShuttingDown || !(await db.checkConnection())) {
+      if (securityInterval) {
+        clearInterval(securityInterval);
+        securityInterval = null;
+      }
+      return;
+    }
     
     try {
       // IPs com muitas tentativas de login em curto período
@@ -73,26 +81,30 @@ async function setupSecurityMonitoring(client, db) {
     } catch (error) {
       console.error('Erro no monitoramento de segurança:', error);
     }
-  }, 5 * 60 * 1000); // 5 minutos
+  };
+  
+  // Executa a cada 5 minutos
+  securityInterval = setInterval(runSecurityCheck, 5 * 60 * 1000);
+  
+  // Executa imediatamente a primeira verificação
+  runSecurityCheck();
   
   console.log('✅ Monitoramento de segurança iniciado');
+  return securityInterval; // Retorna a referência para poder parar depois
 }
 
 // Limpeza automática de registros
 async function setupAutoCleanup(db) {
-  // Executa a limpeza diária às 3:00 AM
-  const now = new Date();
-  const nextCleanup = new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate() + 1,
-    3, 0, 0
-  );
+  let cleanupTimeout;
   
-  const timeUntilCleanup = nextCleanup - now;
-  
-  setTimeout(async function runCleanup() {
-    if (isShuttingDown) return;
+  const runCleanup = async () => {
+    if (isShuttingDown || !(await db.checkConnection())) {
+      if (cleanupTimeout) {
+        clearTimeout(cleanupTimeout);
+        cleanupTimeout = null;
+      }
+      return;
+    }
     
     try {
       console.log('🔄 Iniciando limpeza automática de registros antigos...');
@@ -113,30 +125,33 @@ async function setupAutoCleanup(db) {
       );
       
       console.log('✅ Limpeza automática concluída');
-      
-      // Agenda a próxima limpeza para 24 horas depois
-      setTimeout(runCleanup, 24 * 60 * 60 * 1000);
     } catch (error) {
       console.error('❌ Erro na limpeza automática:', error);
       // Tenta novamente em 1 hora se falhar
-      setTimeout(runCleanup, 60 * 60 * 1000);
+      cleanupTimeout = setTimeout(runCleanup, 60 * 60 * 1000);
     }
+  };
+  
+  // Agendamento inicial
+  const now = new Date();
+  const nextCleanup = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 3, 0, 0);
+  const timeUntilCleanup = nextCleanup - now;
+  
+  cleanupTimeout = setTimeout(() => {
+    runCleanup();
+    // Agenda a próxima limpeza para 24 horas depois
+    cleanupTimeout = setInterval(runCleanup, 24 * 60 * 60 * 1000);
   }, timeUntilCleanup);
   
   console.log('✅ Limpeza automática agendada');
+  return cleanupTimeout; // Retorna a referência
 }
 
 // Verificar novas inscrições
 async function checkNewApplications(client, db) {
-  if (isShuttingDown) return;
+  if (isShuttingDown || !(await db.checkConnection())) return;
   
   try {
-    // Verifica se a conexão com o banco está válida
-    if (!db || !(await db.execute('SELECT 1').catch(() => false))) {
-      console.log('⚠️ Conexão com o banco de dados não está disponível, tentando reconectar...');
-      return;
-    }
-
     const [rows] = await db.execute(
       'SELECT * FROM inscricoes_pendentes WHERE data_inscricao > ? ORDER BY data_inscricao DESC',
       [lastCheckedApplications]
@@ -281,6 +296,23 @@ async function updateImageEditor(interaction, state) {
   }
 }
 
+// Adicione esta função para parar todos os monitors
+function stopAllMonitors() {
+  if (client.monitors) {
+    if (client.monitors.securityInterval) {
+      clearInterval(client.monitors.securityInterval);
+    }
+    if (client.monitors.cleanupTimeout) {
+      clearTimeout(client.monitors.cleanupTimeout);
+      clearInterval(client.monitors.cleanupTimeout);
+    }
+    if (client.monitors.checkApplicationsInterval) {
+      clearInterval(client.monitors.checkApplicationsInterval);
+    }
+    console.log('⏹️ Todos os monitors parados');
+  }
+}
+
 // Configurar eventos
 function setupEvents(client, db) {
   // Evento ready
@@ -288,22 +320,30 @@ function setupEvents(client, db) {
     console.log(`🤖 Bot conectado como ${client.user.tag}`);
     client.user.setActivity('/ajuda para comandos', { type: 'WATCHING' });
     
-    await setupSecurityMonitoring(client, db);
-    await setupAutoCleanup(db);
+    // Inicia os monitors e guarda as referências
+    const securityInterval = await setupSecurityMonitoring(client, db);
+    const cleanupTimeout = await setupAutoCleanup(db);
+    let checkApplicationsInterval;
     
     // Intervalo com verificação de conexão
-    setInterval(async () => {
-      if (isShuttingDown) return;
-      
-      // Verifica se a conexão está ativa antes de executar
-      try {
-        if (db && await db.execute('SELECT 1').catch(() => false)) {
-          await checkNewApplications(client, db);
+    checkApplicationsInterval = setInterval(async () => {
+      if (isShuttingDown || !(await db.checkConnection())) {
+        if (checkApplicationsInterval) {
+          clearInterval(checkApplicationsInterval);
+          checkApplicationsInterval = null;
         }
-      } catch (error) {
-        console.log('⚠️ Conexão não disponível para verificação de inscrições');
+        return;
       }
+      
+      await checkNewApplications(client, db);
     }, 60000);
+    
+    // Guarda as referências para poder parar durante o shutdown
+    client.monitors = {
+      securityInterval,
+      cleanupTimeout,
+      checkApplicationsInterval
+    };
   });
 
   // Evento interactionCreate com tratamento de erros melhorado
@@ -489,7 +529,7 @@ function setupEvents(client, db) {
                 return interaction.editReply({
                   content: success ? 
                     `✅ Cargo ${role.name} não tem mais permissão para /${commandName}` :
-                    '❌ Falha ao remover permissão. O cargo pode não ter esta permissão.'
+                    '❌ Falha ao remover permissão. O cargo pode não have esta permissão.'
                 }).catch(console.error);
               }
             } catch (error) {
@@ -697,7 +737,7 @@ function setupEvents(client, db) {
                   { name: 'IPs Bloqueados Recentemente', 
                     value: report.blockedIPs.length > 0 ? 
                       report.blockedIPs.map(ip => `• ${ip.ip} (${ip.pais}) - ${ip.motivo}`).join('\n') : 
-                      'Nenhum IP bloqueado neste período',
+                      'Nenhum IP bloqueado neste período', 
                     inline: false 
                   },
                   { name: 'Tentativas Suspeitas', 
@@ -861,237 +901,99 @@ function setupEvents(client, db) {
                 .setTitle('📱 Informações do Telefone')
                 .addFields(
                   { name: 'Número Original', value: phoneNumber, inline: true },
-                  { name: 'País', value: `${result.data.countryName} (${result.data.countryCode})`, inline: true },
-                  { name: 'Código do País', value: result.data.countryPrefix || 'N/A', inline: true },
-                  { name: 'Localização', value: result.data.location || 'N/A', inline: true },
-                  { name: 'Operadora', value: result.data.carrier || 'N/A', inline: true },
-                  { name: 'Tipo de Linha', value: result.data.lineType || 'N/A', inline: true }
-                )
-                .setFooter({ text: 'Dados fornecidos por Numverify API' })
-                .setTimestamp();
+                  { name: 'País', value: result.country || 'Desconhecido', inline: true },
+                  { name: 'Código do País', value: result.countryCode || 'N/A', inline: true },
+                  { name: 'Número Nacional', value: result.nationalNumber || phoneNumber, inline: true },
+                  { name: 'Número Internacional', value: result.internationalNumber || phoneNumber, inline: true },
+                  { name: 'Válido', value: result.isValid ? '✅ Sim' : '❌ Não', inline: true },
+                  { name: 'Tipo', value: result.type || 'Desconhecido', inline: true }
+                );
               
               await interaction.editReply({ embeds: [embed] });
-              
-              // Envia os formatos diretamente no canal (visível para todos)
-              const formatsMessage = `**Formatos do número ${phoneNumber}:**\n` +
-                                    `• Número Internacional: ${result.data.number || 'N/A'}\n` +
-                                    `• Formato Brasileiro: 0, 0XX${phoneNumber.replace(/^\+55/, '')}\n` +
-                                    `• Formato Europeu: +BR 00${phoneNumber.replace(/^\+55/, '')}\n` +
-                                    `• Formato EUA/Internacional: ${result.data.number || 'N/A'}`;
-              
-              await interaction.followUp({
-                content: formatsMessage
-              }).catch(console.error);
-              
             } catch (error) {
               console.error('Erro ao consultar telefone:', error);
               await interaction.editReply({
-                content: 'Ocorreu um erro ao consultar o número. Por favor, tente novamente mais tarde.',
+                content: '❌ Ocorreu um erro ao consultar o número de telefone.',
                 flags: MessageFlags.Ephemeral
               }).catch(console.error);
             }
             break;
+
+          default:
+            await interaction.reply({
+              content: '❌ Comando não reconhecido.',
+              flags: MessageFlags.Ephemeral
+            }).catch(console.error);
         }
       }
 
-      // Botões
+      // Botões de aprovação/rejeição
       if (interaction.isButton()) {
-        if (interaction.channel?.id !== process.env.ALLOWED_CHANNEL_ID) {
-          return interaction.reply({ 
-            content: 'Este comando só pode ser usado no canal de inscrições.', 
-            flags: MessageFlags.Ephemeral 
-          }).catch(() => {
-            interaction.channel.send({
-              content: 'Este comando só pode ser usado no canal de inscrições.',
-              flags: MessageFlags.Ephemeral
-            }).catch(console.error);
-          });
-        }
-
-        try {
-          if (interaction.customId.startsWith('prev_page_') || interaction.customId.startsWith('next_page_')) {
-            const [direction, pageStr] = interaction.customId.split('_').slice(1);
-            let page = parseInt(pageStr);
-            
-            page = direction === 'prev' ? page - 1 : page + 1;
-            
-            await interaction.deferUpdate().catch(console.error);
-            await interaction.message.delete().catch(() => {});
-            await listPendingApplications(interaction, [page.toString()], db);
-            return;
-          }
-
-          if (interaction.customId.startsWith('search_prev_') || interaction.customId.startsWith('search_next_')) {
-            const [direction, searchTerm, pageStr] = interaction.customId.split('_').slice(1);
-            let page = parseInt(pageStr);
-            
-            page = direction === 'prev' ? page - 1 : page + 1;
-            
-            await interaction.deferUpdate().catch(console.error);
-            await interaction.message.delete().catch(() => {});
-            await searchApplications(interaction, [searchTerm, page.toString()], db);
-            return;
-          }
-
-          if (interaction.customId.startsWith('view_screenshots_')) {
-            const [_, __, applicationId, status] = interaction.customId.split('_');
-            
-            try {
-              const table = status === 'aprovado' ? 'inscricoes' : 'inscricoes_pendentes';
-              
-              const [rows] = await db.execute(
-                `SELECT screenshot_path FROM ${table} WHERE id = ?`,
-                [applicationId]
-              );
-              
-              if (rows.length === 0) {
-                return interaction.reply({
-                  content: 'Inscrição não encontrada.',
-                  flags: MessageFlags.Ephemeral
-                }).catch(console.error);
-              }
-              
-              let screenshots = [];
-              try {
-                screenshots = typeof rows[0].screenshot_path === 'string' ? 
-                  JSON.parse(rows[0].screenshot_path || '[]') : 
-                  rows[0].screenshot_path || [];
-              } catch (e) {
-                screenshots = rows[0].screenshot_path ? [rows[0].screenshot_path] : [];
-              }
-              
-              // Processa as URLs para garantir que são absolutas
-              const processedScreenshots = processImageUrls(screenshots);
-              
-              await createImageCarousel(interaction, processedScreenshots, applicationId);
-              
-            } catch (error) {
-              console.error('❌ Erro ao buscar screenshots:', error);
-              await interaction.reply({
-                content: 'Ocorreu um erro ao buscar as screenshots.',
-                flags: MessageFlags.Ephemeral
-              }).catch(console.error);
-            }
-            return;
-          }
+        const [action, applicationId, status] = interaction.customId.split('_');
+        
+        if (action === 'aprovar' || action === 'rejeitar') {
+          await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(console.error);
           
-          if (interaction.customId.startsWith('carousel_')) {
-            const [_, action, applicationId, currentIndexStr] = interaction.customId.split('_');
-            let currentIndex = parseInt(currentIndexStr);
-            
-            if (action === 'close') {
-              try {
-                await interaction.message.delete().catch(error => {
-                  if (error.code !== 10008) { // Ignora erro de mensagem desconhecida
-                    console.error('Erro ao deletar mensagem do carrossel:', error);
-                  }
-                });
-                return;
-              } catch (error) {
-                if (error.code !== 10008) {
-                  console.error('Erro ao deletar mensagem do carrossel:', error);
-                }
-                return;
-              }
-            }
-            
-            // Primeiro verifica na tabela de pendentes
-            let [rows] = await db.execute(
-              'SELECT screenshot_path FROM inscricoes_pendentes WHERE id = ?',
+          try {
+            // Busca a inscrição no banco de dados
+            const [rows] = await db.execute(
+              'SELECT * FROM inscricoes_pendentes WHERE id = ?',
               [applicationId]
             );
             
-            // Se não encontrou, verifica na tabela de aprovados
             if (rows.length === 0) {
-              [rows] = await db.execute(
-                'SELECT screenshot_path FROM inscricoes WHERE id = ?',
-                [applicationId]
-              );
-            }
-            
-            if (rows.length === 0) {
-              console.log(`Inscrição ${applicationId} não encontrada em nenhuma tabela`);
-              return interaction.update({
-                content: 'As screenshots não estão mais disponíveis.',
-                embeds: [],
-                components: []
+              return interaction.editReply({
+                content: '❌ Inscrição não encontrada.'
               }).catch(console.error);
             }
             
-            let screenshots = [];
-            try {
-              screenshots = typeof rows[0].screenshot_path === 'string' ? 
-                JSON.parse(rows[0].screenshot_path || '[]') : 
-                rows[0].screenshot_path || [];
-            } catch (e) {
-              screenshots = rows[0].screenshot_path ? [rows[0].screenshot_path] : [];
-            }
+            const application = rows[0];
             
-            // Processa as URLs para garantir que são absolutas
-            const processedScreenshots = processImageUrls(screenshots);
-            
-            const totalImages = processedScreenshots.length;
-            
-            if (action === 'prev' && currentIndex > 0) {
-              currentIndex--;
-            } else if (action === 'next' && currentIndex < totalImages - 1) {
-              currentIndex++;
-            }
-            
-            const embed = new EmbedBuilder()
-              .setColor('#FF4500')
-              .setTitle(`Screenshot #${currentIndex + 1} de ${totalImages}`)
-              .setFooter({ text: `Inscrição #${applicationId}` });
-
-            // Verificar se a imagem é válida antes de adicionar ao embed
-            if (processedScreenshots[currentIndex] && isValidImageUrl(processedScreenshots[currentIndex])) {
-              embed.setImage(processedScreenshots[currentIndex]);
+            if (action === 'aprovar') {
+              await approveApplication(interaction, application, db);
             } else {
-              embed.setDescription('Imagem não disponível ou URL inválida');
+              await rejectApplication(interaction, application, db);
             }
             
-            const row = new ActionRowBuilder().addComponents(
-              new ButtonBuilder()
-                .setCustomId(`carousel_prev_${applicationId}_${currentIndex}`)
-                .setLabel('Anterior')
-                .setStyle(ButtonStyle.Primary)
-                .setDisabled(currentIndex === 0),
-              new ButtonBuilder()
-                .setCustomId(`carousel_next_${applicationId}_${currentIndex}`)
-                .setLabel('Próxima')
-                .setStyle(ButtonStyle.Primary)
-                .setDisabled(currentIndex === totalImages - 1),
-              new ButtonBuilder()
-                .setCustomId(`carousel_close_${applicationId}`)
-                .setLabel('Fechar')
-                .setStyle(ButtonStyle.Danger)
-            );
-            
-            await interaction.update({
-              embeds: [embed],
-              components: [row]
+            // Remove os botões da mensagem original
+            try {
+              await interaction.message.edit({
+                components: []
+              }).catch(console.error);
+            } catch (error) {
+              console.log('Não foi possível remover os botões da mensagem:', error.message);
+            }
+          } catch (error) {
+            console.error('❌ Erro ao processar botão:', error);
+            await interaction.editReply({
+              content: '❌ Ocorreu um erro ao processar sua ação.'
             }).catch(console.error);
-            return;
           }
-
-          // Tratamento para navegação do comando char500
-          if (interaction.customId.startsWith('char500_')) {
-            const [_, action, pageStr] = interaction.customId.split('_');
-            let page = parseInt(pageStr);
-            
-            await interaction.deferUpdate();
-            
-            if (action === 'prev' && page > 1) {
-              page--;
-            } else if (action === 'next') {
-              page++;
-            } else if (action === 'close') {
-              return interaction.message.delete().catch(console.error);
+        }
+        
+        // Botões de navegação para personagens 500+
+        if (interaction.customId.startsWith('char500_')) {
+          const [_, action, page] = interaction.customId.split('_');
+          
+          await interaction.deferUpdate().catch(console.error);
+          
+          try {
+            if (action === 'close') {
+              await interaction.deleteReply().catch(console.error);
+              return;
             }
             
-            const { chars, totalChars, page: currentPage, totalPages, lastUpdated } = 
-              await get500RCharacters(db, page);
+            let newPage = parseInt(page);
+            if (action === 'next') newPage++;
+            if (action === 'prev') newPage--;
             
+            const { chars, totalChars, totalPages, lastUpdated } = await get500RCharacters(db, newPage);
+            
+            if (!chars || chars.length === 0) {
+              return;
+            }
+            
+            // Recriar os embeds
             const embeds = chars.map((char, index) => {
               const userbarUrl = `https://www.mucabrasil.com.br/forum/userbar.php?n=${encodeURIComponent(char.name)}&size=small&t=${Date.now()}`;
               
@@ -1117,7 +1019,7 @@ function setupEvents(client, db) {
               
               return new EmbedBuilder()
                 .setColor('#FFA500')
-                .setTitle(`🏆 ${char.name} — #${(currentPage - 1) * 5 + index + 1}`)
+                .setTitle(`🏆 ${char.name} — #${(newPage - 1) * 5 + index + 1}`)
                 .setDescription(
                   `🏰 **Guilda:** ${char.guild}\n` +
                   `🔄 **Resets:** ${char.resets}\n` +
@@ -1126,552 +1028,208 @@ function setupEvents(client, db) {
                 .setImage(userbarUrl)
                 .setFooter({ text: `Atualizado em ${formatBrazilianDate(lastUpdated)}` });
             });
-
+            
+            // Recriar os botões
             const row = new ActionRowBuilder().addComponents(
               new ButtonBuilder()
-                .setCustomId(`char500_prev_${currentPage}`)
+                .setCustomId(`char500_prev_${newPage}`)
                 .setLabel('Anterior')
                 .setStyle(ButtonStyle.Primary)
-                .setDisabled(currentPage <= 1),
+                .setDisabled(newPage <= 1),
               new ButtonBuilder()
-                .setCustomId(`char500_next_${currentPage}`)
+                .setCustomId(`char500_next_${newPage}`)
                 .setLabel('Próxima')
                 .setStyle(ButtonStyle.Primary)
-                .setDisabled(currentPage >= totalPages),
+                .setDisabled(newPage >= totalPages),
               new ButtonBuilder()
                 .setCustomId('char500_close')
                 .setLabel('Fechar')
                 .setStyle(ButtonStyle.Danger)
             );
             
-            await interaction.editReply({
-              content: `**Personagens 500+ Resets** (Página ${currentPage}/${totalPages} - Total: ${totalChars})`,
+            await interaction.editReply({ 
+              content: `**Personagens 500+ Resets** (Página ${newPage}/${totalPages} - Total: ${totalChars})`,
               embeds: embeds,
-              components: [row]
+              components: [row] 
             });
-            return;
+          } catch (error) {
+            console.error('Erro na navegação char500:', error);
           }
-
-          // Aprovar/rejeitar inscrição
-          const [action, id] = interaction.customId.split('_');
+        }
+        
+        // Botões de gerenciamento de imagens
+        if (interaction.customId.startsWith('img_')) {
+          const [action, applicationId, index, status] = interaction.customId.split('_');
           
-          if (action === 'approve') {
-            await approveApplication(interaction, id, db);
-          } else if (action === 'reject') {
-            const modal = new ModalBuilder()
-              .setCustomId(`reject_reason_${id}`)
-              .setTitle('Motivo da Rejeição');
+          try {
+            // Busca a inscrição
+            const [rows] = await db.execute(
+              'SELECT * FROM inscricoes_pendentes WHERE id = ?',
+              [applicationId]
+            );
             
-            const reasonInput = new TextInputBuilder()
-              .setCustomId('reject_reason')
-              .setLabel('Por que esta inscrição está sendo rejeitada?')
-              .setStyle(TextInputStyle.Paragraph)
-              .setRequired(true)
-              .setMinLength(10)
-              .setMaxLength(500);
-            
-            const actionRow = new ActionRowBuilder().addComponents(reasonInput);
-            modal.addComponents(actionRow);
-            
-            await interaction.showModal(modal).catch(console.error);
-          }
-
-          // Editar inscrição
-          if (interaction.customId.startsWith('edit_application_')) {
-            const [_, __, applicationId, status] = interaction.customId.split('_');
-            
-            try {
-              const table = status === 'aprovado' ? 'inscricoes' : 'inscricoes_pendentes';
-              
-              const [rows] = await db.execute(
-                `SELECT * FROM ${table} WHERE id = ?`,
-                [applicationId]
-              );
-              
-              if (rows.length === 0) {
-                return interaction.reply({
-                  content: 'Inscrição não encontrada.',
-                  flags: MessageFlags.Ephemeral
-                }).catch(console.error);
-              }
-              
-              const application = rows[0];
-              
-              // Criar modal para edição
-              const modal = new ModalBuilder()
-                .setCustomId(`edit_modal_${applicationId}_${status}`)
-                .setTitle(`Editar Inscrição #${applicationId}`);
-              
-              // Campos do modal
-              const nomeInput = new TextInputBuilder()
-                .setCustomId('nome_input')
-                .setLabel('Nome')
-                .setStyle(TextInputStyle.Short)
-                .setValue(application.nome || '')
-                .setRequired(true);
-              
-              const telefoneInput = new TextInputBuilder()
-                .setCustomId('telefone_input')
-                .setLabel('Telefone')
-                .setStyle(TextInputStyle.Short)
-                .setValue(application.telefone || '')
-                .setRequired(false);
-              
-              const discordInput = new TextInputBuilder()
-                .setCustomId('discord_input')
-                .setLabel('Discord')
-                .setStyle(TextInputStyle.Short)
-                .setValue(application.discord || '')
-                .setRequired(true);
-              
-              const charInput = new TextInputBuilder()
-                .setCustomId('char_input')
-                .setLabel('Char Principal')
-                .setStyle(TextInputStyle.Short)
-                .setValue(application.char_principal || '')
-                .setRequired(false);
-              
-              const guildInput = new TextInputBuilder()
-                .setCustomId('guild_input')
-                .setLabel('Guild Anterior')
-                .setStyle(TextInputStyle.Short)
-                .setValue(application.guild_anterior || '')
-                .setRequired(false);
-              
-              // Adicionar campos ao modal
-              modal.addComponents(
-                new ActionRowBuilder().addComponents(nomeInput),
-                new ActionRowBuilder().addComponents(telefoneInput),
-                new ActionRowBuilder().addComponents(discordInput),
-                new ActionRowBuilder().addComponents(charInput),
-                new ActionRowBuilder().addComponents(guildInput)
-              );
-              
-              await interaction.showModal(modal);
-            } catch (error) {
-              console.error('❌ Erro ao editar inscrição:', error);
-              await interaction.reply({
-                content: 'Ocorreu um erro ao preparar a edição.',
+            if (rows.length === 0) {
+              return interaction.reply({
+                content: '❌ Inscrição não encontrada.',
                 flags: MessageFlags.Ephemeral
               }).catch(console.error);
             }
-            return;
-          }
-
-          // Novo handler para edição de imagens
-          if (interaction.customId.startsWith('edit_images_')) {
-            const [_, __, applicationId, status] = interaction.customId.split('_');
             
-            try {
-              // Verificar se a interação já foi respondida
-              if (interaction.replied || interaction.deferred) {
-                return;
+            const application = rows[0];
+            let images = application.imagens ? JSON.parse(application.imagens) : [];
+            
+            if (action === 'remove') {
+              // Remove imagem específica
+              const imgIndex = parseInt(index);
+              if (imgIndex >= 0 && imgIndex < images.length) {
+                images.splice(imgIndex, 1);
+                
+                // Atualiza o banco
+                await db.execute(
+                  'UPDATE inscricoes_pendentes SET imagens = ? WHERE id = ?',
+                  [JSON.stringify(images), applicationId]
+                );
+                
+                // Atualiza a interface
+                await updateImageEditor(interaction, { images, applicationId, status });
               }
-
-              // Responder à interação primeiro
-              await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(console.error);
-
-              const table = status === 'aprovado' ? 'inscricoes' : 'inscricoes_pendentes';
+            } else if (action === 'add') {
+              // Modal para adicionar imagens
+              const modal = new ModalBuilder()
+                .setCustomId(`img_modal_${applicationId}_${status}`)
+                .setTitle('Adicionar Imagens');
               
-              const [rows] = await db.execute(
-                `SELECT screenshot_path FROM ${table} WHERE id = ?`,
+              const imageInput = new TextInputBuilder()
+                .setCustomId('image_urls')
+                .setLabel('URLs das Imagens (separadas por vírgula)')
+                .setStyle(TextInputStyle.Paragraph)
+                .setPlaceholder('https://exemplo.com/imagem1.jpg, https://exemplo.com/imagem2.png')
+                .setRequired(true);
+              
+              const actionRow = new ActionRowBuilder().addComponents(imageInput);
+              modal.addComponents(actionRow);
+              
+              await interaction.showModal(modal);
+            } else if (action === 'clear') {
+              // Limpa todas as imagens
+              images = [];
+              
+              await db.execute(
+                'UPDATE inscricoes_pendentes SET imagens = NULL WHERE id = ?',
                 [applicationId]
               );
               
-              if (rows.length === 0) {
-                return interaction.editReply({
-                  content: 'Inscrição não encontrada.',
-                  flags: MessageFlags.Ephemeral
-                }).catch(console.error);
+              await updateImageEditor(interaction, { images, applicationId, status });
+            } else if (action === 'save') {
+              // Fecha o editor
+              await interaction.deferUpdate().catch(console.error);
+              await interaction.deleteReply().catch(console.error);
+              
+              // Reenvia a inscrição atualizada
+              const channel = await client.channels.fetch(process.env.ALLOWED_CHANNEL_ID);
+              if (channel) {
+                await sendApplicationEmbed(channel, application, db);
               }
-              
-              let currentImages = [];
-              try {
-                currentImages = typeof rows[0].screenshot_path === 'string' ? 
-                  JSON.parse(rows[0].screenshot_path || '[]') : 
-                  rows[0].screenshot_path || [];
-              } catch (e) {
-                currentImages = rows[0].screenshot_path ? [rows[0].screenshot_path] : [];
-              }
-              
-              // Processa as URLs para garantir que são absolutas
-              const processedImages = processImageUrls(currentImages);
-              
-              // Criar embed com visualização das imagens
-              const embed = new EmbedBuilder()
-                .setColor('#0099ff')
-                .setTitle(`🖼️ Gerenciador de Imagens - Inscrição #${applicationId}`)
-                .setDescription('**Selecione as imagens que deseja remover**\nClique nos botões abaixo para gerenciar:');
-              
-              // Adicionar miniaturas das imagens atuais
-              if (processedImages.length > 0) {
-                embed.setImage(processedImages[0]); // Mostra a primeira imagem como exemplo
-                embed.addFields({
-                  name: `Imagens Atuais (${processedImages.length})`,
-                  value: 'Clique nos botões abaixo para remover imagens específicas'
-                });
-              } else {
-                embed.addFields({
-                  name: 'Imagens Atuais',
-                  value: 'Nenhuma imagem cadastrada'
-                });
-              }
-              
-              // Criar botões de ação
-              const actionRow1 = new ActionRowBuilder();
-              const actionRow2 = new ActionRowBuilder();
-              
-              // Botões para remover imagens específicas (máximo 5 por linha)
-              processedImages.slice(0, 5).forEach((img, index) => {
-                actionRow1.addComponents(
-                  new ButtonBuilder()
-                    .setCustomId(`img_remove_${applicationId}_${index}_${status}`)
-                    .setLabel(`Remover #${index + 1}`)
-                    .setStyle(ButtonStyle.Danger)
-                    .setEmoji('❌')
-                );
-              });
-              
-              if (processedImages.length > 5) {
-                processedImages.slice(5, 10).forEach((img, index) => {
-                  actionRow2.addComponents(
-                    new ButtonBuilder()
-                      .setCustomId(`img_remove_${applicationId}_${index + 5}_${status}`)
-                      .setLabel(`Remover #${index + 6}`)
-                      .setStyle(ButtonStyle.Danger)
-                      .setEmoji('❌')
-                  );
-                });
-              }
-              
-              // Botões principais
-              const mainActionRow = new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                  .setCustomId(`img_add_${applicationId}_${status}`)
-                  .setLabel('Adicionar Imagens')
-                  .setStyle(ButtonStyle.Success)
-                  .setEmoji('➕'),
-                new ButtonBuilder()
-                  .setCustomId(`img_clear_${applicationId}_${status}`)
-                  .setLabel('Limpar Todas')
-                  .setStyle(ButtonStyle.Danger)
-                  .setEmoji('🗑️'),
-                new ButtonBuilder()
-                  .setCustomId(`img_save_${applicationId}_${status}`)
-                  .setLabel('Salvar Alterações')
-                  .setStyle(ButtonStyle.Primary)
-                  .setEmoji('💾'),
-                new ButtonBuilder()
-                  .setCustomId(`img_cancel_${applicationId}`)
-                  .setLabel('Cancelar')
-                  .setStyle(ButtonStyle.Secondary)
-                  .setEmoji('✖️')
-              );
-              
-              // Enviar mensagem com os componentes
-              await interaction.editReply({ 
-                embeds: [embed],
-                components: processedImages.length > 0 ? 
-                  [actionRow1, actionRow2, mainActionRow] : 
-                  [mainActionRow]
-              });
-              
-              // Criar um coletor de interações
-              const filter = i => i.user.id === interaction.user.id;
-              const collector = interaction.channel.createMessageComponentCollector({ 
-                filter, 
-                time: 300000 // 5 minutos
-              });
-              
-              // Estado das imagens durante a edição
-              let editingState = {
-                images: [...processedImages],
-                status,
-                applicationId,
-                table
-              };
-              
-              collector.on('collect', async i => {
-                try {
-                  // Verificar se a interação já foi respondida
-                  if (i.replied || i.deferred) {
-                    return;
-                  }
-
-                  // Deferir a interação primeiro
-                  await i.deferUpdate().catch(console.error);
-
-                  if (i.customId.startsWith(`img_remove_${applicationId}_`)) {
-                    // Remover imagem específica
-                    const index = parseInt(i.customId.split('_')[3]);
-                    if (index >= 0 && index < editingState.images.length) {
-                      editingState.images.splice(index, 1);
-                      
-                      // Atualizar a mensagem
-                      await updateImageEditor(i, editingState);
-                      await i.followUp({
-                        content: `Imagem #${index + 1} removida.`,
-                        flags: MessageFlags.Ephemeral
-                      }).catch(console.error);
-                    }
-                  } 
-                  else if (i.customId.startsWith(`img_add_${applicationId}`)) {
-                    // Adicionar novas imagens
-                    await i.reply({
-                      content: 'Envie as novas imagens como anexos nesta conversa. Você pode enviar várias de uma vez.',
-                      flags: MessageFlags.Ephemeral
-                    });
-                    
-                    // Coletor de mensagens com imagens
-                    const msgFilter = m => m.author.id === i.user.id && m.attachments.size > 0;
-                    const msgCollector = i.channel.createMessageCollector({ 
-                      filter: msgFilter, 
-                      time: 60000 // 1 minuto
-                    });
-                    
-                    msgCollector.on('collect', async m => {
-                      const newImages = Array.from(m.attachments.values())
-                        .filter(att => isValidImageUrl(att.url))
-                        .map(att => att.url);
-                      
-                      if (newImages.length > 0) {
-                        editingState.images = [...editingState.images, ...newImages];
-                        await updateImageEditor(i, editingState);
-                        await m.reply({
-                          content: `✅ ${newImages.length} imagem(ns) adicionada(s)! Total: ${editingState.images.length}`,
-                          flags: MessageFlags.Ephemeral
-                        });
-                      } else {
-                        await m.reply({
-                          content: 'Nenhuma imagem válida encontrada. Por favor, envie apenas imagens (JPG, PNG, GIF, WEBP).',
-                          flags: MessageFlags.Ephemeral
-                        });
-                      }
-                      
-                      await m.delete().catch(() => {});
-                    });
-                    
-                    msgCollector.on('end', () => {
-                      i.editReply({
-                        content: 'Tempo para adicionar imagens encerrado.',
-                        flags: MessageFlags.Ephemeral
-                      }).catch(() => {});
-                    });
-                  }
-                  else if (i.customId.startsWith(`img_clear_${applicationId}`)) {
-                    // Limpar todas as imagens
-                    editingState.images = [];
-                    await updateImageEditor(i, editingState);
-                    await i.reply({
-                      content: 'Todas as imagens foram removidas.',
-                      flags: MessageFlags.Ephemeral
-                    });
-                  }
-                  else if (i.customId.startsWith(`img_save_${applicationId}`)) {
-                    // Salvar alterações
-                    await db.execute(
-                      `UPDATE ${table} SET screenshot_path = ? WHERE id = ?`,
-                      [JSON.stringify(editingState.images), applicationId]
-                    );
-                    
-                    await i.reply({
-                      content: `✅ Alterações salvas com sucesso! Total de imagens: ${editingState.images.length}`,
-                      flags: MessageFlags.Ephemeral
-                    });
-                    
-                    // Atualizar a mensagem original da inscrição
-                    const [updatedApp] = await db.execute(
-                      `SELECT * FROM ${table} WHERE id = ?`,
-                      [applicationId]
-                    );
-                    
-                    if (updatedApp.length > 0) {
-                      const messages = await interaction.channel.messages.fetch({ limit: 50 });
-                      const originalMessage = messages.find(msg => 
-                        msg.embeds.length > 0 && 
-                        msg.embeds[0].title.includes(`Inscrição #${applicationId}`)
-                      );
-                      
-                      if (originalMessage) {
-                        await originalMessage.delete().catch(() => {});
-                        await sendApplicationEmbed(interaction.channel, updatedApp[0], db);
-                      }
-                    }
-                    
-                    collector.stop();
-                    await interaction.deleteReply().catch(() => {});
-                  }
-                  else if (i.customId.startsWith(`img_cancel_${applicationId}`)) {
-                    // Cancelar edição
-                    await i.reply({
-                      content: 'Edição cancelada. Nenhuma alteração foi salva.',
-                      flags: MessageFlags.Ephemeral
-                    });
-                    collector.stop();
-                    await interaction.deleteReply().catch(() => {});
-                  }
-                } catch (error) {
-                  console.error('Erro ao processar interação de edição:', error);
-                  if (!i.replied && !i.deferred) {
-                    await i.reply({
-                      content: 'Ocorreu um erro ao processar sua ação.',
-                      flags: MessageFlags.Ephemeral
-                    }).catch(() => {});
-                  }
-                }
-              });
-              
-              collector.on('end', () => {
-                interaction.deleteReply().catch(() => {});
-              });
-              
-            } catch (error) {
-              console.error('❌ Erro ao editar imagens:', error);
-              // Verifica o estado da interação antes de responder
-              if (!interaction.replied && !interaction.deferred) {
-                await interaction.reply({
-                  content: 'Ocorreu um erro ao preparar o editor de imagens.',
-                  flags: MessageFlags.Ephemeral
-                }).catch(console.error);
-              } else if (interaction.deferred) {
-                await interaction.editReply({
-                  content: 'Ocorreu um erro ao preparar o editor de imagens.'
-                }).catch(console.error);
-              }
+            } else if (action === 'cancel') {
+              // Cancela a edição
+              await interaction.deferUpdate().catch(console.error);
+              await interaction.deleteReply().catch(console.error);
             }
-            return;
+          } catch (error) {
+            console.error('❌ Erro no gerenciador de imagens:', error);
+            if (!interaction.replied && !interaction.deferred) {
+              await interaction.reply({
+                content: '❌ Ocorreu um erro ao processar sua ação.',
+                flags: MessageFlags.Ephemeral
+              }).catch(console.error);
+            }
           }
-        } catch (error) {
-          console.error('❌ Erro ao processar interação:', error);
-          interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', flags: MessageFlags.Ephemeral }).catch(console.error);
         }
       }
-
-      // Modais
+      
+      // Modais (para adicionar imagens)
       if (interaction.isModalSubmit()) {
-        if (interaction.channel?.id !== process.env.ALLOWED_CHANNEL_ID) {
-          return interaction.reply({ 
-            content: 'Este comando só pode ser usado no canal de inscrições.', 
-            flags: MessageFlags.Ephemeral 
-          }).catch(console.error);
-        }
-
-        try {
-          if (interaction.customId.startsWith('reject_reason_')) {
-            const id = interaction.customId.split('_')[2];
-            const reason = interaction.fields.getTextInputValue('reject_reason');
+        if (interaction.customId.startsWith('img_modal_')) {
+          const [_, __, applicationId, status] = interaction.customId.split('_');
+          const imageUrls = interaction.fields.getTextInputValue('image_urls');
+          
+          await interaction.deferUpdate().catch(console.error);
+          
+          try {
+            // Busca a inscrição
+            const [rows] = await db.execute(
+              'SELECT * FROM inscricoes_pendentes WHERE id = ?',
+              [applicationId]
+            );
             
-            await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(console.error);
-            await rejectApplication(interaction, id, reason, db);
-          }
-
-          if (interaction.customId.startsWith('edit_modal_')) {
-            const [_, __, applicationId, status] = interaction.customId.split('_');
-            
-            try {
-              const table = status === 'aprovado' ? 'inscricoes' : 'inscricoes_pendentes';
-              
-              // Obter valores do modal
-              const nome = interaction.fields.getTextInputValue('nome_input');
-              const telefone = interaction.fields.getTextInputValue('telefone_input');
-              const discord = interaction.fields.getTextInputValue('discord_input');
-              const charPrincipal = interaction.fields.getTextInputValue('char_input');
-              const guildAnterior = interaction.fields.getTextInputValue('guild_input');
-              
-              // Atualizar no banco de dados
-              await db.execute(
-                `UPDATE ${table} SET 
-                  nome = ?, 
-                  telefone = ?, 
-                  discord = ?, 
-                  char_principal = ?, 
-                  guild_anterior = ? 
-                WHERE id = ?`,
-                [nome, telefone, discord, charPrincipal, guildAnterior, applicationId]
-              );
-              
-              // Buscar dados atualizados
-              const [updatedRows] = await db.execute(
-                `SELECT * FROM ${table} WHERE id = ?`,
-                [applicationId]
-              );
-              
-              if (updatedRows.length > 0) {
-                const updatedApplication = updatedRows[0];
-                let messageEdited = false;
-                
-                // Tentar editar a mensagem original primeiro
-                try {
-                  // Primeiro tentamos encontrar a mensagem original
-                  const message = await interaction.channel.messages.fetch(interaction.message.id).catch(() => null);
-                  
-                  if (message) {
-                    // Se encontramos a mensagem, deletamos e enviamos uma nova
-                    await message.delete().catch(() => {});
-                    await sendApplicationEmbed(interaction.channel, updatedApplication, db);
-                    messageEdited = true;
-                  }
-                } catch (error) {
-                  console.error('Erro ao editar mensagem original:', error);
-                }
-                
-                // Se não conseguiu editar, enviar nova mensagem
-                if (!messageEdited) {
-                  await sendApplicationEmbed(interaction.channel, updatedApplication, db);
-                }
-                
-                await interaction.reply({
-                  content: `Inscrição #${applicationId} atualizada com sucesso!`,
-                  flags: MessageFlags.Ephemeral
-                });
-              } else {
-                await interaction.reply({
-                  content: 'Inscrição não encontrada após atualização.',
-                  flags: MessageFlags.Ephemeral
-                });
-              }
-            } catch (error) {
-              console.error('❌ Erro ao salvar edição:', error);
-              await interaction.reply({
-                content: 'Ocorreu um erro ao salvar as alterações.',
-                flags: MessageFlags.Ephemeral
-              });
+            if (rows.length === 0) {
+              return interaction.editReply({
+                content: '❌ Inscrição não encontrada.'
+              }).catch(console.error);
             }
-            return;
+            
+            const application = rows[0];
+            let images = application.imagens ? JSON.parse(application.imagens) : [];
+            
+            // Processa as URLs
+            const newImages = processImageUrls(imageUrls);
+            
+            // Adiciona as novas imagens (limite de 10)
+            images = [...images, ...newImages].slice(0, 10);
+            
+            // Atualiza o banco
+            await db.execute(
+              'UPDATE inscricoes_pendentes SET imagens = ? WHERE id = ?',
+              [JSON.stringify(images), applicationId]
+            );
+            
+            // Atualiza a interface
+            await updateImageEditor(interaction, { images, applicationId, status });
+          } catch (error) {
+            console.error('❌ Erro ao processar modal de imagens:', error);
+            await interaction.editReply({
+              content: '❌ Ocorreu um erro ao processar as imagens.'
+            }).catch(console.error);
           }
-        } catch (error) {
-          console.error('❌ Erro ao processar modal:', error);
-          interaction.reply({ content: 'Ocorreu um erro ao processar sua ação.', flags: MessageFlags.Ephemeral }).catch(console.error);
         }
       }
     } catch (error) {
-      console.error('❌ Erro não tratado em InteractionCreate:', error);
+      console.error('❌ Erro não tratado em interactionCreate:', error);
       
-      // Verificar se já foi respondido
-      const alreadyReplied = interaction.replied || interaction.deferred;
-      
-      try {
-        if (!alreadyReplied) {
-          await interaction.reply({
-            content: 'Ocorreu um erro interno. Por favor, tente novamente mais tarde.',
-            flags: MessageFlags.Ephemeral
-          }).catch(() => {});
-        } else {
-          // Tentar editar a resposta existente
-          const message = await interaction.fetchReply().catch(() => null);
-          if (message && message.editable) {
-            await message.edit({
-              content: 'Ocorreu um erro interno. Por favor, tente novamente mais tarde.'
-            }).catch(() => {});
-          }
-        }
-      } catch (nestedError) {
-        console.error('❌ Erro ao enviar mensagem de erro:', nestedError);
+      // Tenta enviar uma mensagem de erro se possível
+      if (interaction && !interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          content: '❌ Ocorreu um erro inesperado ao processar sua solicitação.',
+          flags: MessageFlags.Ephemeral
+        }).catch(console.error);
       }
     }
   });
+
+  // Evento de erro
+  client.on(Events.Error, error => {
+    console.error('❌ Erro do cliente Discord:', error);
+  });
+
+  // Evento de warn
+  client.on(Events.Warn, info => {
+    console.warn('⚠️ Aviso do Discord:', info);
+  });
+
+  // Evento de desconexão
+  client.on(Events.ShardDisconnect, (event, shardId) => {
+    console.log(`🔌 Shard ${shardId} desconectado:`, event);
+  });
+
+  // Evento de reconexão
+  client.on(Events.ShardReconnecting, shardId => {
+    console.log(`🔄 Shard ${shardId} reconectando...`);
+  });
+
+  // Evento de resumo (resumed)
+  client.on(Events.ShardResume, (shardId, replayedEvents) => {
+    console.log(`▶️ Shard ${shardId} retomado, eventos repassados: ${replayedEvents}`);
+  });
 }
 
-module.exports = {
-  setupEvents
-};
+module.exports = { setupEvents, stopAllMonitors };
