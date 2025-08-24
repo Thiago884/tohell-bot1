@@ -73,11 +73,6 @@ function gracefulShutdown(server) {
     isShuttingDown = true; // Atualiza a variável global
     
     try {
-      // Para todos os monitors primeiro
-      if (client && client.monitors) {
-        stopAllMonitors();
-      }
-      
       // Desconectar o bot do Discord
       if (client && !client.destroyed) {
         await client.destroy();
@@ -86,7 +81,7 @@ function gracefulShutdown(server) {
       
       // Encerrar conexão com o banco de dados
       if (db) {
-        await db.closeConnection();
+        await db.end();
         console.log('🔌 Conexão com DB encerrada');
       }
       

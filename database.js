@@ -20,42 +20,31 @@ const dbConfig = {
 
 let dbConnection;
 let isShuttingDown = false;
-let connectionCheckInterval;
-let isConnectionActiveFlag = false;
 
 // Conexão com o banco de dados
 async function connectDB() {
   try {
     dbConnection = await mysql.createPool(dbConfig);
     console.log('✅ Conectado ao banco de dados MySQL');
-    isConnectionActiveFlag = true;
     
     // Criar tabelas necessárias
     await createTables();
     
-    // Verificação periódica da conexão - apenas se não existir
-    if (!connectionCheckInterval) {
-      connectionCheckInterval = setInterval(async () => {
-        if (isShuttingDown) {
-          clearInterval(connectionCheckInterval);
-          return;
-        }
-        
-        try {
-          await dbConnection.query('SELECT 1');
-          isConnectionActiveFlag = true;
-        } catch (err) {
-          console.error('❌ Erro na verificação de conexão com o DB:', err.message);
-          isConnectionActiveFlag = false;
-          await reconnectDB();
-        }
-      }, 60000); // Verificar a cada 1 minuto
-    }
+    // Verificação periódica da conexão
+    setInterval(async () => {
+      if (isShuttingDown) return;
+      
+      try {
+        await dbConnection.query('SELECT 1');
+      } catch (err) {
+        console.error('❌ Erro na verificação de conexão com o DB:', err.message);
+        await reconnectDB();
+      }
+    }, 60000); // Verificar a cada 1 minuto
     
     return dbConnection;
   } catch (error) {
     console.error('❌ Erro ao conectar ao banco de dados:', error.message);
-    isConnectionActiveFlag = false;
     await reconnectDB();
   }
 }
@@ -243,11 +232,9 @@ async function reconnectDB() {
     
     dbConnection = await mysql.createPool(dbConfig);
     console.log('✅ Reconectado ao banco de dados com sucesso');
-    isConnectionActiveFlag = true;
     return dbConnection;
   } catch (err) {
     console.error('❌ Falha na reconexão com o DB:', err.message);
-    isConnectionActiveFlag = false;
     // Tentar novamente após 5 segundos
     setTimeout(reconnectDB, 5000);
     return null;
@@ -266,20 +253,23 @@ async function checkConnection() {
 }
 
 // Função para verificar se a conexão está ativa
-async function checkConnectionStatus() {
-  return isConnectionActiveFlag && !isShuttingDown;
+async function isConnectionActive() {
+  try {
+    if (!dbConnection) return false;
+    await dbConnection.execute('SELECT 1');
+    return true;
+  } catch (error) {
+    console.log('⚠️ Conexão com DB não está ativa:', error.message);
+    return false;
+  }
 }
 
 // Função para executar query com verificação de conexão
 async function executeQuery(query, params = []) {
   try {
-    if (!await checkConnectionStatus()) {
-      console.log('🔄 Conexão não disponível, tentando reconectar...');
+    if (!await isConnectionActive()) {
+      console.log('🔄 Reconectando ao DB antes da query...');
       await reconnectDB();
-      
-      if (!await checkConnectionStatus()) {
-        throw new Error('Conexão com DB não disponível após tentativa de reconexão');
-      }
     }
     
     if (!dbConnection) {
@@ -418,14 +408,6 @@ async function getPendingApplicationsSince(lastChecked) {
 // Função para fechar a conexão gracefulmente
 async function closeConnection() {
   isShuttingDown = true;
-  isConnectionActiveFlag = false;
-  
-  // Para a verificação periódica
-  if (connectionCheckInterval) {
-    clearInterval(connectionCheckInterval);
-    connectionCheckInterval = null;
-  }
-  
   if (dbConnection) {
     try {
       await dbConnection.end();
@@ -442,7 +424,7 @@ module.exports = {
   isShuttingDown,
   checkConnection,
   reconnectDB,
-  isConnectionActive: checkConnectionStatus,
+  isConnectionActive,
   executeQuery,
   logCronMessage,
   updateSystemStatus,
