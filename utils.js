@@ -672,7 +672,7 @@ async function showRanking(interaction, period, dbConnection) {
 
     rows.forEach((char, index) => {
       embed.addFields({
-        name: `#${index + 1} ${char.name}`,
+        name: `#${index + 1} ${char.name}`, 
         value: `🏰 ${char.guild || 'Nenhuma'}\n` +
                `⚔️ Level: ${char.current_level || 0} ` + 
                (char.level_change > 0 ? `**(+${char.level_change})**` : '') + '\n' +
@@ -704,7 +704,7 @@ async function showRanking(interaction, period, dbConnection) {
 async function addCommandPermission(commandName, roleId, dbConnection) {
   try {
     if (!commandName || !roleId || !dbConnection) {
-      console.error('❌ Parâmetros inválidos para addCommandPermission');
+      console.error('❌ Parámetros inválidos para addCommandPermission');
       return false;
     }
     await dbConnection.execute(
@@ -721,7 +721,7 @@ async function addCommandPermission(commandName, roleId, dbConnection) {
 async function removeCommandPermission(commandName, roleId, dbConnection) {
   try {
     if (!commandName || !roleId || !dbConnection) {
-      console.error('❌ Parâmetros inválidos para removeCommandPermission');
+      console.error('❌ Parámetros inválidos para removeCommandPermission');
       return false;
     }
     const [result] = await dbConnection.execute(
@@ -738,7 +738,7 @@ async function removeCommandPermission(commandName, roleId, dbConnection) {
 async function getCommandPermissions(commandName, dbConnection) {
   try {
     if (!commandName || !dbConnection) {
-      console.error('❌ Parâmetros inválidos para getCommandPermissions');
+      console.error('❌ Parámetros inválidos para getCommandPermissions');
       return [];
     }
     const [rows] = await dbConnection.execute(
@@ -767,7 +767,7 @@ async function checkUserPermission(interaction, commandName, dbConnection) {
 async function safeSend(channel, content) {
   try {
     if (!channel || !content) {
-      console.error('❌ Parâmetros inválidos para safeSend');
+      console.error('❌ Parámetros inválidos para safeSend');
       return null;
     }
     return await channel.send(content);
@@ -1103,67 +1103,32 @@ async function checkPhoneNumber(phoneNumber) {
 // NOVAS FUNÇÕES PARA PERSONAGENS 500+ RESETS
 // ==============================================
 
-// utils.js - função get500RCharacters corrigida
+// utils.js - função get500RCharacters SEM cache
 async function get500RCharacters(dbConnection, page = 1, perPage = 5) {
   try {
-    // Verifica cache primeiro (5 minutos)
-    const cacheKey = 'chars_500r';
-    const [cacheRows] = await dbConnection.execute(
-      'SELECT key_value FROM system_status WHERE key_name = ? AND updated_at > DATE_SUB(NOW(), INTERVAL 5 MINUTE)',
-      [cacheKey]
-    );
+    // Busca todos personagens 500+ resets no banco de dados SEM cache
+    // Incluindo informações de status e datas
+    const [result] = await dbConnection.execute(`
+      SELECT 
+        c.name, 
+        c.guild, 
+        c.last_resets as resets, 
+        c.last_seen as last_updated,
+        m.status,
+        CASE 
+          WHEN m.status = 'novo' THEN m.data_insercao
+          WHEN m.status = 'saiu' THEN m.data_saida
+          ELSE NULL
+        END as status_date
+      FROM characters c
+      LEFT JOIN membros m ON c.name = m.nome
+      WHERE c.last_resets >= 500
+      AND c.guild NOT IN ('ToHeLL_', 'ToHeLL2')
+      ORDER BY c.last_resets DESC, c.last_level DESC
+    `);
     
-    let chars = [];
-    let lastUpdated = new Date().toISOString();
-    
-    if (cacheRows.length > 0) {
-      try {
-        if (typeof cacheRows[0].key_value === 'string') {
-          chars = JSON.parse(cacheRows[0].key_value);
-        } else if (Array.isArray(cacheRows[0].key_value)) {
-          chars = cacheRows[0].key_value;
-        }
-      } catch (error) {
-        console.error('Erro ao parsear cache, buscando dados frescos:', error);
-        chars = [];
-      }
-    }
-    
-    if (chars.length === 0) {
-      // Busca todos personagens 500+ resets no banco de dados
-      // Agora incluindo informações de status e datas
-      const [result] = await dbConnection.execute(`
-        SELECT 
-          c.name, 
-          c.guild, 
-          c.last_resets as resets, 
-          c.last_seen as last_updated,
-          m.status,
-          CASE 
-            WHEN m.status = 'novo' THEN m.data_insercao
-            WHEN m.status = 'saiu' THEN m.data_saida
-            ELSE NULL
-          END as status_date
-        FROM characters c
-        LEFT JOIN membros m ON c.name = m.nome
-        WHERE c.last_resets >= 500
-        AND c.guild NOT IN ('ToHeLL_', 'ToHeLL2')
-        ORDER BY c.last_resets DESC, c.last_level DESC
-      `);
-      
-      chars = result;
-      lastUpdated = new Date().toISOString();
-      
-      try {
-        await dbConnection.execute(
-          'INSERT INTO system_status (key_name, key_value) VALUES (?, ?) ' +
-          'ON DUPLICATE KEY UPDATE key_value = VALUES(key_value), updated_at = NOW()',
-          [cacheKey, JSON.stringify(chars)]
-        );
-      } catch (error) {
-        console.error('Erro ao salvar no cache:', error);
-      }
-    }
+    const chars = result;
+    const lastUpdated = new Date().toISOString();
     
     // Paginação
     const totalChars = chars.length;

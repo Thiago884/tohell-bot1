@@ -392,7 +392,7 @@ async function listPendingApplications(context, args, dbConnection) {
   }
 }
 
-// Função para buscar inscrições
+// Função para buscar inscrições (atualizada para normalizar números de telefone)
 async function searchApplications(context, args, dbConnection) {
   if (args.length === 0) {
     return safeInteractionReply(context, { 
@@ -413,16 +413,35 @@ async function searchApplications(context, args, dbConnection) {
 
   try {
     const offset = (page - 1) * 5;
-    const searchPattern = `%${searchTerm}%`;
     
+    // Função para normalizar números de telefone (remove tudo que não é dígito)
+    const normalizePhone = (phone) => {
+      if (!phone) return null;
+      return phone.replace(/\D/g, '');
+    };
+    
+    const normalizedSearchTerm = normalizePhone(searchTerm);
+    const searchPattern = `%${searchTerm}%`;
+    const phoneSearchPattern = normalizedSearchTerm ? `%${normalizedSearchTerm}%` : null;
+
+    // Busca tanto pelo termo original quanto pelo telefone normalizado
     const [countRowsPendentes] = await dbConnection.execute(
-      'SELECT COUNT(*) as total FROM inscricoes_pendentes WHERE nome LIKE ? OR discord LIKE ? OR telefone LIKE ?',
-      [searchPattern, searchPattern, searchPattern]
+      `SELECT COUNT(*) as total FROM inscricoes_pendentes 
+       WHERE nome LIKE ? OR discord LIKE ? OR telefone LIKE ? 
+       ${phoneSearchPattern ? 'OR telefone LIKE ?' : ''}`,
+      phoneSearchPattern ? 
+        [searchPattern, searchPattern, searchPattern, phoneSearchPattern] :
+        [searchPattern, searchPattern, searchPattern]
     );
     
     const [countRowsAprovadas] = await dbConnection.execute(
-      'SELECT COUNT(*) as total FROM inscricoes WHERE (nome LIKE ? OR discord LIKE ? OR telefone LIKE ?) AND status = "aprovado"',
-      [searchPattern, searchPattern, searchPattern]
+      `SELECT COUNT(*) as total FROM inscricoes 
+       WHERE (nome LIKE ? OR discord LIKE ? OR telefone LIKE ? 
+       ${phoneSearchPattern ? 'OR telefone LIKE ?' : ''}) 
+       AND status = "aprovado"`,
+      phoneSearchPattern ? 
+        [searchPattern, searchPattern, searchPattern, phoneSearchPattern] :
+        [searchPattern, searchPattern, searchPattern]
     );
     
     const total = countRowsPendentes[0].total + countRowsAprovadas[0].total;
@@ -442,9 +461,15 @@ async function searchApplications(context, args, dbConnection) {
       });
     }
 
+    // Busca nas inscrições pendentes
     const [rowsPendentes] = await dbConnection.execute(
-      'SELECT *, "pendente" as status FROM inscricoes_pendentes WHERE nome LIKE ? OR discord LIKE ? OR telefone LIKE ? ORDER BY data_inscricao DESC LIMIT ? OFFSET ?',
-      [searchPattern, searchPattern, searchPattern, 5, offset]
+      `SELECT *, "pendente" as status FROM inscricoes_pendentes 
+       WHERE nome LIKE ? OR discord LIKE ? OR telefone LIKE ? 
+       ${phoneSearchPattern ? 'OR telefone LIKE ?' : ''} 
+       ORDER BY data_inscricao DESC LIMIT ? OFFSET ?`,
+      phoneSearchPattern ? 
+        [searchPattern, searchPattern, searchPattern, phoneSearchPattern, 5, offset] :
+        [searchPattern, searchPattern, searchPattern, 5, offset]
     );
     
     const remaining = 5 - rowsPendentes.length;
@@ -453,8 +478,14 @@ async function searchApplications(context, args, dbConnection) {
     if (remaining > 0) {
       const aprovadasOffset = Math.max(0, offset - countRowsPendentes[0].total);
       [rowsAprovadas] = await dbConnection.execute(
-        'SELECT *, "aprovado" as status FROM inscricoes WHERE (nome LIKE ? OR discord LIKE ? OR telefone LIKE ?) AND status = "aprovado" ORDER BY data_inscricao DESC LIMIT ? OFFSET ?',
-        [searchPattern, searchPattern, searchPattern, remaining, aprovadasOffset]
+        `SELECT *, "aprovado" as status FROM inscricoes 
+         WHERE (nome LIKE ? OR discord LIKE ? OR telefone LIKE ? 
+         ${phoneSearchPattern ? 'OR telefone LIKE ?' : ''}) 
+         AND status = "aprovado" 
+         ORDER BY data_inscricao DESC LIMIT ? OFFSET ?`,
+        phoneSearchPattern ? 
+          [searchPattern, searchPattern, searchPattern, phoneSearchPattern, remaining, aprovadasOffset] :
+          [searchPattern, searchPattern, searchPattern, remaining, aprovadasOffset]
       );
     }
     
@@ -500,7 +531,7 @@ async function searchApplications(context, args, dbConnection) {
   }
 }
 
-// Função para enviar embed de inscrição (atualizada sem botão de gerenciar)
+// Função para enviar embed de inscrição (atualizada com formatação de telefone)
 async function sendApplicationEmbed(channel, application, dbConnection) {
   const screenshots = processImageUrls(application.screenshot_path);
   const screenshotLinks = screenshots.slice(0, 5).map((screenshot, index) => 
@@ -509,12 +540,22 @@ async function sendApplicationEmbed(channel, application, dbConnection) {
 
   const isApproved = application.status === 'aprovado';
   
+  // Normaliza o telefone para exibição consistente
+  const normalizePhoneForDisplay = (phone) => {
+    if (!phone) return 'Não informado';
+    const digits = phone.replace(/\D/g, '');
+    if (digits.length === 11) {
+      return `(${digits.substring(0, 2)}) ${digits.substring(2, 7)}-${digits.substring(7)}`;
+    }
+    return phone;
+  };
+
   const embed = new EmbedBuilder()
     .setColor(isApproved ? '#00FF00' : '#FF4500')
     .setTitle(`Inscrição #${application.id} (${isApproved ? 'Aprovada' : 'Pendente'})`)
     .setDescription(`**${application.nome}** deseja se juntar à guild!`)
     .addFields(
-      { name: '📱 Telefone', value: application.telefone, inline: true },
+      { name: '📱 Telefone', value: normalizePhoneForDisplay(application.telefone), inline: true },
       { name: '🎮 Discord', value: application.discord, inline: true },
       { name: '⚔️ Char Principal', value: application.char_principal, inline: true },
       { name: '🏰 Guild Anterior', value: application.guild_anterior || 'Nenhuma', inline: true },
