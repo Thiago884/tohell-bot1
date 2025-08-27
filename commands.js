@@ -314,6 +314,26 @@ async function createImageCarousel(interaction, images, applicationId) {
   });
 }
 
+// Função para normalizar números de telefone (mais robusta)
+function normalizePhoneForSearch(phone) {
+  if (!phone) return null;
+  
+  // Remove tudo que não é dígito, incluindo o caractere '+' se presente
+  const digits = phone.replace(/\D/g, '');
+  
+  // Se o número começar com código de país (ex: 55), remove para busca mais ampla
+  if (digits.startsWith('55') && digits.length > 10) {
+    return digits.substring(2); // Remove o '55' do início
+  }
+  
+  // Se tiver 11 dígitos e começar com 0, remove o 0
+  if (digits.length === 11 && digits.startsWith('0')) {
+    return digits.substring(1);
+  }
+  
+  return digits;
+}
+
 // Função para listar inscrições pendentes com paginação
 async function listPendingApplications(context, args, dbConnection) {
   const page = args[0] ? parseInt(args[0]) : 1;
@@ -392,7 +412,7 @@ async function listPendingApplications(context, args, dbConnection) {
   }
 }
 
-// Função para buscar inscrições (atualizada para normalizar números de telefone)
+// Função para buscar inscrições (atualizada para normalização robusta de telefones)
 async function searchApplications(context, args, dbConnection) {
   if (args.length === 0) {
     return safeInteractionReply(context, { 
@@ -414,37 +434,94 @@ async function searchApplications(context, args, dbConnection) {
   try {
     const offset = (page - 1) * 5;
     
-    // Função para normalizar números de telefone (remove tudo que não é dígito)
-    const normalizePhone = (phone) => {
-      if (!phone) return null;
-      return phone.replace(/\D/g, '');
-    };
+    // Normaliza o termo de busca para telefone
+    const normalizedSearchTerm = normalizePhoneForSearch(searchTerm);
     
-    const normalizedSearchTerm = normalizePhone(searchTerm);
+    // Se o termo de busca parece ser um número de telefone, busca de forma especial
+    const isPhoneSearch = normalizedSearchTerm && normalizedSearchTerm.length >= 8;
+    
     const searchPattern = `%${searchTerm}%`;
-    const phoneSearchPattern = normalizedSearchTerm ? `%${normalizedSearchTerm}%` : null;
+    const phoneSearchPattern = isPhoneSearch ? `%${normalizedSearchTerm}%` : null;
 
-    // Busca tanto pelo termo original quanto pelo telefone normalizado
-    const [countRowsPendentes] = await dbConnection.execute(
-      `SELECT COUNT(*) as total FROM inscricoes_pendentes 
-       WHERE nome LIKE ? OR discord LIKE ? OR telefone LIKE ? 
-       ${phoneSearchPattern ? 'OR telefone LIKE ?' : ''}`,
-      phoneSearchPattern ? 
-        [searchPattern, searchPattern, searchPattern, phoneSearchPattern] :
-        [searchPattern, searchPattern, searchPattern]
-    );
-    
-    const [countRowsAprovadas] = await dbConnection.execute(
-      `SELECT COUNT(*) as total FROM inscricoes 
-       WHERE (nome LIKE ? OR discord LIKE ? OR telefone LIKE ? 
-       ${phoneSearchPattern ? 'OR telefone LIKE ?' : ''}) 
-       AND status = "aprovado"`,
-      phoneSearchPattern ? 
-        [searchPattern, searchPattern, searchPattern, phoneSearchPattern] :
-        [searchPattern, searchPattern, searchPattern]
-    );
-    
-    const total = countRowsPendentes[0].total + countRowsAprovadas[0].total;
+    let countQuery, countParams;
+    let dataQuery, dataParams;
+
+    if (isPhoneSearch) {
+      // Busca especial para telefones - normaliza ambos os lados
+      countQuery = `
+        SELECT COUNT(*) as total FROM (
+          SELECT id, nome, telefone, discord, data_inscricao, 'pendente' as status 
+          FROM inscricoes_pendentes 
+          WHERE REPLACE(REPLACE(REPLACE(REPLACE(telefone, '(', ''), ')', ''), ' ', ''), '-', '') LIKE ?
+          UNION ALL
+          SELECT id, nome, telefone, discord, data_inscricao, 'aprovado' as status 
+          FROM inscricoes 
+          WHERE status = 'aprovado' 
+          AND REPLACE(REPLACE(REPLACE(REPLACE(telefone, '(', ''), ')', ''), ' ', ''), '-', '') LIKE ?
+        ) as combined
+      `;
+      
+      countParams = [phoneSearchPattern, phoneSearchPattern];
+      
+      dataQuery = `
+        SELECT * FROM (
+          SELECT id, nome, telefone, discord, char_principal, guild_anterior, ip, 
+                 screenshot_path, data_inscricao, 'pendente' as status 
+          FROM inscricoes_pendentes 
+          WHERE REPLACE(REPLACE(REPLACE(REPLACE(telefone, '(', ''), ')', ''), ' ', ''), '-', '') LIKE ?
+          UNION ALL
+          SELECT id, nome, telefone, discord, char_principal, guild_anterior, ip, 
+                 screenshot_path, data_inscricao, 'aprovado' as status 
+          FROM inscricoes 
+          WHERE status = 'aprovado' 
+          AND REPLACE(REPLACE(REPLACE(REPLACE(telefone, '(', ''), ')', ''), ' ', ''), '-', '') LIKE ?
+        ) as combined 
+        ORDER BY data_inscricao DESC 
+        LIMIT ? OFFSET ?
+      `;
+      
+      dataParams = [phoneSearchPattern, phoneSearchPattern, 5, offset];
+      
+    } else {
+      // Busca normal por nome ou Discord
+      countQuery = `
+        SELECT COUNT(*) as total FROM (
+          SELECT id, nome, telefone, discord, data_inscricao, 'pendente' as status 
+          FROM inscricoes_pendentes 
+          WHERE nome LIKE ? OR discord LIKE ?
+          UNION ALL
+          SELECT id, nome, telefone, discord, data_inscricao, 'aprovado' as status 
+          FROM inscricoes 
+          WHERE status = 'aprovado' 
+          AND (nome LIKE ? OR discord LIKE ?)
+        ) as combined
+      `;
+      
+      countParams = [searchPattern, searchPattern, searchPattern, searchPattern];
+      
+      dataQuery = `
+        SELECT * FROM (
+          SELECT id, nome, telefone, discord, char_principal, guild_anterior, ip, 
+                 screenshot_path, data_inscricao, 'pendente' as status 
+          FROM inscricoes_pendentes 
+          WHERE nome LIKE ? OR discord LIKE ?
+          UNION ALL
+          SELECT id, nome, telefone, discord, char_principal, guild_anterior, ip, 
+                 screenshot_path, data_inscricao, 'aprovado' as status 
+          FROM inscricoes 
+          WHERE status = 'aprovado' 
+          AND (nome LIKE ? OR discord LIKE ?)
+        ) as combined 
+        ORDER BY data_inscricao DESC 
+        LIMIT ? OFFSET ?
+      `;
+      
+      dataParams = [searchPattern, searchPattern, searchPattern, searchPattern, 5, offset];
+    }
+
+    // Executa a contagem
+    const [countRows] = await dbConnection.execute(countQuery, countParams);
+    const total = countRows[0].total;
     const totalPages = Math.ceil(total / 5);
 
     if (total === 0) {
@@ -461,35 +538,8 @@ async function searchApplications(context, args, dbConnection) {
       });
     }
 
-    // Busca nas inscrições pendentes
-    const [rowsPendentes] = await dbConnection.execute(
-      `SELECT *, "pendente" as status FROM inscricoes_pendentes 
-       WHERE nome LIKE ? OR discord LIKE ? OR telefone LIKE ? 
-       ${phoneSearchPattern ? 'OR telefone LIKE ?' : ''} 
-       ORDER BY data_inscricao DESC LIMIT ? OFFSET ?`,
-      phoneSearchPattern ? 
-        [searchPattern, searchPattern, searchPattern, phoneSearchPattern, 5, offset] :
-        [searchPattern, searchPattern, searchPattern, 5, offset]
-    );
-    
-    const remaining = 5 - rowsPendentes.length;
-    let rowsAprovadas = [];
-    
-    if (remaining > 0) {
-      const aprovadasOffset = Math.max(0, offset - countRowsPendentes[0].total);
-      [rowsAprovadas] = await dbConnection.execute(
-        `SELECT *, "aprovado" as status FROM inscricoes 
-         WHERE (nome LIKE ? OR discord LIKE ? OR telefone LIKE ? 
-         ${phoneSearchPattern ? 'OR telefone LIKE ?' : ''}) 
-         AND status = "aprovado" 
-         ORDER BY data_inscricao DESC LIMIT ? OFFSET ?`,
-        phoneSearchPattern ? 
-          [searchPattern, searchPattern, searchPattern, phoneSearchPattern, remaining, aprovadasOffset] :
-          [searchPattern, searchPattern, searchPattern, remaining, aprovadasOffset]
-      );
-    }
-    
-    const rows = [...rowsPendentes, ...rowsAprovadas];
+    // Busca os dados
+    const [rows] = await dbConnection.execute(dataQuery, dataParams);
 
     const embed = new EmbedBuilder()
       .setColor('#FF4500')
@@ -505,12 +555,12 @@ async function searchApplications(context, args, dbConnection) {
     if (totalPages > 1) {
       const navRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
-          .setCustomId(`search_prev_${searchTerm}_${page}`)
+          .setCustomId(`search_prev_${encodeURIComponent(searchTerm)}_${page}`)
           .setLabel('Anterior')
           .setStyle(ButtonStyle.Primary)
           .setDisabled(page <= 1),
         new ButtonBuilder()
-          .setCustomId(`search_next_${searchTerm}_${page}`)
+          .setCustomId(`search_next_${encodeURIComponent(searchTerm)}_${page}`)
           .setLabel('Próxima')
           .setStyle(ButtonStyle.Primary)
           .setDisabled(page >= totalPages)
