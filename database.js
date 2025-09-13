@@ -208,6 +208,17 @@ async function createTables() {
         ultima_atualizacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       )
     `);
+    
+    // NOVA TABELA PARA NOTIFICAÇÕES
+    await dbConnection.execute(`
+      CREATE TABLE IF NOT EXISTS notification_subscriptions (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        notification_type VARCHAR(100) NOT NULL,
+        role_id VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY unique_subscription (notification_type, role_id)
+      )
+    `);
 
     console.log('✅ Todas as tabelas verificadas/criadas com sucesso');
   } catch (error) {

@@ -118,6 +118,39 @@ const slashCommands = [
     ]
   },
   {
+    name: 'admin-notificacoes',
+    description: 'Gerencia quem recebe notificações por DM (Admin only)',
+    options: [
+      {
+        name: 'acao',
+        description: 'Ação a ser realizada',
+        type: ApplicationCommandOptionType.String,
+        required: true,
+        choices: [
+          { name: 'Adicionar cargo', value: 'add' },
+          { name: 'Remover cargo', value: 'remove' },
+          { name: 'Listar cargos', value: 'list' }
+        ]
+      },
+      {
+        name: 'tipo',
+        description: 'O tipo de notificação a ser gerenciada',
+        type: ApplicationCommandOptionType.String,
+        required: true,
+        choices: [
+          { name: 'Inscrição Pendente', value: 'inscricao_pendente' },
+          { name: 'Alerta de Segurança (Membro vs Inimigo)', value: 'alerta_seguranca' }
+        ]
+      },
+      {
+        name: 'cargo',
+        description: 'O cargo para adicionar ou remover da notificação',
+        type: ApplicationCommandOptionType.Role,
+        required: false
+      }
+    ]
+  },
+  {
     name: 'bloquear-ip',
     description: 'Bloqueia um IP no sistema',
     options: [

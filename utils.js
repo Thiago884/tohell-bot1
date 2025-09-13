@@ -753,12 +753,17 @@ async function getCommandPermissions(commandName, dbConnection) {
 }
 
 async function checkUserPermission(interaction, commandName, dbConnection) {
-  if (commandName === 'pendentes') return true;
+  // O comando pendentes é especial e é verificado pelos novos /admin-notificacoes
+  if (commandName === 'pendentes') {
+      const allowedRoles = await getNotificationSubscriptions('inscricao_pendente', dbConnection);
+      if (allowedRoles.length === 0) return true; // Se nenhum cargo configurado, todos podem usar
+      return interaction.member?.roles?.cache?.some(role => allowedRoles.includes(role.id));
+  }
   if (!interaction || !commandName || !dbConnection) return false;
-  
+
   const allowedRoles = await getCommandPermissions(commandName, dbConnection);
   
-  if (allowedRoles.length === 0) return true;
+  if (allowedRoles.length === 0) return true; // Se nenhum cargo configurado, todos podem usar
   
   return interaction.member?.roles?.cache?.some(role => allowedRoles.includes(role.id));
 }
@@ -1154,6 +1159,74 @@ async function get500RCharacters(dbConnection, page = 1, perPage = 5) {
   }
 }
 
+// ==============================================
+// NOVAS FUNÇÕES PARA SISTEMA DE NOTIFICAÇÕES
+// ==============================================
+async function addNotificationSubscription(type, roleId, dbConnection) {
+  try {
+    await dbConnection.execute(
+      'INSERT INTO notification_subscriptions (notification_type, role_id) VALUES (?, ?)',
+      [type, roleId]
+    );
+    return true;
+  } catch (error) {
+    console.error('❌ Erro ao adicionar subscrição de notificação:', error);
+    return false;
+  }
+}
+
+async function removeNotificationSubscription(type, roleId, dbConnection) {
+  try {
+    const [result] = await dbConnection.execute(
+      'DELETE FROM notification_subscriptions WHERE notification_type = ? AND role_id = ?',
+      [type, roleId]
+    );
+    return result.affectedRows > 0;
+  } catch (error) {
+    console.error('❌ Erro ao remover subscrição de notificação:', error);
+    return false;
+  }
+}
+
+async function getNotificationSubscriptions(type, dbConnection) {
+  try {
+    const [rows] = await dbConnection.execute(
+      'SELECT role_id FROM notification_subscriptions WHERE notification_type = ?',
+      [type]
+    );
+    return rows.map(row => row.role_id);
+  } catch (error) {
+    console.error('❌ Erro ao obter subscrições de notificação:', error);
+    return [];
+  }
+}
+
+async function sendDmsToRoles(client, roleIds, messageContent) {
+  if (!roleIds || roleIds.length === 0) return;
+
+  const notifiedUserIds = new Set();
+
+  try {
+    // Itera por todos os servidores onde o bot está
+    for (const guild of client.guilds.cache.values()) {
+      // Busca todos os membros do servidor
+      const members = await guild.members.fetch();
+      members.forEach(member => {
+        // Se o membro não for um bot, não tiver sido notificado ainda e tiver um dos cargos
+        if (!member.user.bot && !notifiedUserIds.has(member.id) && member.roles.cache.some(role => roleIds.includes(role.id))) {
+          member.send(messageContent).catch(error => {
+            console.error(`❌ Falha ao enviar DM para ${member.user.tag}: ${error.message}`);
+          });
+          notifiedUserIds.add(member.id);
+        }
+      });
+    }
+  } catch (error) {
+    console.error('❌ Erro ao enviar DMs para cargos:', error);
+  }
+}
+
+
 module.exports = {
   formatBrazilianDate,
   isValidImageUrl,
@@ -1183,5 +1256,10 @@ module.exports = {
   // Função para consulta de telefone
   checkPhoneNumber,
   // Novas funções para personagens 500+ resets
-  get500RCharacters
+  get500RCharacters,
+  // Novas funções para sistema de notificações
+  addNotificationSubscription,
+  removeNotificationSubscription,
+  getNotificationSubscriptions,
+  sendDmsToRoles,
 };

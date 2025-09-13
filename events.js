@@ -1,10 +1,21 @@
 const { Events, EmbedBuilder, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
-const { safeSend, searchCharacterWithCache, showRanking, searchCharacter, getCommandPermissions, addCommandPermission, removeCommandPermission, checkUserPermission, formatBrazilianDate, processImageUrls, blockIP, unblockIP, queryIP, getIPInfo, generateSecurityReport, getRecentAccess, manageWhitelist, checkPhoneNumber, get500RCharacters } = require('./utils');
+const { 
+    safeSend, searchCharacterWithCache, showRanking, searchCharacter, 
+    getCommandPermissions, addCommandPermission, removeCommandPermission, checkUserPermission, 
+    formatBrazilianDate, processImageUrls, blockIP, unblockIP, queryIP, getIPInfo, 
+    generateSecurityReport, getRecentAccess, manageWhitelist, checkPhoneNumber, get500RCharacters,
+    // Novas importações para o sistema de notificação
+    addNotificationSubscription, removeNotificationSubscription, getNotificationSubscriptions, sendDmsToRoles 
+} = require('./utils');
 const { isShuttingDown } = require('./database');
 const { listPendingApplications, searchApplications, sendApplicationEmbed, approveApplication, rejectApplication, showHelp, createImageCarousel } = require('./commands');
 
+// --- VARIÁVEIS DE ESTADO PARA OS MONITORES ---
 // Monitor de inscrições pendentes
 let lastCheckedApplications = new Date();
+// Monitor de novos membros (para verificação de inimigos)
+let lastCheckedMemberTimestamp = new Date();
+const SECURITY_ALERT_CHANNEL_ID = '1256287757135908884';
 
 // Monitoramento de segurança
 async function setupSecurityMonitoring(client, db) {
@@ -34,7 +45,7 @@ async function setupSecurityMonitoring(client, db) {
       `);
       
       // Envia notificações se houver atividade suspeita
-      const securityChannel = await client.channels.fetch(process.env.SECURITY_CHANNEL_ID);
+      const securityChannel = await client.channels.fetch(process.env.SECURITY_CHANNEL_ID).catch(() => null);
       if (!securityChannel) return;
       
       if (suspiciousLogins.length > 0) {
@@ -126,42 +137,126 @@ async function setupAutoCleanup(db) {
   console.log('✅ Limpeza automática agendada');
 }
 
-// Verificar novas inscrições
+// Verificar novas inscrições e notificar por DM
 async function checkNewApplications(client, db) {
   if (isShuttingDown) return;
   
   try {
-    // Verifica se a conexão com o banco está válida
     if (!db || !(await db.execute('SELECT 1').catch(() => false))) {
-      console.log('⚠️ Conexão com o banco de dados não está disponível, tentando reconectar...');
+      console.log('⚠️ Conexão com o banco de dados não está disponível para checar inscrições.');
       return;
     }
 
     const [rows] = await db.execute(
-      'SELECT * FROM inscricoes_pendentes WHERE data_inscricao > ? ORDER BY data_inscricao DESC',
+      'SELECT * FROM inscricoes_pendentes WHERE data_inscricao > ? ORDER BY data_inscricao ASC',
       [lastCheckedApplications]
     );
     
     if (rows.length > 0) {
       const channel = await client.channels.fetch(process.env.ALLOWED_CHANNEL_ID);
-      lastCheckedApplications = new Date();
       
       await channel.send({
         content: `📢 Há ${rows.length} nova(s) inscrição(ões) pendente(s)! Use /pendentes para visualizar.`
       });
       
+      // Busca os cargos que devem ser notificados por DM
+      const roleIdsToNotify = await getNotificationSubscriptions('inscricao_pendente', db);
+
       for (const application of rows) {
         await sendApplicationEmbed(channel, application, db);
+        
+        // Envia a notificação por DM
+        const dmEmbed = new EmbedBuilder()
+          .setColor('#FF4500')
+          .setTitle('🔔 Nova Inscrição Pendente')
+          .setDescription(`Uma nova inscrição de **${application.nome}** está aguardando avaliação.`)
+          .addFields(
+              { name: '👤 Nome', value: application.nome, inline: true },
+              { name: '⚔️ Personagem', value: application.char_principal || 'Não informado', inline: true },
+              { name: '📅 Data', value: formatBrazilianDate(application.data_inscricao), inline: true }
+          )
+          .setFooter({ text: 'Por favor, verifique no canal de inscrições.' });
+
+        await sendDmsToRoles(client, roleIdsToNotify, { embeds: [dmEmbed] });
+
+        // Atualiza o timestamp da última verificação para o da inscrição atual
+        lastCheckedApplications = new Date(application.data_inscricao);
       }
     }
   } catch (error) {
-    if (error.message.includes('Pool is closed') || error.code === 'POOL_CLOSED') {
+    if (error.code === 'POOL_CLOSED') {
       console.log('⚠️ Pool de conexão fechado, aguardando reconexão...');
     } else {
       console.error('❌ Erro ao verificar novas inscrições:', error);
     }
   }
 }
+
+// NOVO: Verificar novos membros e cruzar com a lista de inimigos
+async function checkNewMembersForConflicts(client, db) {
+    if (isShuttingDown) return;
+
+    try {
+        if (!db || !(await db.execute('SELECT 1').catch(() => false))) {
+            console.log('⚠️ Conexão com o banco de dados não está disponível para checar conflitos.');
+            return;
+        }
+
+        const [newMembers] = await db.execute(
+            `SELECT nome, guild, data_insercao FROM membros WHERE data_insercao > ? AND status = 'novo' ORDER BY data_insercao ASC`,
+            [lastCheckedMemberTimestamp]
+        );
+
+        if (newMembers.length > 0) {
+            const securityChannel = await client.channels.fetch(SECURITY_ALERT_CHANNEL_ID).catch(() => null);
+            const roleIdsToNotify = await getNotificationSubscriptions('alerta_seguranca', db);
+
+            for (const member of newMembers) {
+                const [enemies] = await db.execute(
+                    `SELECT nome, guild, status FROM inimigos WHERE nome = ?`,
+                    [member.nome]
+                );
+
+                if (enemies.length > 0) {
+                    const enemyInfo = enemies[0];
+                    const alertTitle = enemyInfo.status === 'saiu' ? '✅ Ex-Inimigo Juntou-se à Guild' : '🚨 ALERTA: Inimigo Ativo Juntou-se à Guild';
+                    const alertColor = enemyInfo.status === 'saiu' ? '#FFA500' : '#FF0000';
+                    const description = `O personagem **${member.nome}**, que consta na lista de inimigos, entrou na guild **${member.guild}**.`;
+
+                    const alertEmbed = new EmbedBuilder()
+                        .setColor(alertColor)
+                        .setTitle(alertTitle)
+                        .setDescription(description)
+                        .addFields(
+                            { name: '👤 Personagem', value: member.nome, inline: true },
+                            { name: '➡️ Guild Atual', value: member.guild, inline: true },
+                            { name: '⬅️ Guild Inimiga (Registrada)', value: enemyInfo.guild, inline: true },
+                            { name: '🗓️ Data da Entrada', value: formatBrazilianDate(member.data_insercao), inline: false }
+                        )
+                        .setFooter({ text: 'Ação recomendada: verificar histórico e intenções do membro.' });
+
+                    // Envia para o canal de segurança
+                    if (securityChannel) {
+                        await securityChannel.send({ embeds: [alertEmbed] });
+                    }
+
+                    // Envia DM para os cargos de segurança
+                    await sendDmsToRoles(client, roleIdsToNotify, { embeds: [alertEmbed] });
+                }
+
+                // Atualiza o timestamp para a próxima verificação
+                lastCheckedMemberTimestamp = new Date(member.data_insercao);
+            }
+        }
+    } catch (error) {
+        if (error.code === 'POOL_CLOSED') {
+            console.log('⚠️ Pool de conexão fechado, aguardando reconexão...');
+        } else {
+            console.error('❌ Erro ao verificar conflitos de membros:', error);
+        }
+    }
+}
+
 
 // Função auxiliar para validar URLs de imagem
 function isValidImageUrl(url) {
@@ -185,19 +280,11 @@ function setupEvents(client, db) {
     await setupSecurityMonitoring(client, db);
     await setupAutoCleanup(db);
     
-    // Intervalo com verificação de conexão
-    setInterval(async () => {
-      if (isShuttingDown) return;
-      
-      // Verifica se a conexão está ativa antes de executar
-      try {
-        if (db && await db.execute('SELECT 1').catch(() => false)) {
-          await checkNewApplications(client, db);
-        }
-      } catch (error) {
-        console.log('⚠️ Conexão não disponível para verificação de inscrições');
-      }
-    }, 60000);
+    // Intervalo para verificar novas inscrições
+    setInterval(() => checkNewApplications(client, db), 60000); // 1 minuto
+    
+    // Intervalo para verificar conflitos de membros
+    setInterval(() => checkNewMembersForConflicts(client, db), 5 * 60000); // 5 minutos
   });
 
   // Evento interactionCreate com tratamento de erros melhorado
@@ -209,7 +296,8 @@ function setupEvents(client, db) {
       if (interaction.isCommand()) {
         console.log(`🔍 Comando slash detectado: ${interaction.commandName}`, interaction.options.data);
 
-        if (!await checkUserPermission(interaction, interaction.commandName, db)) {
+        // A verificação de permissão para 'pendentes' agora é feita com base nas subscrições de notificação
+        if (interaction.commandName !== 'pendentes' && !await checkUserPermission(interaction, interaction.commandName, db)) {
           return interaction.reply({
             content: '❌ Você não tem permissão para usar este comando.',
             flags: MessageFlags.Ephemeral
@@ -242,6 +330,41 @@ function setupEvents(client, db) {
           case 'ajuda':
             await showHelp(interaction);
             break;
+
+          case 'admin-notificacoes':
+              if (!interaction.member?.permissions.has('ADMINISTRATOR')) {
+                  return interaction.reply({ content: '❌ Apenas administradores podem usar este comando.', flags: MessageFlags.Ephemeral });
+              }
+              const actionNotify = interaction.options.getString('acao');
+              const typeNotify = interaction.options.getString('tipo');
+              const roleNotify = interaction.options.getRole('cargo');
+
+              await interaction.deferReply({ ephemeral: true });
+
+              if (actionNotify === 'list') {
+                  const roleIds = await getNotificationSubscriptions(typeNotify, db);
+                  if (roleIds.length === 0) {
+                      return interaction.editReply(`Nenhum cargo está subscrito para a notificação: **${typeNotify}**.`);
+                  }
+                  const roleNames = roleIds.map(id => interaction.guild.roles.cache.get(id)?.name || `ID: ${id}`).join(', ');
+                  return interaction.editReply(`Cargos subscritos para **${typeNotify}**: ${roleNames}`);
+              }
+
+              if (!roleNotify) {
+                  return interaction.editReply('Você precisa especificar um cargo para adicionar ou remover.');
+              }
+
+              if (actionNotify === 'add') {
+                  const success = await addNotificationSubscription(typeNotify, roleNotify.id, db);
+                  return interaction.editReply(success ? `✅ O cargo **${roleNotify.name}** agora receberá notificações de **${typeNotify}**.` : '❌ Erro. O cargo talvez já esteja subscrito.');
+              }
+
+              if (actionNotify === 'remove') {
+                  const success = await removeNotificationSubscription(typeNotify, roleNotify.id, db);
+                  return interaction.editReply(success ? `✅ O cargo **${roleNotify.name}** não receberá mais notificações de **${typeNotify}**.` : '❌ Erro. O cargo talvez não estivesse subscrito.');
+              }
+              break;
+
 
           case 'char500':
             await interaction.deferReply();
