@@ -15,6 +15,8 @@ const { listPendingApplications, searchApplications, sendApplicationEmbed, appro
 let lastCheckedApplications = new Date();
 // Monitor de novos membros (para verificação de inimigos)
 let lastCheckedMemberTimestamp = new Date();
+// NOVO: Monitor de membros que saíram
+let lastCheckedDepartureTimestamp = new Date();
 const SECURITY_ALERT_CHANNEL_ID = '1256287757135908884';
 
 // Monitoramento de segurança
@@ -192,7 +194,7 @@ async function checkNewApplications(client, db) {
   }
 }
 
-// NOVO: Verificar novos membros e cruzar com a lista de inimigos
+// Verificar novos membros e cruzar com a lista de inimigos
 async function checkNewMembersForConflicts(client, db) {
     if (isShuttingDown) return;
 
@@ -257,6 +259,85 @@ async function checkNewMembersForConflicts(client, db) {
     }
 }
 
+// ==========================================================
+// NOVA FUNÇÃO PARA VERIFICAR SAÍDAS E NOTIFICAR
+// ==========================================================
+async function checkDepartingMembers(client, db) {
+    if (isShuttingDown) return;
+
+    try {
+        if (!db || !(await db.execute('SELECT 1').catch(() => false))) {
+            console.log('⚠️ Conexão com o banco de dados não está disponível para checar saídas.');
+            return;
+        }
+
+        // Busca membros que saíram desde a última verificação
+        const [departedMembers] = await db.execute(
+            `SELECT nome, data_saida FROM membros WHERE status = 'saiu' AND data_saida > ? ORDER BY data_saida ASC`,
+            [lastCheckedDepartureTimestamp]
+        );
+
+        if (departedMembers.length > 0) {
+            const securityChannel = await client.channels.fetch(SECURITY_ALERT_CHANNEL_ID).catch(() => null);
+            // Reutiliza a notificação de 'alerta_seguranca' para notificar os mesmos cargos
+            const roleIdsToNotify = await getNotificationSubscriptions('alerta_seguranca', db);
+
+            for (const member of departedMembers) {
+                // Busca a inscrição correspondente na tabela de inscrições aprovadas
+                const [applications] = await db.execute(
+                    `SELECT nome, telefone FROM inscricoes WHERE char_principal = ? AND status = 'aprovado' ORDER BY data_avaliacao DESC LIMIT 1`,
+                    [member.nome]
+                );
+
+                if (applications.length > 0) {
+                    const application = applications[0];
+
+                    const departureEmbed = new EmbedBuilder()
+                        .setColor('#FFA500')
+                        .setTitle('👤 Membro Saiu da Guild')
+                        .setDescription(`O personagem **${member.nome}** foi marcado como "saiu".`)
+                        .addFields(
+                            { name: '📋 Nome na Inscrição', value: application.nome, inline: true },
+                            { name: '📞 Telefone na Inscrição', value: application.telefone || 'Não informado', inline: true },
+                            { name: '🗓️ Data da Saída', value: formatBrazilianDate(member.data_saida), inline: false }
+                        )
+                        .setFooter({ text: 'Aguardando classificação da saída.' });
+
+                    const actionRow = new ActionRowBuilder().addComponents(
+                        new ButtonBuilder()
+                            .setCustomId(`departed_cs_volta_${member.nome}`)
+                            .setLabel('Saiu para cs, mas volta!')
+                            .setStyle(ButtonStyle.Success),
+                        new ButtonBuilder()
+                            .setCustomId(`departed_left_guild_${member.nome}`)
+                            .setLabel('Saiu da guild')
+                            .setStyle(ButtonStyle.Danger)
+                    );
+
+                    const messagePayload = { embeds: [departureEmbed], components: [actionRow] };
+
+                    // Envia para o canal de segurança
+                    if (securityChannel) {
+                        await securityChannel.send(messagePayload);
+                    }
+
+                    // Envia DMs para os cargos subscritos
+                    await sendDmsToRoles(client, roleIdsToNotify, messagePayload);
+                }
+
+                // Atualiza o timestamp para a data de saída do membro atual
+                lastCheckedDepartureTimestamp = new Date(member.data_saida);
+            }
+        }
+    } catch (error) {
+        if (error.code === 'POOL_CLOSED') {
+            console.log('⚠️ Pool de conexão fechado, aguardando reconexão...');
+        } else {
+            console.error('❌ Erro ao verificar saídas de membros:', error);
+        }
+    }
+}
+// ==========================================================
 
 // Função auxiliar para validar URLs de imagem
 function isValidImageUrl(url) {
@@ -285,6 +366,9 @@ function setupEvents(client, db) {
     
     // Intervalo para verificar conflitos de membros
     setInterval(() => checkNewMembersForConflicts(client, db), 5 * 60000); // 5 minutos
+    
+    // NOVO: Intervalo para verificar saídas de membros
+    setInterval(() => checkDepartingMembers(client, db), 5 * 60000); // 5 minutos
   });
 
   // Evento interactionCreate com tratamento de erros melhorado
@@ -913,7 +997,7 @@ function setupEvents(client, db) {
 
       // Botões
       if (interaction.isButton()) {
-        if (interaction.channel?.id !== process.env.ALLOWED_CHANNEL_ID) {
+        if (interaction.channel?.id !== process.env.ALLOWED_CHANNEL_ID && !interaction.customId.startsWith('departed_')) {
           return interaction.reply({ 
             content: 'Este comando só pode ser usado no canal de inscrições.', 
             flags: MessageFlags.Ephemeral 
@@ -937,6 +1021,35 @@ function setupEvents(client, db) {
             await listPendingApplications(interaction, [page.toString()], db);
             return;
           }
+          
+          // ==========================================================
+          // NOVOS HANDLERS PARA OS BOTÕES DE SAÍDA DE MEMBRO
+          // ==========================================================
+          if (interaction.customId.startsWith('departed_cs_volta_') || interaction.customId.startsWith('departed_left_guild_')) {
+              try {
+                  const isCS = interaction.customId.startsWith('departed_cs_volta_');
+                  const statusText = isCS ? "Saiu para cs, mas volta!" : "Saiu da guild";
+                  
+                  await interaction.deferUpdate();
+      
+                  const originalEmbed = interaction.message.embeds[0];
+                  const updatedEmbed = new EmbedBuilder(originalEmbed)
+                      .setColor(isCS ? '#00FF00' : '#FF0000') // Verde para 'volta', Vermelho para 'saiu'
+                      .setFooter({ text: `Status definido como: "${statusText}" por ${interaction.user.tag}` });
+      
+                  // Desabilita os botões editando a mensagem e passando um array de componentes vazio
+                  await interaction.editReply({ embeds: [updatedEmbed], components: [] });
+      
+              } catch (error) {
+                  console.error('Erro ao processar botão de status de saída:', error);
+                  if (interaction.replied || interaction.deferred) {
+                      await interaction.followUp({ content: 'Ocorreu um erro ao atualizar o status.', ephemeral: true }).catch(console.error);
+                  }
+              }
+              return; 
+          }
+          // ==========================================================
+
 
           if (interaction.customId.startsWith('search_prev_') || interaction.customId.startsWith('search_next_')) {
             const [direction, searchTerm, pageStr] = interaction.customId.split('_').slice(1);
