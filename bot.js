@@ -11,6 +11,7 @@ const { connectDB } = require('./database');
 const client = new Client({
   intents: [
     IntentsBitField.Flags.Guilds,
+    IntentsBitField.Flags.GuildMembers, // <-- CORREÇÃO APLICADA AQUI
     IntentsBitField.Flags.GuildMessages,
     IntentsBitField.Flags.MessageContent,
     IntentsBitField.Flags.GuildMessageReactions

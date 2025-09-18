@@ -180,10 +180,11 @@ async function checkNewApplications(client, db) {
           .setFooter({ text: 'Por favor, verifique no canal de inscrições.' });
 
         await sendDmsToRoles(client, roleIdsToNotify, { embeds: [dmEmbed] });
-
-        // Atualiza o timestamp da última verificação para o da inscrição atual
-        lastCheckedApplications = new Date(application.data_inscricao);
       }
+      
+      // <-- CORREÇÃO APLICADA AQUI -->
+      // Atualiza o timestamp APENAS UMA VEZ, após o loop, com a data da última inscrição processada.
+      lastCheckedApplications = new Date(rows[rows.length - 1].data_inscricao);
     }
   } catch (error) {
     if (error.code === 'POOL_CLOSED') {
