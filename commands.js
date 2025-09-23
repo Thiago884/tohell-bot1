@@ -1,10 +1,10 @@
-const { 
-  EmbedBuilder, 
-  ActionRowBuilder, 
-  ButtonBuilder, 
-  ButtonStyle, 
-  ModalBuilder, 
-  TextInputBuilder, 
+const {
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ModalBuilder,
+  TextInputBuilder,
   TextInputStyle,
   ApplicationCommandOptionType,
   MessageFlags
@@ -281,10 +281,10 @@ function processImageUrls(imageData) {
   try {
     // Se for string, tentar parsear como JSON
     const urls = typeof imageData === 'string' ? JSON.parse(imageData || '[]') : imageData || [];
-    
+
     // Converter para array se não for
     const urlArray = Array.isArray(urls) ? urls : [urls];
-    
+
     // Mapear para URLs completas se necessário
     return urlArray.map(url => {
       if (!url) return null;
@@ -296,8 +296,11 @@ function processImageUrls(imageData) {
   }
 }
 
-// Função para criar um carrossel de imagens
-async function createImageCarousel(interaction, images, applicationId) {
+// =================================================================================
+// CORREÇÃO APLICADA AQUI
+// =================================================================================
+// Função para criar um carrossel de imagens (CORRIGIDA)
+async function createImageCarousel(interaction, images, applicationId, status) {
   const processedImages = processImageUrls(images);
   
   if (processedImages.length === 0) {
@@ -310,7 +313,6 @@ async function createImageCarousel(interaction, images, applicationId) {
   const currentIndex = 0;
   const totalImages = processedImages.length;
 
-  // Verificar se a URL da imagem é válida
   if (!processedImages[currentIndex] || !isValidImageUrl(processedImages[currentIndex])) {
     return safeInteractionReply(interaction, {
       content: 'A URL da imagem é inválida.',
@@ -320,67 +322,70 @@ async function createImageCarousel(interaction, images, applicationId) {
 
   const embed = new EmbedBuilder()
     .setColor('#FF4500')
-    .setTitle(`Screenshot #${currentIndex + 1} de ${totalImages}`)
+    .setTitle(`Screenshots da Inscrição #${applicationId} (${status === 'aprovado' ? 'Aprovada' : 'Pendente'})`)
     .setImage(processedImages[currentIndex])
-    .setFooter({ text: `Inscrição #${applicationId}` });
+    .setFooter({ text: `Imagem ${currentIndex + 1} de ${totalImages}` });
 
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId(`carousel_prev_${applicationId}_${currentIndex}`)
-      .setLabel('Anterior')
+      .setCustomId(`carousel_prev_${applicationId}_${status}_${currentIndex}`)
+      .setLabel('◀️ Anterior')
       .setStyle(ButtonStyle.Primary)
-      .setDisabled(currentIndex === 0),
+      .setDisabled(true), // Começa desabilitado
     new ButtonBuilder()
-      .setCustomId(`carousel_next_${applicationId}_${currentIndex}`)
-      .setLabel('Próxima')
+      .setCustomId(`carousel_close_${applicationId}_${status}_${currentIndex}`)
+      .setLabel('❌ Fechar')
+      .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId(`carousel_next_${applicationId}_${status}_${currentIndex}`)
+      .setLabel('Próxima ▶️')
       .setStyle(ButtonStyle.Primary)
-      .setDisabled(currentIndex === totalImages - 1),
-    new ButtonBuilder()
-      .setCustomId(`carousel_close_${applicationId}`)
-      .setLabel('Fechar')
-      .setStyle(ButtonStyle.Danger)
+      .setDisabled(totalImages <= 1)
   );
-
-  return safeInteractionReply(interaction, {
+  
+  // Usar .reply() para garantir que a mensagem seja enviada como uma nova interação
+  return interaction.reply({
     embeds: [embed],
-    components: [row]
+    components: [row],
+    flags: MessageFlags.Ephemeral
   });
 }
+// =================================================================================
 
 // Função para normalizar números de telefone (mais robusta)
 function normalizePhoneForSearch(phone) {
   if (!phone) return null;
-  
+
   // Remove tudo que não é dígito, incluindo o caractere '+' se presente
   const digits = phone.replace(/\D/g, '');
-  
+
   // Se o número começar com código de país (ex: 55), remove para busca mais ampla
   if (digits.startsWith('55') && digits.length > 10) {
     return digits.substring(2); // Remove o '55' do início
   }
-  
+
   // Se tiver 11 dígitos e começar com 0, remove o 0
   if (digits.length === 11 && digits.startsWith('0')) {
     return digits.substring(1);
   }
-  
+
   return digits;
 }
 
 // Função para listar inscrições pendentes com paginação
 async function listPendingApplications(context, args, dbConnection) {
   const page = args[0] ? parseInt(args[0]) : 1;
-  
+
   if (isNaN(page) || page < 1) {
-    return safeInteractionReply(context, { 
-      content: 'Por favor, especifique um número de página válido.', 
-      flags: MessageFlags.Ephemeral 
+    return safeInteractionReply(context, {
+      content: 'Por favor, especifique um número de página válido.',
+      flags: MessageFlags.Ephemeral
     });
   }
 
   try {
     const offset = (page - 1) * 5;
-    
+
     const [countRows] = await dbConnection.execute(
       'SELECT COUNT(*) as total FROM inscricoes_pendentes'
     );
@@ -388,15 +393,15 @@ async function listPendingApplications(context, args, dbConnection) {
     const totalPages = Math.ceil(total / 5);
 
     if (total === 0) {
-      return safeInteractionReply(context, { 
-        content: 'Não há inscrições pendentes no momento.', 
+      return safeInteractionReply(context, {
+        content: 'Não há inscrições pendentes no momento.',
       });
     }
 
     if (page > totalPages) {
-      return safeInteractionReply(context, { 
-        content: `Apenas ${totalPages} páginas disponíveis.`, 
-        flags: MessageFlags.Ephemeral 
+      return safeInteractionReply(context, {
+        content: `Apenas ${totalPages} páginas disponíveis.`,
+        flags: MessageFlags.Ephemeral
       });
     }
 
@@ -438,9 +443,9 @@ async function listPendingApplications(context, args, dbConnection) {
 
   } catch (error) {
     console.error('❌ Erro ao listar inscrições pendentes:', error);
-    await safeInteractionReply(context, { 
-      content: 'Ocorreu um erro ao listar as inscrições pendentes.', 
-      flags: MessageFlags.Ephemeral 
+    await safeInteractionReply(context, {
+      content: 'Ocorreu um erro ao listar as inscrições pendentes.',
+      flags: MessageFlags.Ephemeral
     });
   }
 }
@@ -448,31 +453,31 @@ async function listPendingApplications(context, args, dbConnection) {
 // Função para buscar inscrições (atualizada para normalização robusta de telefones)
 async function searchApplications(context, args, dbConnection) {
   if (args.length === 0) {
-    return safeInteractionReply(context, { 
-      content: 'Por favor, especifique um termo de busca.', 
-      flags: MessageFlags.Ephemeral 
+    return safeInteractionReply(context, {
+      content: 'Por favor, especifique um termo de busca.',
+      flags: MessageFlags.Ephemeral
     });
   }
 
   const searchTerm = args[0];
   const page = args[1] ? parseInt(args[1]) : 1;
-  
+
   if (isNaN(page) || page < 1) {
-    return safeInteractionReply(context, { 
-      content: 'Por favor, especifique um número de página válido.', 
-      flags: MessageFlags.Ephemeral 
+    return safeInteractionReply(context, {
+      content: 'Por favor, especifique um número de página válido.',
+      flags: MessageFlags.Ephemeral
     });
   }
 
   try {
     const offset = (page - 1) * 5;
-    
+
     // Normaliza o termo de busca para telefone
     const normalizedSearchTerm = normalizePhoneForSearch(searchTerm);
-    
+
     // Se o termo de busca parece ser um número de telefone, busca de forma especial
     const isPhoneSearch = normalizedSearchTerm && normalizedSearchTerm.length >= 8;
-    
+
     const searchPattern = `%${searchTerm}%`;
     const phoneSearchPattern = isPhoneSearch ? `%${normalizedSearchTerm}%` : null;
 
@@ -493,9 +498,9 @@ async function searchApplications(context, args, dbConnection) {
           AND REPLACE(REPLACE(REPLACE(REPLACE(telefone, '(', ''), ')', ''), ' ', ''), '-', '') LIKE ?
         ) as combined
       `;
-      
+
       countParams = [phoneSearchPattern, phoneSearchPattern];
-      
+
       dataQuery = `
         SELECT * FROM (
           SELECT id, nome, telefone, discord, char_principal, guild_anterior, ip, 
@@ -512,9 +517,9 @@ async function searchApplications(context, args, dbConnection) {
         ORDER BY data_inscricao DESC 
         LIMIT ? OFFSET ?
       `;
-      
+
       dataParams = [phoneSearchPattern, phoneSearchPattern, 5, offset];
-      
+
     } else {
       // Busca normal por nome ou Discord
       countQuery = `
@@ -529,9 +534,9 @@ async function searchApplications(context, args, dbConnection) {
           AND (nome LIKE ? OR discord LIKE ?)
         ) as combined
       `;
-      
+
       countParams = [searchPattern, searchPattern, searchPattern, searchPattern];
-      
+
       dataQuery = `
         SELECT * FROM (
           SELECT id, nome, telefone, discord, char_principal, guild_anterior, ip, 
@@ -548,7 +553,7 @@ async function searchApplications(context, args, dbConnection) {
         ORDER BY data_inscricao DESC 
         LIMIT ? OFFSET ?
       `;
-      
+
       dataParams = [searchPattern, searchPattern, searchPattern, searchPattern, 5, offset];
     }
 
@@ -558,16 +563,16 @@ async function searchApplications(context, args, dbConnection) {
     const totalPages = Math.ceil(total / 5);
 
     if (total === 0) {
-      return safeInteractionReply(context, { 
-        content: 'Nenhuma inscrição encontrada com esse termo de busca.', 
-        flags: MessageFlags.Ephemeral 
+      return safeInteractionReply(context, {
+        content: 'Nenhuma inscrição encontrada com esse termo de busca.',
+        flags: MessageFlags.Ephemeral
       });
     }
 
     if (page > totalPages) {
-      return safeInteractionReply(context, { 
-        content: `Apenas ${totalPages} páginas disponíveis para esta busca.`, 
-        flags: MessageFlags.Ephemeral 
+      return safeInteractionReply(context, {
+        content: `Apenas ${totalPages} páginas disponíveis para esta busca.`,
+        flags: MessageFlags.Ephemeral
       });
     }
 
@@ -607,9 +612,9 @@ async function searchApplications(context, args, dbConnection) {
 
   } catch (error) {
     console.error('❌ Erro ao buscar inscrições:', error);
-    await safeInteractionReply(context, { 
-      content: 'Ocorreu um erro ao buscar inscrições.', 
-      flags: MessageFlags.Ephemeral 
+    await safeInteractionReply(context, {
+      content: 'Ocorreu um erro ao buscar inscrições.',
+      flags: MessageFlags.Ephemeral
     });
   }
 }
@@ -617,12 +622,12 @@ async function searchApplications(context, args, dbConnection) {
 // Função para enviar embed de inscrição (atualizada com formatação de telefone)
 async function sendApplicationEmbed(channel, application, dbConnection) {
   const screenshots = processImageUrls(application.screenshot_path);
-  const screenshotLinks = screenshots.slice(0, 5).map((screenshot, index) => 
+  const screenshotLinks = screenshots.slice(0, 5).map((screenshot, index) =>
     `[Imagem ${index + 1}](${screenshot})`
   ).join('\n') || 'Nenhuma imagem enviada';
 
   const isApproved = application.status === 'aprovado';
-  
+
   // Normaliza o telefone para exibição consistente
   const normalizePhoneForDisplay = (phone) => {
     if (!phone) return 'Não informado';
@@ -670,7 +675,7 @@ async function sendApplicationEmbed(channel, application, dbConnection) {
     );
   }
 
-  const msg = await safeSend(channel, { 
+  const msg = await safeSend(channel, {
     embeds: [embed],
     components: [row]
   });
@@ -700,9 +705,9 @@ async function showHelp(interaction) {
     )
     .setFooter({ text: 'ToHeLL Guild - Sistema de Inscrições' });
 
-  await safeInteractionReply(interaction, { 
-    embeds: [embed], 
-    flags: MessageFlags.Ephemeral 
+  await safeInteractionReply(interaction, {
+    embeds: [embed],
+    flags: MessageFlags.Ephemeral
   });
 }
 
@@ -713,7 +718,7 @@ async function approveApplication(context, applicationId, dbConnection, user = n
       'SELECT * FROM inscricoes_pendentes WHERE id = ?',
       [applicationId]
     );
-    
+
     if (rows.length === 0) {
       throw new Error('Inscrição não encontrada ou já processada');
     }
@@ -734,7 +739,7 @@ async function approveApplication(context, applicationId, dbConnection, user = n
         user?.username || context.user?.username || 'Discord Bot'
       ]
     );
-    
+
     await dbConnection.execute(
       'DELETE FROM inscricoes_pendentes WHERE id = ?',
       [applicationId]
@@ -742,9 +747,9 @@ async function approveApplication(context, applicationId, dbConnection, user = n
 
     await notifyWebhook('aprovado', applicationId, application.nome, application.discord);
 
-    await safeInteractionReply(context, { 
+    await safeInteractionReply(context, {
       content: `Inscrição #${applicationId} aprovada com sucesso!`,
-      flags: MessageFlags.Ephemeral 
+      flags: MessageFlags.Ephemeral
     });
 
     try {
@@ -753,8 +758,8 @@ async function approveApplication(context, applicationId, dbConnection, user = n
         const embed = new EmbedBuilder(context.message.embeds[0]);
         embed.setColor('#00FF00');
         embed.setFooter({ text: `✅ Aprovado por ${user?.username || context.user?.username || 'Sistema'}` });
-        
-        await context.message.edit({ 
+
+        await context.message.edit({
           embeds: [embed],
           components: []
         }).catch(console.error);
@@ -772,9 +777,9 @@ async function approveApplication(context, applicationId, dbConnection, user = n
     }
   } catch (error) {
     console.error('❌ Erro ao aprovar inscrição:', error);
-    await safeInteractionReply(context, { 
+    await safeInteractionReply(context, {
       content: `Ocorreu um erro ao aprovar a inscrição #${applicationId}`,
-      flags: MessageFlags.Ephemeral 
+      flags: MessageFlags.Ephemeral
     });
   }
 }
@@ -786,7 +791,7 @@ async function rejectApplication(context, applicationId, reason, dbConnection, u
       'SELECT * FROM inscricoes_pendentes WHERE id = ?',
       [applicationId]
     );
-    
+
     if (rows.length === 0) {
       throw new Error('Inscrição não encontrada ou já processada');
     }
@@ -800,9 +805,9 @@ async function rejectApplication(context, applicationId, reason, dbConnection, u
 
     await notifyWebhook('rejeitado', applicationId, application.nome, application.discord, reason);
 
-    await safeInteractionReply(context, { 
+    await safeInteractionReply(context, {
       content: `Inscrição #${applicationId} rejeitada com sucesso!`,
-      flags: MessageFlags.Ephemeral 
+      flags: MessageFlags.Ephemeral
     });
 
     try {
@@ -810,14 +815,14 @@ async function rejectApplication(context, applicationId, reason, dbConnection, u
       if (context.message && context.message.editable) {
         const embed = new EmbedBuilder(context.message.embeds[0]);
         embed.setColor('#FF0000');
-        
+
         if (reason) {
           embed.addFields({ name: 'Motivo da Rejeição', value: reason });
         }
-        
+
         embed.setFooter({ text: `❌ Rejeitado por ${user?.username || context.user?.username || 'Sistema'}` });
-        
-        await context.message.edit({ 
+
+        await context.message.edit({
           embeds: [embed],
           components: []
         }).catch(console.error);
@@ -835,9 +840,9 @@ async function rejectApplication(context, applicationId, reason, dbConnection, u
     }
   } catch (error) {
     console.error('❌ Erro ao rejeitar inscrição:', error);
-    await safeInteractionReply(context, { 
+    await safeInteractionReply(context, {
       content: `Ocorreu um erro ao rejeitar a inscrição #${applicationId}`,
-      flags: MessageFlags.Ephemeral 
+      flags: MessageFlags.Ephemeral
     });
   }
 }

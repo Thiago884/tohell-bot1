@@ -998,16 +998,16 @@ function setupEvents(client, db) {
 
       // Botões
       if (interaction.isButton()) {
-        if (interaction.channel?.id !== process.env.ALLOWED_CHANNEL_ID && !interaction.customId.startsWith('departed_')) {
-          return interaction.reply({ 
-            content: 'Este comando só pode ser usado no canal de inscrições.', 
-            flags: MessageFlags.Ephemeral 
-          }).catch(() => {
-            interaction.channel.send({
-              content: 'Este comando só pode ser usado no canal de inscrições.',
-              flags: MessageFlags.Ephemeral
-            }).catch(console.error);
-          });
+        if (interaction.channel?.id !== process.env.ALLOWED_CHANNEL_ID && !interaction.customId.startsWith('departed_') && !interaction.customId.startsWith('carousel_')) {
+            return interaction.reply({
+                content: 'Este comando só pode ser usado no canal de inscrições.',
+                flags: MessageFlags.Ephemeral
+            }).catch(() => {
+                interaction.channel.send({
+                    content: 'Este comando só pode ser usado no canal de inscrições.',
+                    flags: MessageFlags.Ephemeral
+                }).catch(console.error);
+            });
         }
 
         try {
@@ -1023,9 +1023,6 @@ function setupEvents(client, db) {
             return;
           }
           
-          // ==========================================================
-          // NOVOS HANDLERS PARA OS BOTÕES DE SAÍDA DE MEMBRO
-          // ==========================================================
           if (interaction.customId.startsWith('departed_cs_volta_') || interaction.customId.startsWith('departed_left_guild_')) {
               try {
                   const isCS = interaction.customId.startsWith('departed_cs_volta_');
@@ -1035,10 +1032,9 @@ function setupEvents(client, db) {
       
                   const originalEmbed = interaction.message.embeds[0];
                   const updatedEmbed = new EmbedBuilder(originalEmbed)
-                      .setColor(isCS ? '#00FF00' : '#FF0000') // Verde para 'volta', Vermelho para 'saiu'
+                      .setColor(isCS ? '#00FF00' : '#FF0000') 
                       .setFooter({ text: `Status definido como: "${statusText}" por ${interaction.user.tag}` });
       
-                  // Desabilita os botões editando a mensagem e passando um array de componentes vazio
                   await interaction.editReply({ embeds: [updatedEmbed], components: [] });
       
               } catch (error) {
@@ -1049,8 +1045,6 @@ function setupEvents(client, db) {
               }
               return; 
           }
-          // ==========================================================
-
 
           if (interaction.customId.startsWith('search_prev_') || interaction.customId.startsWith('search_next_')) {
             const [direction, searchTerm, pageStr] = interaction.customId.split('_').slice(1);
@@ -1064,6 +1058,9 @@ function setupEvents(client, db) {
             return;
           }
 
+          // =================================================================================
+          // CORREÇÃO APLICADA AQUI
+          // =================================================================================
           if (interaction.customId.startsWith('view_screenshots_')) {
             const [_, __, applicationId, status] = interaction.customId.split('_');
             
@@ -1091,10 +1088,10 @@ function setupEvents(client, db) {
                 screenshots = rows[0].screenshot_path ? [rows[0].screenshot_path] : [];
               }
               
-              // Processa as URLs para garantir que são absolutas
               const processedScreenshots = processImageUrls(screenshots);
               
-              await createImageCarousel(interaction, processedScreenshots, applicationId);
+              // Passa o 'status' para a função do carrossel
+              await createImageCarousel(interaction, processedScreenshots, applicationId, status);
               
             } catch (error) {
               console.error('❌ Erro ao buscar screenshots:', error);
@@ -1107,13 +1104,13 @@ function setupEvents(client, db) {
           }
           
           if (interaction.customId.startsWith('carousel_')) {
-            const [_, action, applicationId, currentIndexStr] = interaction.customId.split('_');
+            const [_, action, applicationId, status, currentIndexStr] = interaction.customId.split('_');
             let currentIndex = parseInt(currentIndexStr);
             
             if (action === 'close') {
               try {
                 await interaction.message.delete().catch(error => {
-                  if (error.code !== 10008) throw error; // Ignora "Unknown Message" error
+                  if (error.code !== 10008) throw error; 
                 });
               } catch (error) {
                 console.error('Erro ao fechar carrossel:', error);
@@ -1121,7 +1118,7 @@ function setupEvents(client, db) {
               return;
             }
             
-            const table = interaction.message.embeds[0].title.includes('Aprovado') ? 'inscricoes' : 'inscricoes_pendentes';
+            const table = status === 'aprovado' ? 'inscricoes' : 'inscricoes_pendentes';
             
             try {
               const [rows] = await db.execute(
@@ -1130,9 +1127,10 @@ function setupEvents(client, db) {
               );
               
               if (rows.length === 0) {
-                return interaction.reply({
-                  content: 'Inscrição não encontrada.',
-                  flags: MessageFlags.Ephemeral
+                return interaction.update({
+                  content: 'Inscrição não foi encontrada na tabela correta. Ela pode ter sido removida.',
+                  embeds: [],
+                  components: []
                 }).catch(console.error);
               }
               
@@ -1145,43 +1143,45 @@ function setupEvents(client, db) {
                 screenshots = rows[0].screenshot_path ? [rows[0].screenshot_path] : [];
               }
               
-              // Processa as URLs para garantir que são absolutas
               const processedScreenshots = processImageUrls(screenshots);
+              const totalImages = processedScreenshots.length;
               
-              if (processedScreenshots.length === 0) {
-                return interaction.reply({
-                  content: 'Nenhuma screenshot disponível.',
-                  flags: MessageFlags.Ephemeral
+              if (totalImages === 0) {
+                return interaction.update({
+                  content: 'Nenhuma screenshot disponível para esta inscrição.',
+                  embeds: [],
+                  components: []
                 }).catch(console.error);
               }
               
               // Atualiza o índice
               if (action === 'prev') {
-                currentIndex = (currentIndex - 1 + processedScreenshots.length) % processedScreenshots.length;
+                currentIndex = (currentIndex - 1 + totalImages) % totalImages;
               } else if (action === 'next') {
-                currentIndex = (currentIndex + 1) % processedScreenshots.length;
+                currentIndex = (currentIndex + 1) % totalImages;
               }
               
-              // Atualiza a mensagem
               const embed = new EmbedBuilder()
                 .setColor('#0099ff')
-                .setTitle(`Screenshots da Inscrição ${applicationId}${table === 'inscricoes' ? ' (Aprovado)' : ''}`)
+                .setTitle(`Screenshots da Inscrição ${applicationId} (${status === 'aprovado' ? 'Aprovada' : 'Pendente'})`)
                 .setImage(processedScreenshots[currentIndex])
-                .setFooter({ text: `Imagem ${currentIndex + 1} de ${processedScreenshots.length}` });
+                .setFooter({ text: `Imagem ${currentIndex + 1} de ${totalImages}` });
               
               const row = new ActionRowBuilder().addComponents(
                 new ButtonBuilder()
-                  .setCustomId(`carousel_prev_${applicationId}_${currentIndex}`)
-                  .setLabel('◀️')
-                  .setStyle(ButtonStyle.Primary),
+                  .setCustomId(`carousel_prev_${applicationId}_${status}_${currentIndex}`)
+                  .setLabel('◀️ Anterior')
+                  .setStyle(ButtonStyle.Primary)
+                  .setDisabled(currentIndex === 0),
                 new ButtonBuilder()
-                  .setCustomId(`carousel_close_${applicationId}_${currentIndex}`)
+                  .setCustomId(`carousel_close_${applicationId}_${status}_${currentIndex}`)
                   .setLabel('❌ Fechar')
                   .setStyle(ButtonStyle.Danger),
                 new ButtonBuilder()
-                  .setCustomId(`carousel_next_${applicationId}_${currentIndex}`)
-                  .setLabel('▶️')
+                  .setCustomId(`carousel_next_${applicationId}_${status}_${currentIndex}`)
+                  .setLabel('Próxima ▶️')
                   .setStyle(ButtonStyle.Primary)
+                  .setDisabled(currentIndex >= totalImages - 1)
               );
               
               await interaction.update({
@@ -1191,13 +1191,10 @@ function setupEvents(client, db) {
               
             } catch (error) {
               console.error('❌ Erro ao navegar screenshots:', error);
-              await interaction.reply({
-                content: 'Ocorreu um erro ao navegar as screenshots.',
-                flags: MessageFlags.Ephemeral
-              }).catch(console.error);
             }
             return;
           }
+          // =================================================================================
 
           if (interaction.customId.startsWith('char500_')) {
             const [_, action, pageStr] = interaction.customId.split('_');
@@ -1233,11 +1230,9 @@ function setupEvents(client, db) {
                 });
               }
 
-              // Criar múltiplos embeds - um para cada personagem
               const embeds = chars.map((char, index) => {
                 const userbarUrl = `https://www.mucabrasil.com.br/forum/userbar.php?n=${encodeURIComponent(char.name)}&size=small&t=${Date.now()}`;
                 
-                // Determinar o status e a data apropriada
                 let statusText = '';
                 if (char.status) {
                   const statusDate = char.status_date ? formatBrazilianDate(char.status_date) : '';
@@ -1270,7 +1265,6 @@ function setupEvents(client, db) {
                   .setFooter({ text: `Atualizado em ${formatBrazilianDate(lastUpdated)}` });
               });
 
-              // Botões de navegação
               const row = new ActionRowBuilder().addComponents(
                 new ButtonBuilder()
                   .setCustomId(`char500_prev_${page}`)
@@ -1304,7 +1298,6 @@ function setupEvents(client, db) {
             return;
           }
 
-          // Botões de aprovação/rejeição
           if (interaction.customId.startsWith('approve_') || interaction.customId.startsWith('reject_')) {
             const action = interaction.customId.startsWith('approve_') ? 'approve' : 'reject';
             const applicationId = interaction.customId.split('_')[1];
@@ -1338,10 +1331,9 @@ function setupEvents(client, db) {
                 await rejectApplication(interaction, application, db);
               }
               
-              // Remove a mensagem original com os botões
               try {
                 await interaction.message.delete().catch(error => {
-                  if (error.code !== 10008) throw error; // Ignora "Unknown Message" error
+                  if (error.code !== 10008) throw error; 
                 });
               } catch (error) {
                 console.error('Erro ao deletar mensagem:', error);
@@ -1393,7 +1385,6 @@ function setupEvents(client, db) {
             
             const application = rows[0];
             
-            // Envia DM com motivo da rejeição
             try {
               const user = await client.users.fetch(application.discord_id);
               await user.send({
@@ -1403,13 +1394,11 @@ function setupEvents(client, db) {
               console.error('❌ Não foi possível enviar DM:', dmError);
             }
             
-            // Remove da tabela de pendentes
             await db.execute(
               'DELETE FROM inscricoes_pendentes WHERE id = ?',
               [applicationId]
             );
             
-            // Registra no histórico
             await db.execute(
               'INSERT INTO historico_inscricoes (discord_id, discord_name, char_name, nivel, resets, guild, screenshot_path, status, motivo, moderador_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
               [application.discord_id, application.discord_name, application.char_name, application.nivel, application.resets, application.guild, application.screenshot_path, 'rejeitado', motivo, interaction.user.id]
@@ -1419,10 +1408,9 @@ function setupEvents(client, db) {
               content: '✅ Inscrição rejeitada com sucesso.'
             }).catch(console.error);
             
-            // Remove a mensagem original com os botões
             try {
               await interaction.message.delete().catch(error => {
-                if (error.code !== 10008) throw error; // Ignora "Unknown Message" error
+                if (error.code !== 10008) throw error; 
               });
             } catch (error) {
               console.error('Erro ao deletar mensagem:', error);
@@ -1447,12 +1435,10 @@ function setupEvents(client, db) {
     }
   });
 
-  // Evento de erro
   client.on(Events.Error, error => {
     console.error('❌ Erro do cliente Discord:', error);
   });
 
-  // Evento de warn
   client.on(Events.Warn, info => {
     console.warn('⚠️ Aviso do Discord:', info);
   });
