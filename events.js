@@ -1062,6 +1062,9 @@ function setupEvents(client, db) {
           // CORREÇÃO APLICADA AQUI
           // =================================================================================
           if (interaction.customId.startsWith('view_screenshots_')) {
+            // Adia a resposta para evitar o erro "Unknown Interaction"
+            await interaction.deferReply({ ephemeral: true });
+
             const [_, __, applicationId, status] = interaction.customId.split('_');
             
             try {
@@ -1073,9 +1076,9 @@ function setupEvents(client, db) {
               );
               
               if (rows.length === 0) {
-                return interaction.reply({
+                // Usa editReply porque a resposta já foi adiada
+                return interaction.editReply({
                   content: 'Inscrição não encontrada.',
-                  flags: MessageFlags.Ephemeral
                 }).catch(console.error);
               }
               
@@ -1095,9 +1098,9 @@ function setupEvents(client, db) {
               
             } catch (error) {
               console.error('❌ Erro ao buscar screenshots:', error);
-              await interaction.reply({
+              // Usa editReply no bloco catch também
+              await interaction.editReply({
                 content: 'Ocorreu um erro ao buscar as screenshots.',
-                flags: MessageFlags.Ephemeral
               }).catch(console.error);
             }
             return;

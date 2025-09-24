@@ -343,8 +343,8 @@ async function createImageCarousel(interaction, images, applicationId, status) {
       .setDisabled(totalImages <= 1)
   );
   
-  // Usar .reply() para garantir que a mensagem seja enviada como uma nova interação
-  return interaction.reply({
+  // Usa safeInteractionReply em vez de .reply() para lidar com interações adiadas
+  return safeInteractionReply(interaction, {
     embeds: [embed],
     components: [row],
     flags: MessageFlags.Ephemeral
