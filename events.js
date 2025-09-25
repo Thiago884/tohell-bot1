@@ -1301,6 +1301,9 @@ function setupEvents(client, db) {
             return;
           }
 
+          // =================================================================================
+          // CORREÇÃO APLICADA AQUI
+          // =================================================================================
           if (interaction.customId.startsWith('approve_') || interaction.customId.startsWith('reject_')) {
             const action = interaction.customId.startsWith('approve_') ? 'approve' : 'reject';
             const applicationId = interaction.customId.split('_')[1];
@@ -1313,48 +1316,54 @@ function setupEvents(client, db) {
             }
             
             try {
-              await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-              
-              const [rows] = await db.execute(
-                'SELECT * FROM inscricoes_pendentes WHERE id = ?',
-                [applicationId]
-              );
-              
-              if (rows.length === 0) {
-                return interaction.editReply({
-                  content: '❌ Inscrição não encontrada.'
+              if (action === 'approve') {
+                // CORRIGIDO: Passando o ID da inscrição em vez do objeto de aplicação.
+                await approveApplication(interaction, applicationId, db);
+              } else {
+                // O botão de rejeitar agora abre um modal para inserir o motivo.
+                // Esta é uma melhoria de fluxo, mas a correção principal é no 'approve'.
+                const modal = new ModalBuilder()
+                  .setCustomId(`reject_modal_${applicationId}`)
+                  .setTitle('Rejeitar Inscrição');
+
+                const reasonInput = new TextInputBuilder()
+                  .setCustomId('motivo_rejeicao')
+                  .setLabel("Qual o motivo da rejeição?")
+                  .setStyle(TextInputStyle.Paragraph)
+                  .setRequired(true);
+
+                const actionRow = new ActionRowBuilder().addComponents(reasonInput);
+                modal.addComponents(actionRow);
+
+                await interaction.showModal(modal);
+              }
+            } catch (error) {
+              console.error(`❌ Erro ao ${action === 'approve' ? 'aprovar' : 'processar'} inscrição:`, error);
+              // Tenta responder à interação se ainda não foi feito
+              if (!interaction.replied && !interaction.deferred) {
+                await interaction.reply({
+                  content: `❌ Ocorreu um erro ao processar a inscrição.`,
+                  flags: MessageFlags.Ephemeral
+                }).catch(console.error);
+              } else {
+                await interaction.followUp({
+                  content: `❌ Ocorreu um erro ao processar a inscrição.`,
+                  flags: MessageFlags.Ephemeral
                 }).catch(console.error);
               }
-              
-              const application = rows[0];
-              
-              if (action === 'approve') {
-                await approveApplication(interaction, application, db);
-              } else {
-                await rejectApplication(interaction, application, db);
-              }
-              
-              try {
-                await interaction.message.delete().catch(error => {
-                  if (error.code !== 10008) throw error; 
-                });
-              } catch (error) {
-                console.error('Erro ao deletar mensagem:', error);
-              }
-              
-            } catch (error) {
-              console.error(`❌ Erro ao ${action === 'approve' ? 'aprovar' : 'rejeitar'} inscrição:`, error);
-              await interaction.editReply({
-                content: `❌ Ocorreu um erro ao processar a inscrição.`
-              }).catch(console.error);
             }
+            // A mensagem original é editada pelas funções approve/reject, então não é necessário deletá-la aqui.
+            return;
           }
+          // =================================================================================
         } catch (error) {
           console.error('❌ Erro ao processar interação de botão:', error);
-          await interaction.reply({
-            content: 'Ocorreu um erro ao processar sua solicitação.',
-            flags: MessageFlags.Ephemeral
-          }).catch(console.error);
+          if (!interaction.replied && !interaction.deferred) {
+            await interaction.reply({
+              content: 'Ocorreu um erro ao processar sua solicitação.',
+              flags: MessageFlags.Ephemeral
+            }).catch(console.error);
+          }
         }
       }
 
@@ -1371,59 +1380,22 @@ function setupEvents(client, db) {
           }
           
           try {
-            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+            const reason = interaction.fields.getTextInputValue('motivo_rejeicao');
             
-            const motivo = interaction.fields.getTextInputValue('motivo_rejeicao');
+            // Unificando a lógica: O modal agora chama a função 'rejectApplication'.
+            await rejectApplication(interaction, applicationId, reason, db);
             
-            const [rows] = await db.execute(
-              'SELECT * FROM inscricoes_pendentes WHERE id = ?',
-              [applicationId]
-            );
-            
-            if (rows.length === 0) {
-              return interaction.editReply({
-                content: '❌ Inscrição não encontrada.'
-              }).catch(console.error);
-            }
-            
-            const application = rows[0];
-            
-            try {
-              const user = await client.users.fetch(application.discord_id);
-              await user.send({
-                content: `❌ Sua inscrição para a guilda foi **rejeitada**.\n**Motivo:** ${motivo}\n\nVocê pode se inscrever novamente após corrigir os problemas.`
-              });
-            } catch (dmError) {
-              console.error('❌ Não foi possível enviar DM:', dmError);
-            }
-            
-            await db.execute(
-              'DELETE FROM inscricoes_pendentes WHERE id = ?',
-              [applicationId]
-            );
-            
-            await db.execute(
-              'INSERT INTO historico_inscricoes (discord_id, discord_name, char_name, nivel, resets, guild, screenshot_path, status, motivo, moderador_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-              [application.discord_id, application.discord_name, application.char_name, application.nivel, application.resets, application.guild, application.screenshot_path, 'rejeitado', motivo, interaction.user.id]
-            );
-            
-            await interaction.editReply({
-              content: '✅ Inscrição rejeitada com sucesso.'
-            }).catch(console.error);
-            
-            try {
-              await interaction.message.delete().catch(error => {
-                if (error.code !== 10008) throw error; 
-              });
-            } catch (error) {
-              console.error('Erro ao deletar mensagem:', error);
-            }
+            // A função rejectApplication já edita a mensagem original, 
+            // então não precisamos deletá-la.
             
           } catch (error) {
             console.error('❌ Erro ao processar modal de rejeição:', error);
-            await interaction.editReply({
-              content: '❌ Ocorreu um erro ao processar a rejeição.'
-            }).catch(console.error);
+            if (!interaction.replied && !interaction.deferred) {
+                await interaction.reply({
+                    content: '❌ Ocorreu um erro ao processar a rejeição.',
+                    flags: MessageFlags.Ephemeral
+                }).catch(console.error);
+            }
           }
         }
       }
