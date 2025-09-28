@@ -7,7 +7,7 @@ const {
     // Novas importações para o sistema de notificação
     addNotificationSubscription, removeNotificationSubscription, getNotificationSubscriptions, sendDmsToRoles 
 } = require('./utils');
-const {isShuttingDown, isConnectionActive, getDBConnection } = require('./database');
+const { isShuttingDown, isConnectionActive, getDBConnection, safeExecuteQuery } = require('./database');
 const { listPendingApplications, searchApplications, sendApplicationEmbed, approveApplication, rejectApplication, showHelp, createImageCarousel } = require('./commands');
 
 // Função auxiliar para verificar se pode executar operações no DB
@@ -20,8 +20,7 @@ async function canExecuteDBOperation() {
 }
 
 // Função auxiliar para executar query com verificação
-async function safeExecuteQuery(query, params = []) {
-  const db = getDBConnection();
+async function safeExecuteQuery( query, params = []) {
   if (!await canExecuteDBOperation()) {
     throw new Error('POOL_CLOSED');
   }
@@ -177,14 +176,15 @@ async function setupAutoCleanup() {
 
 // Verificar novas inscrições e notificar por DM
 async function checkNewApplications(client) {
+
+  // Obtém a instância de conexão centralizada
+  const db = getDBConnection();
+
   if (isShuttingDown() || !await canExecuteDBOperation()) {
     console.log('⏸️ Monitoramento de inscrições pausado (shutdown ou DB indisponível)');
     return;
   }
   
-  
-  const db = getDBConnection();
-  if (!db) { console.log("⏸️ DB não disponível em checkNewApplications"); return; }
   try {
     const rows = await safeExecuteQuery(
       'SELECT * FROM inscricoes_pendentes WHERE data_inscricao > ? ORDER BY data_inscricao ASC',
@@ -231,15 +231,16 @@ async function checkNewApplications(client) {
 
 // Verificar novos membros e cruzar com a lista de inimigos
 async function checkNewMembersForConflicts(client) {
+
+  // Obtém a instância de conexão centralizada
+  const db = getDBConnection();
+
     if (isShuttingDown() || !await canExecuteDBOperation()) {
         console.log('⏸️ Monitoramento de conflitos pausado (shutdown ou DB indisponível)');
         return;
     }
 
-    
-  const db = getDBConnection();
-  if (!db) { console.log("⏸️ DB não disponível em checkNewMembersForConflicts"); return; }
-  try {
+    try {
         const newMembers = await safeExecuteQuery(
             `SELECT nome, guild, data_insercao FROM membros WHERE data_insercao > ? AND status = 'novo' ORDER BY data_insercao ASC`,
             [lastCheckedMemberTimestamp]
@@ -293,15 +294,16 @@ async function checkNewMembersForConflicts(client) {
 
 // NOVA FUNÇÃO PARA VERIFICAR SAÍDAS E NOTIFICAR
 async function checkDepartingMembers(client) {
+
+  // Obtém a instância de conexão centralizada
+  const db = getDBConnection();
+
     if (isShuttingDown() || !await canExecuteDBOperation()) {
         console.log('⏸️ Monitoramento de saídas pausado (shutdown ou DB indisponível)');
         return;
     }
 
-    
-  const db = getDBConnection();
-  if (!db) { console.log("⏸️ DB não disponível em checkDepartingMembers"); return; }
-  try {
+    try {
         const departedMembers = await safeExecuteQuery(
             `SELECT nome, data_saida FROM membros WHERE status = 'saiu' AND data_saida > ? ORDER BY data_saida ASC`,
             [lastCheckedDepartureTimestamp]
@@ -381,8 +383,8 @@ function setupEvents(client) {
     console.log(`🤖 Bot conectado como ${client.user.tag}`);
     client.user.setActivity('/ajuda para comandos', { type: 'WATCHING' });
     
-    await setupSecurityMonitoring(client);
-    await setupAutoCleanup();
+    await setupSecurityMonitoring(client, db);
+    await setupAutoCleanup(db);
     
     // Intervalo para verificar novas inscrições
     setInterval(() => checkNewApplications(client), 60000); // 1 minuto
@@ -397,20 +399,6 @@ function setupEvents(client) {
   // Evento interactionCreate com tratamento de erros melhorado
   client.on(Events.InteractionCreate, async interaction => {
     if (isShuttingDown()) return;
-
-    // Obtém a conexão para cada interação
-    const db = getDBConnection();
-
-    // Verificação para garantir que o DB está disponível
-    if (!db || !await isConnectionActive()) {
-        if (interaction.isRepliable && interaction.isRepliable()) {
-            return interaction.reply({
-                content: '❌ O bot está com problemas de conexão com o banco de dados. Por favor, tente novamente mais tarde.',
-                flags: MessageFlags.Ephemeral
-            }).catch(console.error);
-        }
-        return;
-    }
 
     try {
       // Comandos slash
