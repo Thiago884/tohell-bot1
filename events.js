@@ -7,7 +7,7 @@ const {
     // Novas importações para o sistema de notificação
     addNotificationSubscription, removeNotificationSubscription, getNotificationSubscriptions, sendDmsToRoles 
 } = require('./utils');
-const { isShuttingDown, isConnectionActive, getDBConnection, safeExecuteQuery } = require('./database');
+const { isShuttingDown, isConnectionActive } = require('./database');
 const { listPendingApplications, searchApplications, sendApplicationEmbed, approveApplication, rejectApplication, showHelp, createImageCarousel } = require('./commands');
 
 // Função auxiliar para verificar se pode executar operações no DB
@@ -20,22 +20,8 @@ async function canExecuteDBOperation() {
 }
 
 // Função auxiliar para executar query com verificação
-async function safeExecuteQuery( query, params = []) {
-  if (!await canExecuteDBOperation()) {
-    throw new Error('POOL_CLOSED');
-  }
-  
-  try {
-    const [result] = await db.execute(query, params);
-    return result;
-  } catch (error) {
-    if (error.code === 'POOL_CLOSED' || error.message.includes('Pool is closed')) {
-      throw new Error('POOL_CLOSED');
-    }
-    throw error;
-  }
-}
 
+// safeExecuteQuery local removido — usa-se a versão exportada de database.js
 // --- VARIÁVEIS DE ESTADO PARA OS MONITORES ---
 // Monitor de inscrições pendentes
 let lastCheckedApplications = new Date();
@@ -46,7 +32,7 @@ let lastCheckedDepartureTimestamp = new Date();
 const SECURITY_ALERT_CHANNEL_ID = '1256287757135908884';
 
 // Monitoramento de segurança
-async function setupSecurityMonitoring(client) {
+async function setupSecurityMonitoring(client, db) {
   // Verifica tentativas suspeitas a cada 5 minutos
   setInterval(async () => {
     if (isShuttingDown() || !await canExecuteDBOperation()) {
@@ -56,7 +42,7 @@ async function setupSecurityMonitoring(client) {
     
     try {
       // IPs com muitas tentativas de login em curto período
-      const suspiciousLogins = await safeExecuteQuery( `
+      const suspiciousLogins = await safeExecuteQuery(db, `
         SELECT ip, COUNT(*) as tentativas 
         FROM tentativas_login_falhas 
         WHERE data_acesso >= DATE_SUB(NOW(), INTERVAL 1 HOUR)
@@ -66,7 +52,7 @@ async function setupSecurityMonitoring(client) {
       `);
       
       // IPs bloqueados que tentaram acessar
-      const blockedAccess = await safeExecuteQuery( `
+      const blockedAccess = await safeExecuteQuery(db, `
         SELECT v.ip, COUNT(*) as tentativas, MAX(v.data_acesso) as ultima_tentativa
         FROM visitantes v
         JOIN ips_bloqueados b ON v.ip = b.ip
@@ -125,7 +111,7 @@ async function setupSecurityMonitoring(client) {
 }
 
 // Limpeza automática de registros
-async function setupAutoCleanup() {
+async function setupAutoCleanup(db) {
   // Executa a limpeza diária às 3:00 AM
   const now = new Date();
   const nextCleanup = new Date(
@@ -148,13 +134,13 @@ async function setupAutoCleanup() {
       console.log('🔄 Iniciando limpeza automática de registros antigos...');
       
       // Remove bloqueios com mais de 30 dias
-      await safeExecuteQuery( 'DELETE FROM ips_bloqueados WHERE data_bloqueio < DATE_SUB(NOW(), INTERVAL 30 DAY)');
+      await safeExecuteQuery(db, 'DELETE FROM ips_bloqueados WHERE data_bloqueio < DATE_SUB(NOW(), INTERVAL 30 DAY)');
       
       // Remove tentativas de login com mais de 7 dias
-      await safeExecuteQuery( 'DELETE FROM tentativas_login_falhas WHERE data_acesso < DATE_SUB(NOW(), INTERVAL 7 DAY)');
+      await safeExecuteQuery(db, 'DELETE FROM tentativas_login_falhas WHERE data_acesso < DATE_SUB(NOW(), INTERVAL 7 DAY)');
       
       // Remove registros de visitantes com mais de 30 dias
-      await safeExecuteQuery( 'DELETE FROM visitantes WHERE data_acesso < DATE_SUB(NOW(), INTERVAL 30 DAY)');
+      await safeExecuteQuery(db, 'DELETE FROM visitantes WHERE data_acesso < DATE_SUB(NOW(), INTERVAL 30 DAY)');
       
       console.log('✅ Limpeza automática concluída');
       
@@ -175,11 +161,7 @@ async function setupAutoCleanup() {
 }
 
 // Verificar novas inscrições e notificar por DM
-async function checkNewApplications(client) {
-
-  // Obtém a instância de conexão centralizada
-  const db = getDBConnection();
-
+async function checkNewApplications(client, db) {
   if (isShuttingDown() || !await canExecuteDBOperation()) {
     console.log('⏸️ Monitoramento de inscrições pausado (shutdown ou DB indisponível)');
     return;
@@ -187,6 +169,7 @@ async function checkNewApplications(client) {
   
   try {
     const rows = await safeExecuteQuery(
+      db,
       'SELECT * FROM inscricoes_pendentes WHERE data_inscricao > ? ORDER BY data_inscricao ASC',
       [lastCheckedApplications]
     );
@@ -230,11 +213,7 @@ async function checkNewApplications(client) {
 
 
 // Verificar novos membros e cruzar com a lista de inimigos
-async function checkNewMembersForConflicts(client) {
-
-  // Obtém a instância de conexão centralizada
-  const db = getDBConnection();
-
+async function checkNewMembersForConflicts(client, db) {
     if (isShuttingDown() || !await canExecuteDBOperation()) {
         console.log('⏸️ Monitoramento de conflitos pausado (shutdown ou DB indisponível)');
         return;
@@ -242,6 +221,7 @@ async function checkNewMembersForConflicts(client) {
 
     try {
         const newMembers = await safeExecuteQuery(
+            db,
             `SELECT nome, guild, data_insercao FROM membros WHERE data_insercao > ? AND status = 'novo' ORDER BY data_insercao ASC`,
             [lastCheckedMemberTimestamp]
         );
@@ -252,6 +232,7 @@ async function checkNewMembersForConflicts(client) {
 
             for (const member of newMembers) {
                 const enemies = await safeExecuteQuery(
+                    db,
                     `SELECT nome, guild, status FROM inimigos WHERE nome = ?`,
                     [member.nome]
                 );
@@ -293,11 +274,7 @@ async function checkNewMembersForConflicts(client) {
 }
 
 // NOVA FUNÇÃO PARA VERIFICAR SAÍDAS E NOTIFICAR
-async function checkDepartingMembers(client) {
-
-  // Obtém a instância de conexão centralizada
-  const db = getDBConnection();
-
+async function checkDepartingMembers(client, db) {
     if (isShuttingDown() || !await canExecuteDBOperation()) {
         console.log('⏸️ Monitoramento de saídas pausado (shutdown ou DB indisponível)');
         return;
@@ -305,6 +282,7 @@ async function checkDepartingMembers(client) {
 
     try {
         const departedMembers = await safeExecuteQuery(
+            db,
             `SELECT nome, data_saida FROM membros WHERE status = 'saiu' AND data_saida > ? ORDER BY data_saida ASC`,
             [lastCheckedDepartureTimestamp]
         );
@@ -315,6 +293,7 @@ async function checkDepartingMembers(client) {
 
             for (const member of departedMembers) {
                 const applications = await safeExecuteQuery(
+                    db,
                     `SELECT nome, telefone FROM inscricoes WHERE char_principal = ? AND status = 'aprovado' ORDER BY data_avaliacao DESC LIMIT 1`,
                     [member.nome]
                 );
@@ -377,7 +356,7 @@ function isValidImageUrl(url) {
 }
 
 // Configurar eventos
-function setupEvents(client) {
+function setupEvents(client, db) {
   // Evento ready
   client.on(Events.ClientReady, async () => {
     console.log(`🤖 Bot conectado como ${client.user.tag}`);
@@ -387,13 +366,13 @@ function setupEvents(client) {
     await setupAutoCleanup(db);
     
     // Intervalo para verificar novas inscrições
-    setInterval(() => checkNewApplications(client), 60000); // 1 minuto
+    setInterval(() => checkNewApplications(client, db), 60000); // 1 minuto
     
     // Intervalo para verificar conflitos de membros
-    setInterval(() => checkNewMembersForConflicts(client), 5 * 60000); // 5 minutos
+    setInterval(() => checkNewMembersForConflicts(client, db), 5 * 60000); // 5 minutos
     
     // NOVO: Intervalo para verificar saídas de membros
-    setInterval(() => checkDepartingMembers(client), 5 * 60000); // 5 minutos
+    setInterval(() => checkDepartingMembers(client, db), 5 * 60000); // 5 minutos
   });
 
   // Evento interactionCreate com tratamento de erros melhorado
