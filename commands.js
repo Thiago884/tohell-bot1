@@ -297,9 +297,6 @@ function processImageUrls(imageData) {
   }
 }
 
-// =================================================================================
-// CORREÇÃO APLICADA AQUI
-// =================================================================================
 // Função para criar um carrossel de imagens (CORRIGIDA)
 async function createImageCarousel(interaction, images, applicationId, status) {
   const processedImages = processImageUrls(images);
@@ -345,13 +342,12 @@ async function createImageCarousel(interaction, images, applicationId, status) {
   );
   
   // Usa safeInteractionReply em vez de .reply() para lidar com interações adiadas
+  // A flag "Ephemeral" foi removida para tornar a mensagem pública
   return safeInteractionReply(interaction, {
     embeds: [embed],
-    components: [row],
-    flags: MessageFlags.Ephemeral
+    components: [row]
   });
 }
-// =================================================================================
 
 // Função para normalizar números de telefone (mais robusta)
 function normalizePhoneForSearch(phone) {

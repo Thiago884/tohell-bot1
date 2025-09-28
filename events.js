@@ -5,7 +5,9 @@ const {
     formatBrazilianDate, processImageUrls, blockIP, unblockIP, queryIP, getIPInfo, 
     generateSecurityReport, getRecentAccess, manageWhitelist, checkPhoneNumber, get500RCharacters,
     // Novas importações para o sistema de notificação
-    addNotificationSubscription, removeNotificationSubscription, getNotificationSubscriptions, sendDmsToRoles 
+    addNotificationSubscription, removeNotificationSubscription, getNotificationSubscriptions, sendDmsToRoles,
+    // Importação da função de validação de URL
+    isValidImageUrl
 } = require('./utils');
 // FIX: Import safeExecuteQuery from database
 const { isShuttingDown, isConnectionActive, safeExecuteQuery } = require('./database');
@@ -336,20 +338,6 @@ async function checkDepartingMembers(client) {
     }
 }
 
-// ... (o restante do arquivo permanece o mesmo) ...
-
-// Função auxiliar para validar URLs de imagem
-function isValidImageUrl(url) {
-  if (!url) return false;
-  try {
-    const parsedUrl = new URL(url);
-    const allowedExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
-    return allowedExtensions.some(ext => parsedUrl.pathname.toLowerCase().endsWith(ext));
-  } catch {
-    return false;
-  }
-}
-
 // Configurar eventos
 function setupEvents(client) {
   // Evento ready
@@ -387,10 +375,6 @@ function setupEvents(client) {
           }).catch(console.error);
         }
 
-        // (O resto do switch/case permanece inalterado)
-        // ...
-// O restante do arquivo events.js continua a partir daqui, sem mais alterações nesta seção.
-// ...
         switch (interaction.commandName) {
           case 'pendentes':
             const page = interaction.options.getInteger('página') || 1;
@@ -1060,12 +1044,9 @@ function setupEvents(client) {
             return;
           }
 
-          // =================================================================================
-          // CORREÇÃO APLICADA AQUI
-          // =================================================================================
           if (interaction.customId.startsWith('view_screenshots_')) {
-            // Adia a resposta para evitar o erro "Unknown Interaction"
-            await interaction.deferReply({ ephemeral: true });
+            // Adia a resposta de forma pública para evitar o erro "Unknown Interaction"
+            await interaction.deferReply();
 
             const [_, __, applicationId, status] = interaction.customId.split('_');
             
@@ -1165,11 +1146,22 @@ function setupEvents(client) {
               } else if (action === 'next') {
                 currentIndex = (currentIndex + 1) % totalImages;
               }
+
+              const imageUrl = processedScreenshots[currentIndex];
+
+              // ADICIONADA VALIDAÇÃO DA URL ANTES DE USAR
+              if (!imageUrl || !isValidImageUrl(imageUrl)) {
+                  return interaction.update({
+                      content: `A imagem ${currentIndex + 1} de ${totalImages} possui uma URL inválida e não pode ser exibida.`,
+                      embeds: [],
+                      components: []
+                  }).catch(console.error);
+              }
               
               const embed = new EmbedBuilder()
                 .setColor('#0099ff')
                 .setTitle(`Screenshots da Inscrição ${applicationId} (${status === 'aprovado' ? 'Aprovada' : 'Pendente'})`)
-                .setImage(processedScreenshots[currentIndex])
+                .setImage(imageUrl)
                 .setFooter({ text: `Imagem ${currentIndex + 1} de ${totalImages}` });
               
               const row = new ActionRowBuilder().addComponents(
@@ -1199,7 +1191,6 @@ function setupEvents(client) {
             }
             return;
           }
-          // =================================================================================
 
           if (interaction.customId.startsWith('char500_')) {
             const [_, action, pageStr] = interaction.customId.split('_');
@@ -1303,9 +1294,6 @@ function setupEvents(client) {
             return;
           }
 
-          // =================================================================================
-          // CORREÇÃO APLICADA AQUI
-          // =================================================================================
           if (interaction.customId.startsWith('approve_') || interaction.customId.startsWith('reject_')) {
             const action = interaction.customId.startsWith('approve_') ? 'approve' : 'reject';
             const applicationId = interaction.customId.split('_')[1];
@@ -1352,7 +1340,6 @@ function setupEvents(client) {
             }
             return;
           }
-          // =================================================================================
         } catch (error) {
           console.error('❌ Erro ao processar interação de botão:', error);
           if (!interaction.replied && !interaction.deferred) {
