@@ -12,9 +12,7 @@ const dbConfig = {
   queueLimit: 0,
   timezone: 'Z',
   connectTimeout: 10000,
-  acquireTimeout: 60000,
-  timeout: 60000,
-  reconnect: true
+  acquireTimeout: 60000
 };
 
 // Variável global para controle de shutdown
@@ -549,7 +547,7 @@ function getDBConnection() {
 
 module.exports = {
   connectDB,
-  dbConnection: getDBConnection, // Getter function
+  getDBConnection, // Getter function
   isShuttingDown: () => isShuttingDown, // Getter function
   setShutdownState,
   checkConnection,

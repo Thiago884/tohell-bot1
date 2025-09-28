@@ -44,16 +44,12 @@ app.get('/health', async (_, res) => {
     });
   }
 });
-
-// Variável para armazenar a conexão com o banco de dados
-let db;
-
 // Inicialização do bot
 async function startBot() {
   try {
     // Conectar ao banco de dados
     console.log('🔌 Conectando ao banco de dados...');
-    db = await connectDB();
+    await connectDB();
     
     if (!db) {
       throw new Error('Não foi possível estabelecer conexão com o banco de dados');
@@ -62,7 +58,7 @@ async function startBot() {
     // Configurar comandos e eventos
     console.log('⚙️ Configurando comandos e eventos...');
     setupCommands(client);
-    setupEvents(client, db);
+    setupEvents(client);
 
     // Iniciar servidor
     const server = app.listen(PORT, () => {

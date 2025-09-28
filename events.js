@@ -7,7 +7,7 @@ const {
     // Novas importações para o sistema de notificação
     addNotificationSubscription, removeNotificationSubscription, getNotificationSubscriptions, sendDmsToRoles 
 } = require('./utils');
-const { isShuttingDown, isConnectionActive } = require('./database');
+const {isShuttingDown, isConnectionActive, getDBConnection } = require('./database');
 const { listPendingApplications, searchApplications, sendApplicationEmbed, approveApplication, rejectApplication, showHelp, createImageCarousel } = require('./commands');
 
 // Função auxiliar para verificar se pode executar operações no DB
@@ -20,7 +20,8 @@ async function canExecuteDBOperation() {
 }
 
 // Função auxiliar para executar query com verificação
-async function safeExecuteQuery(db, query, params = []) {
+async function safeExecuteQuery(query, params = []) {
+  const db = getDBConnection();
   if (!await canExecuteDBOperation()) {
     throw new Error('POOL_CLOSED');
   }
@@ -46,7 +47,7 @@ let lastCheckedDepartureTimestamp = new Date();
 const SECURITY_ALERT_CHANNEL_ID = '1256287757135908884';
 
 // Monitoramento de segurança
-async function setupSecurityMonitoring(client, db) {
+async function setupSecurityMonitoring(client) {
   // Verifica tentativas suspeitas a cada 5 minutos
   setInterval(async () => {
     if (isShuttingDown() || !await canExecuteDBOperation()) {
@@ -56,7 +57,7 @@ async function setupSecurityMonitoring(client, db) {
     
     try {
       // IPs com muitas tentativas de login em curto período
-      const suspiciousLogins = await safeExecuteQuery(db, `
+      const suspiciousLogins = await safeExecuteQuery( `
         SELECT ip, COUNT(*) as tentativas 
         FROM tentativas_login_falhas 
         WHERE data_acesso >= DATE_SUB(NOW(), INTERVAL 1 HOUR)
@@ -66,7 +67,7 @@ async function setupSecurityMonitoring(client, db) {
       `);
       
       // IPs bloqueados que tentaram acessar
-      const blockedAccess = await safeExecuteQuery(db, `
+      const blockedAccess = await safeExecuteQuery( `
         SELECT v.ip, COUNT(*) as tentativas, MAX(v.data_acesso) as ultima_tentativa
         FROM visitantes v
         JOIN ips_bloqueados b ON v.ip = b.ip
@@ -125,7 +126,7 @@ async function setupSecurityMonitoring(client, db) {
 }
 
 // Limpeza automática de registros
-async function setupAutoCleanup(db) {
+async function setupAutoCleanup() {
   // Executa a limpeza diária às 3:00 AM
   const now = new Date();
   const nextCleanup = new Date(
@@ -148,13 +149,13 @@ async function setupAutoCleanup(db) {
       console.log('🔄 Iniciando limpeza automática de registros antigos...');
       
       // Remove bloqueios com mais de 30 dias
-      await safeExecuteQuery(db, 'DELETE FROM ips_bloqueados WHERE data_bloqueio < DATE_SUB(NOW(), INTERVAL 30 DAY)');
+      await safeExecuteQuery( 'DELETE FROM ips_bloqueados WHERE data_bloqueio < DATE_SUB(NOW(), INTERVAL 30 DAY)');
       
       // Remove tentativas de login com mais de 7 dias
-      await safeExecuteQuery(db, 'DELETE FROM tentativas_login_falhas WHERE data_acesso < DATE_SUB(NOW(), INTERVAL 7 DAY)');
+      await safeExecuteQuery( 'DELETE FROM tentativas_login_falhas WHERE data_acesso < DATE_SUB(NOW(), INTERVAL 7 DAY)');
       
       // Remove registros de visitantes com mais de 30 dias
-      await safeExecuteQuery(db, 'DELETE FROM visitantes WHERE data_acesso < DATE_SUB(NOW(), INTERVAL 30 DAY)');
+      await safeExecuteQuery( 'DELETE FROM visitantes WHERE data_acesso < DATE_SUB(NOW(), INTERVAL 30 DAY)');
       
       console.log('✅ Limpeza automática concluída');
       
@@ -175,7 +176,7 @@ async function setupAutoCleanup(db) {
 }
 
 // Verificar novas inscrições e notificar por DM
-async function checkNewApplications(client, db) {
+async function checkNewApplications(client) {
   if (isShuttingDown() || !await canExecuteDBOperation()) {
     console.log('⏸️ Monitoramento de inscrições pausado (shutdown ou DB indisponível)');
     return;
@@ -227,7 +228,7 @@ async function checkNewApplications(client, db) {
 
 
 // Verificar novos membros e cruzar com a lista de inimigos
-async function checkNewMembersForConflicts(client, db) {
+async function checkNewMembersForConflicts(client) {
     if (isShuttingDown() || !await canExecuteDBOperation()) {
         console.log('⏸️ Monitoramento de conflitos pausado (shutdown ou DB indisponível)');
         return;
@@ -288,7 +289,7 @@ async function checkNewMembersForConflicts(client, db) {
 }
 
 // NOVA FUNÇÃO PARA VERIFICAR SAÍDAS E NOTIFICAR
-async function checkDepartingMembers(client, db) {
+async function checkDepartingMembers(client) {
     if (isShuttingDown() || !await canExecuteDBOperation()) {
         console.log('⏸️ Monitoramento de saídas pausado (shutdown ou DB indisponível)');
         return;
@@ -370,28 +371,42 @@ function isValidImageUrl(url) {
 }
 
 // Configurar eventos
-function setupEvents(client, db) {
+function setupEvents(client) {
   // Evento ready
   client.on(Events.ClientReady, async () => {
     console.log(`🤖 Bot conectado como ${client.user.tag}`);
     client.user.setActivity('/ajuda para comandos', { type: 'WATCHING' });
     
-    await setupSecurityMonitoring(client, db);
-    await setupAutoCleanup(db);
+    await setupSecurityMonitoring(client);
+    await setupAutoCleanup();
     
     // Intervalo para verificar novas inscrições
-    setInterval(() => checkNewApplications(client, db), 60000); // 1 minuto
+    setInterval(() => checkNewApplications(client), 60000); // 1 minuto
     
     // Intervalo para verificar conflitos de membros
-    setInterval(() => checkNewMembersForConflicts(client, db), 5 * 60000); // 5 minutos
+    setInterval(() => checkNewMembersForConflicts(client), 5 * 60000); // 5 minutos
     
     // NOVO: Intervalo para verificar saídas de membros
-    setInterval(() => checkDepartingMembers(client, db), 5 * 60000); // 5 minutos
+    setInterval(() => checkDepartingMembers(client), 5 * 60000); // 5 minutos
   });
 
   // Evento interactionCreate com tratamento de erros melhorado
   client.on(Events.InteractionCreate, async interaction => {
     if (isShuttingDown()) return;
+
+    // Obtém a conexão para cada interação
+    const db = getDBConnection();
+
+    // Verificação para garantir que o DB está disponível
+    if (!db || !await isConnectionActive()) {
+        if (interaction.isRepliable && interaction.isRepliable()) {
+            return interaction.reply({
+                content: '❌ O bot está com problemas de conexão com o banco de dados. Por favor, tente novamente mais tarde.',
+                flags: MessageFlags.Ephemeral
+            }).catch(console.error);
+        }
+        return;
+    }
 
     try {
       // Comandos slash
