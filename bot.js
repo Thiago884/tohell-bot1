@@ -58,6 +58,7 @@ async function startBot() {
     // Configurar comandos e eventos
     console.log('⚙️ Configurando comandos e eventos...');
     setupCommands(client);
+    // MODIFICATION: No longer passing a 'db' object.
     setupEvents(client);
 
     // Iniciar servidor

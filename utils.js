@@ -13,7 +13,7 @@ const axios = require('axios');
 const axiosRetry = require('axios-retry');
 const { JSDOM } = require('jsdom');
 const moment = require('moment-timezone');
-const { isShuttingDown } = require('./database');
+const { isShuttingDown, safeExecuteQuery } = require('./database');
 
 // Configura axios para tentar novamente em caso de falha
 axiosRetry(axios, {
@@ -23,20 +23,6 @@ axiosRetry(axios, {
     axiosRetry.isNetworkOrIdempotentRequestError(error) || 
     error.code === 'ECONNABORTED'
 });
-
-// Função auxiliar para verificar conexão
-async function checkDBAvailable(dbConnection) {
-  if (isShuttingDown() || !dbConnection) {
-    return false;
-  }
-  
-  try {
-    await dbConnection.execute('SELECT 1');
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 // Configurações
 const ITEMS_PER_PAGE = 5;
@@ -278,7 +264,7 @@ async function parallelGuildSearch(name, nameLower, guilds = GUILDS_TO_CHECK) {
 }
 
 // Função com cache e busca paralela otimizada
-async function searchCharacterWithCache(name, dbConnection) {
+async function searchCharacterWithCache(name) {
   if (!name || typeof name !== 'string') {
     console.error('❌ Nome do personagem inválido:', name);
     return null;
@@ -288,7 +274,7 @@ async function searchCharacterWithCache(name, dbConnection) {
   
   try {
     // Verifica no banco de dados primeiro
-    const [dbRows] = await dbConnection.execute(
+    const dbRows = await safeExecuteQuery(
       'SELECT * FROM characters WHERE name = ? LIMIT 1',
       [name]
     );
@@ -308,25 +294,26 @@ async function searchCharacterWithCache(name, dbConnection) {
       const guild = guildData.guild || null;
 
       // Atualiza ou insere no banco de dados
+      let charId;
       if (dbRows.length > 0 && dbRows[0].id) {
-        await dbConnection.execute(
+        await safeExecuteQuery(
           'UPDATE characters SET last_level = ?, last_resets = ?, guild = ?, last_seen = NOW() WHERE id = ?',
           [level, resets, guild, dbRows[0].id]
         );
-        guildData.id = dbRows[0].id;
+        charId = dbRows[0].id;
       } else {
-        const [result] = await dbConnection.execute(
+        const result = await safeExecuteQuery(
           'INSERT INTO characters (name, guild, last_level, last_resets, last_seen) VALUES (?, ?, ?, ?, NOW())',
           [name, guild, level, resets]
         );
-        guildData.id = result.insertId;
+        charId = result.insertId;
       }
       
       // Adiciona ao histórico (apenas se level e resets são válidos)
-      if (level !== null && resets !== null && guildData.id) {
-        await dbConnection.execute(
+      if (level !== null && resets !== null && charId) {
+        await safeExecuteQuery(
           'INSERT INTO character_history (character_id, level, resets) VALUES (?, ?, ?)',
-          [guildData.id, level, resets]
+          [charId, level, resets]
         ).catch(error => {
           console.error('❌ Erro ao inserir no histórico:', error);
         });
@@ -334,7 +321,7 @@ async function searchCharacterWithCache(name, dbConnection) {
       
       return {
         ...guildData,
-        id: guildData.id,
+        id: charId,
         level,
         resets,
         guild,
@@ -351,14 +338,14 @@ async function searchCharacterWithCache(name, dbConnection) {
 }
 
 // Calcular estatísticas avançadas
-async function calculateAdvancedStats(characterId, dbConnection) {
-  if (!characterId || !dbConnection) {
+async function calculateAdvancedStats(characterId) {
+  if (!characterId) {
     console.error('❌ Parâmetros inválidos para calculateAdvancedStats');
     return null;
   }
 
   try {
-    const [history] = await dbConnection.execute(`
+    const history = await safeExecuteQuery(`
       SELECT level, resets, UNIX_TIMESTAMP(recorded_at) as timestamp 
       FROM character_history 
       WHERE character_id = ? 
@@ -527,7 +514,7 @@ function createCharEmbed({ name, level, resets, guild, found, lastSeen, history,
 }
 
 // Buscar personagem com tratamento de erro completo
-async function searchCharacter(interaction, charName, dbConnection) {
+async function searchCharacter(interaction, charName) {
   if (!charName || typeof charName !== 'string') {
     return interaction.reply({
       content: 'Por favor, forneça um nome de personagem válido.',
@@ -536,25 +523,17 @@ async function searchCharacter(interaction, charName, dbConnection) {
   }
 
   try {
-    // Verificar conexão com o banco de dados
-    if (!dbConnection || !(await dbConnection.execute('SELECT 1').catch(() => false))) {
-      return interaction.reply({
-        content: 'Erro de conexão com o banco de dados. Por favor, tente novamente mais tarde.',
-        flags: MessageFlags.Ephemeral
-      });
-    }
-
     // Deferir a resposta primeiro
     await interaction.deferReply();
 
     // Executar a busca com timeout total de 15 segundos
     const charData = await Promise.race([
-      searchCharacterWithCache(charName, dbConnection),
+      searchCharacterWithCache(charName),
       new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 15000))
     ]);
 
     if (!charData) {
-      const [historyRows] = await dbConnection.execute(
+      const historyRows = await safeExecuteQuery(
         'SELECT * FROM characters WHERE LOWER(name) = ? LIMIT 1',
         [charName.toLowerCase()]
       );
@@ -580,11 +559,11 @@ async function searchCharacter(interaction, charName, dbConnection) {
     
     // Obter histórico e estatísticas em paralelo
     const [history, advancedStats] = await Promise.all([
-      dbConnection.execute(
+      safeExecuteQuery(
         'SELECT level, resets, recorded_at FROM character_history WHERE character_id = ? ORDER BY recorded_at DESC LIMIT 5',
         [charData.id]
-      ).catch(() => [[]]), // Retorna array vazio em caso de erro
-      calculateAdvancedStats(charData.id, dbConnection)
+      ).catch(() => []), // Retorna array vazio em caso de erro
+      calculateAdvancedStats(charData.id)
     ]);
     
     // Criar embed de resposta
@@ -594,7 +573,7 @@ async function searchCharacter(interaction, charName, dbConnection) {
       resets: charData.resets || 0,
       guild: charData.guild || 'Desconhecida',
       found: true,
-      history: history[0],
+      history: history,
       stats: advancedStats
     });
     
@@ -619,7 +598,7 @@ async function searchCharacter(interaction, charName, dbConnection) {
 }
 
 // Mostrar ranking igual ao do monitor.php
-async function showRanking(interaction, period, dbConnection) {
+async function showRanking(interaction, period) {
   try {
     await interaction.deferReply();
 
@@ -645,7 +624,7 @@ async function showRanking(interaction, period, dbConnection) {
 
     // Verificar cache (5 minutos como no monitor.php)
     const cacheKey = `rankings_${period}`;
-    const [cacheRows] = await dbConnection.execute(
+    const cacheRows = await safeExecuteQuery(
       'SELECT key_value FROM system_status WHERE key_name = ? AND updated_at > DATE_SUB(NOW(), INTERVAL 5 MINUTE)',
       [cacheKey]
     );
@@ -656,7 +635,7 @@ async function showRanking(interaction, period, dbConnection) {
     }
 
     // Consulta idêntica ao monitor.php
-    const [rows] = await dbConnection.execute(`
+    const rows = await safeExecuteQuery(`
       SELECT 
         c.name, 
         c.last_level as current_level,
@@ -699,7 +678,7 @@ async function showRanking(interaction, period, dbConnection) {
     });
 
     // Salvar no cache como no monitor.php
-    await dbConnection.execute(
+    await safeExecuteQuery(
       'INSERT INTO system_status (key_name, key_value) VALUES (?, ?) ' +
       'ON DUPLICATE KEY UPDATE key_value = VALUES(key_value), updated_at = NOW()',
       [cacheKey, JSON.stringify({ embed })]
@@ -716,17 +695,13 @@ async function showRanking(interaction, period, dbConnection) {
 }
 
 // Gerenciar permissões de comandos
-async function addCommandPermission(commandName, roleId, dbConnection) {
-  if (!await checkDBAvailable(dbConnection)) {
-    console.log('⏸️ DB indisponível para addCommandPermission');
-    return false;
-  }
+async function addCommandPermission(commandName, roleId) {
   try {
     if (!commandName || !roleId) {
       console.error('❌ Parâmetros inválidos para addCommandPermission');
       return false;
     }
-    await dbConnection.execute(
+    await safeExecuteQuery(
       'INSERT INTO command_permissions (command_name, role_id) VALUES (?, ?)',
       [commandName, roleId]
     );
@@ -741,17 +716,13 @@ async function addCommandPermission(commandName, roleId, dbConnection) {
   }
 }
 
-async function removeCommandPermission(commandName, roleId, dbConnection) {
-  if (!await checkDBAvailable(dbConnection)) {
-    console.log('⏸️ DB indisponível para removeCommandPermission');
-    return false;
-  }
+async function removeCommandPermission(commandName, roleId) {
   try {
     if (!commandName || !roleId) {
       console.error('❌ Parâmetros inválidos para removeCommandPermission');
       return false;
     }
-    const [result] = await dbConnection.execute(
+    const result = await safeExecuteQuery(
       'DELETE FROM command_permissions WHERE command_name = ? AND role_id = ?',
       [commandName, roleId]
     );
@@ -766,14 +737,9 @@ async function removeCommandPermission(commandName, roleId, dbConnection) {
   }
 }
 
-async function getCommandPermissions(commandName, dbConnection) {
-  if (!await checkDBAvailable(dbConnection)) {
-    console.log('⏸️ DB indisponível para getCommandPermissions');
-    return [];
-  }
-  
+async function getCommandPermissions(commandName) {
   try {
-    const [rows] = await dbConnection.execute(
+    const rows = await safeExecuteQuery(
       'SELECT role_id FROM command_permissions WHERE command_name = ?',
       [commandName]
     );
@@ -788,16 +754,16 @@ async function getCommandPermissions(commandName, dbConnection) {
   }
 }
 
-async function checkUserPermission(interaction, commandName, dbConnection) {
+async function checkUserPermission(interaction, commandName) {
   // O comando pendentes é especial e é verificado pelos novos /admin-notificacoes
   if (commandName === 'pendentes') {
-      const allowedRoles = await getNotificationSubscriptions('inscricao_pendente', dbConnection);
+      const allowedRoles = await getNotificationSubscriptions('inscricao_pendente');
       if (allowedRoles.length === 0) return true; // Se nenhum cargo configurado, todos podem usar
       return interaction.member?.roles?.cache?.some(role => allowedRoles.includes(role.id));
   }
-  if (!interaction || !commandName || !dbConnection) return false;
+  if (!interaction || !commandName) return false;
 
-  const allowedRoles = await getCommandPermissions(commandName, dbConnection);
+  const allowedRoles = await getCommandPermissions(commandName);
   
   if (allowedRoles.length === 0) return true; // Se nenhum cargo configurado, todos podem usar
   
@@ -823,10 +789,10 @@ async function safeSend(channel, content) {
 // ==============================================
 
 // Função para bloquear IP (atualizada)
-async function blockIP(ip, motivo, dbConnection, userId) {
+async function blockIP(ip, motivo, userId) {
   try {
     // Verifica se o IP já está bloqueado
-    const [existing] = await dbConnection.execute(
+    const existing = await safeExecuteQuery(
       'SELECT * FROM ips_bloqueados WHERE ip = ?',
       [ip]
     );
@@ -842,7 +808,7 @@ async function blockIP(ip, motivo, dbConnection, userId) {
     }
 
     // Verifica se a coluna bloqueado_por existe
-    const [columns] = await dbConnection.execute(
+    const columns = await safeExecuteQuery(
       `SHOW COLUMNS FROM ips_bloqueados LIKE 'bloqueado_por'`
     );
     
@@ -860,7 +826,7 @@ async function blockIP(ip, motivo, dbConnection, userId) {
     }
 
     // Insere no banco de dados
-    await dbConnection.execute(query, values);
+    await safeExecuteQuery(query, values);
 
     return { success: true, message: 'IP bloqueado com sucesso!', geoInfo };
   } catch (error) {
@@ -870,10 +836,10 @@ async function blockIP(ip, motivo, dbConnection, userId) {
 }
 
 // Função para desbloquear IP
-async function unblockIP(ip, dbConnection, userId) {
+async function unblockIP(ip, userId) {
   try {
     // Verifica se o IP está bloqueado
-    const [blocked] = await dbConnection.execute(
+    const blocked = await safeExecuteQuery(
       'SELECT * FROM ips_bloqueados WHERE ip = ?',
       [ip]
     );
@@ -883,7 +849,7 @@ async function unblockIP(ip, dbConnection, userId) {
     }
 
     // Remove o bloqueio
-    await dbConnection.execute(
+    await safeExecuteQuery(
       'DELETE FROM ips_bloqueados WHERE ip = ?',
       [ip]
     );
@@ -900,16 +866,16 @@ async function unblockIP(ip, dbConnection, userId) {
 }
 
 // Função para consultar IP
-async function queryIP(ip, dbConnection) {
+async function queryIP(ip) {
   try {
     // Verifica se está bloqueado
-    const [blocked] = await dbConnection.execute(
+    const blocked = await safeExecuteQuery(
       'SELECT * FROM ips_bloqueados WHERE ip = ?',
       [ip]
     );
 
     // Verifica se está na whitelist
-    const [whitelisted] = await dbConnection.execute(
+    const whitelisted = await safeExecuteQuery(
       'SELECT * FROM ips_whitelist WHERE ip = ?',
       [ip]
     );
@@ -956,7 +922,7 @@ async function getIPInfo(ip) {
 }
 
 // Função para gerar relatório de segurança
-async function generateSecurityReport(dbConnection, period = '24h') {
+async function generateSecurityReport(period = '24h') {
   try {
     let interval;
     switch (period) {
@@ -966,14 +932,14 @@ async function generateSecurityReport(dbConnection, period = '24h') {
     }
 
     // IPs bloqueados recentemente
-    const [blockedIPs] = await dbConnection.execute(
+    const blockedIPs = await safeExecuteQuery(
       `SELECT ip, motivo, pais, data_bloqueio FROM ips_bloqueados 
        WHERE data_bloqueio >= DATE_SUB(NOW(), INTERVAL ${interval})
        ORDER BY data_bloqueio DESC LIMIT 10`
     );
 
     // Tentativas de acesso suspeitas
-    const [suspiciousAccess] = await dbConnection.execute(
+    const suspiciousAccess = await safeExecuteQuery(
       `SELECT ip, COUNT(*) as tentativas, MAX(data_acesso) as ultima_tentativa 
        FROM tentativas_login_falhas 
        WHERE data_acesso >= DATE_SUB(NOW(), INTERVAL ${interval})
@@ -983,7 +949,7 @@ async function generateSecurityReport(dbConnection, period = '24h') {
     );
 
     // IPs mais problemáticos
-    const [problematicIPs] = await dbConnection.execute(
+    const problematicIPs = await safeExecuteQuery(
       `SELECT ip, COUNT(*) as bloqueios 
        FROM ips_bloqueados 
        WHERE data_bloqueio >= DATE_SUB(NOW(), INTERVAL ${interval})
@@ -1004,14 +970,9 @@ async function generateSecurityReport(dbConnection, period = '24h') {
 }
 
 // Função para listar últimos acessos
-async function getRecentAccess(dbConnection, limit = 10, country = null) {
+async function getRecentAccess(limit = 10, country = null) {
   try {
-    let query = `SELECT ip, pagina, user_agent, data_acesso 
-                FROM visitantes 
-                ORDER BY data_acesso DESC 
-                LIMIT ?`;
-    
-    let params = [limit];
+    let query, params;
     
     if (country) {
       query = `SELECT v.ip, v.pagina, v.user_agent, v.data_acesso, i.pais
@@ -1021,9 +982,15 @@ async function getRecentAccess(dbConnection, limit = 10, country = null) {
                ORDER BY v.data_acesso DESC 
                LIMIT ?`;
       params = [country.toUpperCase(), limit];
+    } else {
+      query = `SELECT ip, pagina, user_agent, data_acesso 
+               FROM visitantes 
+               ORDER BY data_acesso DESC 
+               LIMIT ?`;
+      params = [limit];
     }
 
-    const [access] = await dbConnection.execute(query, params);
+    const access = await safeExecuteQuery(query, params);
     return access;
   } catch (error) {
     console.error('Erro ao buscar acessos:', error);
@@ -1032,11 +999,11 @@ async function getRecentAccess(dbConnection, limit = 10, country = null) {
 }
 
 // Função para gerenciar whitelist
-async function manageWhitelist(action, ip, motivo, dbConnection, userId) {
+async function manageWhitelist(action, ip, motivo, userId) {
   try {
     if (action === 'add') {
       // Verifica se já está na whitelist
-      const [existing] = await dbConnection.execute(
+      const existing = await safeExecuteQuery(
         'SELECT * FROM ips_whitelist WHERE ip = ?',
         [ip]
       );
@@ -1046,13 +1013,13 @@ async function manageWhitelist(action, ip, motivo, dbConnection, userId) {
       }
 
       // Adiciona à whitelist
-      await dbConnection.execute(
+      await safeExecuteQuery(
         'INSERT INTO ips_whitelist (ip, motivo, criado_por) VALUES (?, ?, ?)',
         [ip, motivo || 'Adicionado via Discord', userId]
       );
 
       // Remove do bloqueio se estiver bloqueado
-      await dbConnection.execute(
+      await safeExecuteQuery(
         'DELETE FROM ips_bloqueados WHERE ip = ?',
         [ip]
       );
@@ -1060,7 +1027,7 @@ async function manageWhitelist(action, ip, motivo, dbConnection, userId) {
       return { success: true, message: 'IP adicionado à whitelist com sucesso!' };
     }
     else if (action === 'remove') {
-      const [result] = await dbConnection.execute(
+      const result = await safeExecuteQuery(
         'DELETE FROM ips_whitelist WHERE ip = ?',
         [ip]
       );
@@ -1072,7 +1039,7 @@ async function manageWhitelist(action, ip, motivo, dbConnection, userId) {
       return { success: true, message: 'IP removido da whitelist com sucesso!' };
     }
     else if (action === 'list') {
-      const [ips] = await dbConnection.execute(
+      const ips = await safeExecuteQuery(
         'SELECT ip, motivo, data_criacao FROM ips_whitelist ORDER BY data_criacao DESC LIMIT 50'
       );
       return { success: true, data: ips };
@@ -1145,11 +1112,11 @@ async function checkPhoneNumber(phoneNumber) {
 // ==============================================
 
 // utils.js - função get500RCharacters SEM cache
-async function get500RCharacters(dbConnection, page = 1, perPage = 5) {
+async function get500RCharacters(page = 1, perPage = 5) {
   try {
     // Busca todos personagens 500+ resets no banco de dados SEM cache
     // Incluindo informações de status e datas
-    const [result] = await dbConnection.execute(`
+    const result = await safeExecuteQuery(`
       SELECT 
         c.name, 
         c.guild, 
@@ -1198,13 +1165,9 @@ async function get500RCharacters(dbConnection, page = 1, perPage = 5) {
 // ==============================================
 // NOVAS FUNÇÕES PARA SISTEMA DE NOTIFICAÇÕES
 // ==============================================
-async function addNotificationSubscription(type, roleId, dbConnection) {
-  if (!await checkDBAvailable(dbConnection)) {
-    console.log('⏸️ DB indisponível para addNotificationSubscription');
-    return false;
-  }
+async function addNotificationSubscription(type, roleId) {
   try {
-    await dbConnection.execute(
+    await safeExecuteQuery(
       'INSERT INTO notification_subscriptions (notification_type, role_id) VALUES (?, ?)',
       [type, roleId]
     );
@@ -1219,13 +1182,9 @@ async function addNotificationSubscription(type, roleId, dbConnection) {
   }
 }
 
-async function removeNotificationSubscription(type, roleId, dbConnection) {
-  if (!await checkDBAvailable(dbConnection)) {
-    console.log('⏸️ DB indisponível para removeNotificationSubscription');
-    return false;
-  }
+async function removeNotificationSubscription(type, roleId) {
   try {
-    const [result] = await dbConnection.execute(
+    const result = await safeExecuteQuery(
       'DELETE FROM notification_subscriptions WHERE notification_type = ? AND role_id = ?',
       [type, roleId]
     );
@@ -1240,13 +1199,9 @@ async function removeNotificationSubscription(type, roleId, dbConnection) {
   }
 }
 
-async function getNotificationSubscriptions(type, dbConnection) {
-  if (!await checkDBAvailable(dbConnection)) {
-    console.log('⏸️ DB indisponível para getNotificationSubscriptions');
-    return [];
-  }
+async function getNotificationSubscriptions(type) {
   try {
-    const [rows] = await dbConnection.execute(
+    const rows = await safeExecuteQuery(
       'SELECT role_id FROM notification_subscriptions WHERE notification_type = ?',
       [type]
     );

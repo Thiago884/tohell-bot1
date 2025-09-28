@@ -10,6 +10,7 @@ const {
   MessageFlags
 } = require('discord.js');
 const { formatBrazilianDate, safeSend, notifyWebhook, searchCharacterWithCache, calculateAdvancedStats, createCharEmbed, safeInteractionReply, isValidImageUrl, get500RCharacters } = require('./utils');
+const { safeExecuteQuery } = require('./database');
 
 // Configuração da URL base para imagens
 const BASE_URL = process.env.BASE_URL || 'https://tohellguild.com.br/';
@@ -373,7 +374,7 @@ function normalizePhoneForSearch(phone) {
 }
 
 // Função para listar inscrições pendentes com paginação
-async function listPendingApplications(context, args, dbConnection) {
+async function listPendingApplications(context, args) {
   const page = args[0] ? parseInt(args[0]) : 1;
 
   if (isNaN(page) || page < 1) {
@@ -386,7 +387,7 @@ async function listPendingApplications(context, args, dbConnection) {
   try {
     const offset = (page - 1) * 5;
 
-    const [countRows] = await dbConnection.execute(
+    const countRows = await safeExecuteQuery(
       'SELECT COUNT(*) as total FROM inscricoes_pendentes'
     );
     const total = countRows[0].total;
@@ -405,7 +406,7 @@ async function listPendingApplications(context, args, dbConnection) {
       });
     }
 
-    const [rows] = await dbConnection.execute(
+    const rows = await safeExecuteQuery(
       'SELECT * FROM inscricoes_pendentes ORDER BY data_inscricao DESC LIMIT ? OFFSET ?',
       [5, offset]
     );
@@ -418,7 +419,7 @@ async function listPendingApplications(context, args, dbConnection) {
     await safeInteractionReply(context, { embeds: [embed] });
 
     for (const application of rows) {
-      await sendApplicationEmbed(context.channel, application, dbConnection);
+      await sendApplicationEmbed(context.channel, application);
     }
 
     if (totalPages > 1) {
@@ -451,7 +452,7 @@ async function listPendingApplications(context, args, dbConnection) {
 }
 
 // Função para buscar inscrições (atualizada para normalização robusta de telefones)
-async function searchApplications(context, args, dbConnection) {
+async function searchApplications(context, args) {
   if (args.length === 0) {
     return safeInteractionReply(context, {
       content: 'Por favor, especifique um termo de busca.',
@@ -558,7 +559,7 @@ async function searchApplications(context, args, dbConnection) {
     }
 
     // Executa a contagem
-    const [countRows] = await dbConnection.execute(countQuery, countParams);
+    const countRows = await safeExecuteQuery(countQuery, countParams);
     const total = countRows[0].total;
     const totalPages = Math.ceil(total / 5);
 
@@ -577,7 +578,7 @@ async function searchApplications(context, args, dbConnection) {
     }
 
     // Busca os dados
-    const [rows] = await dbConnection.execute(dataQuery, dataParams);
+    const rows = await safeExecuteQuery(dataQuery, dataParams);
 
     const embed = new EmbedBuilder()
       .setColor('#FF4500')
@@ -587,7 +588,7 @@ async function searchApplications(context, args, dbConnection) {
     await safeInteractionReply(context, { embeds: [embed] });
 
     for (const application of rows) {
-      await sendApplicationEmbed(context.channel, application, dbConnection);
+      await sendApplicationEmbed(context.channel, application);
     }
 
     if (totalPages > 1) {
@@ -620,7 +621,7 @@ async function searchApplications(context, args, dbConnection) {
 }
 
 // Função para enviar embed de inscrição (atualizada com formatação de telefone)
-async function sendApplicationEmbed(channel, application, dbConnection) {
+async function sendApplicationEmbed(channel, application) {
   const screenshots = processImageUrls(application.screenshot_path);
   const screenshotLinks = screenshots.slice(0, 5).map((screenshot, index) =>
     `[Imagem ${index + 1}](${screenshot})`
@@ -712,9 +713,9 @@ async function showHelp(interaction) {
 }
 
 // Função para aprovar inscrição
-async function approveApplication(context, applicationId, dbConnection, user = null) {
+async function approveApplication(context, applicationId, user = null) {
   try {
-    const [rows] = await dbConnection.execute(
+    const rows = await safeExecuteQuery(
       'SELECT * FROM inscricoes_pendentes WHERE id = ?',
       [applicationId]
     );
@@ -725,7 +726,7 @@ async function approveApplication(context, applicationId, dbConnection, user = n
 
     const application = rows[0];
 
-    await dbConnection.execute(
+    await safeExecuteQuery(
       'INSERT INTO inscricoes (nome, telefone, discord, char_principal, guild_anterior, ip, screenshot_path, data_inscricao, status, avaliador, data_avaliacao) VALUES (?, ?, ?, ?, ?, ?, ?, ?, "aprovado", ?, NOW())',
       [
         application.nome,
@@ -740,7 +741,7 @@ async function approveApplication(context, applicationId, dbConnection, user = n
       ]
     );
 
-    await dbConnection.execute(
+    await safeExecuteQuery(
       'DELETE FROM inscricoes_pendentes WHERE id = ?',
       [applicationId]
     );
@@ -785,9 +786,9 @@ async function approveApplication(context, applicationId, dbConnection, user = n
 }
 
 // Função para rejeitar inscrição
-async function rejectApplication(context, applicationId, reason, dbConnection, user = null) {
+async function rejectApplication(context, applicationId, reason, user = null) {
   try {
-    const [rows] = await dbConnection.execute(
+    const rows = await safeExecuteQuery(
       'SELECT * FROM inscricoes_pendentes WHERE id = ?',
       [applicationId]
     );
@@ -798,7 +799,7 @@ async function rejectApplication(context, applicationId, reason, dbConnection, u
 
     const application = rows[0];
 
-    await dbConnection.execute(
+    await safeExecuteQuery(
       'DELETE FROM inscricoes_pendentes WHERE id = ?',
       [applicationId]
     );

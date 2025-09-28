@@ -30,7 +30,7 @@ let lastCheckedDepartureTimestamp = new Date();
 const SECURITY_ALERT_CHANNEL_ID = '1256287757135908884';
 
 // Monitoramento de segurança
-async function setupSecurityMonitoring(client, db) {
+async function setupSecurityMonitoring(client) {
   // Verifica tentativas suspeitas a cada 5 minutos
   setInterval(async () => {
     if (isShuttingDown() || !await canExecuteDBOperation()) {
@@ -40,7 +40,6 @@ async function setupSecurityMonitoring(client, db) {
     
     try {
       // IPs com muitas tentativas de login em curto período
-      // FIX: Removed the 'db' parameter from the call
       const suspiciousLogins = await safeExecuteQuery(`
         SELECT ip, COUNT(*) as tentativas 
         FROM tentativas_login_falhas 
@@ -51,7 +50,6 @@ async function setupSecurityMonitoring(client, db) {
       `);
       
       // IPs bloqueados que tentaram acessar
-      // FIX: Removed the 'db' parameter from the call
       const blockedAccess = await safeExecuteQuery(`
         SELECT v.ip, COUNT(*) as tentativas, MAX(v.data_acesso) as ultima_tentativa
         FROM visitantes v
@@ -111,7 +109,7 @@ async function setupSecurityMonitoring(client, db) {
 }
 
 // Limpeza automática de registros
-async function setupAutoCleanup(db) {
+async function setupAutoCleanup() {
   // Executa a limpeza diária às 3:00 AM
   const now = new Date();
   const nextCleanup = new Date(
@@ -134,15 +132,12 @@ async function setupAutoCleanup(db) {
       console.log('🔄 Iniciando limpeza automática de registros antigos...');
       
       // Remove bloqueios com mais de 30 dias
-      // FIX: Removed the 'db' parameter from the call
       await safeExecuteQuery('DELETE FROM ips_bloqueados WHERE data_bloqueio < DATE_SUB(NOW(), INTERVAL 30 DAY)');
       
       // Remove tentativas de login com mais de 7 dias
-      // FIX: Removed the 'db' parameter from the call
       await safeExecuteQuery('DELETE FROM tentativas_login_falhas WHERE data_acesso < DATE_SUB(NOW(), INTERVAL 7 DAY)');
       
       // Remove registros de visitantes com mais de 30 dias
-      // FIX: Removed the 'db' parameter from the call
       await safeExecuteQuery('DELETE FROM visitantes WHERE data_acesso < DATE_SUB(NOW(), INTERVAL 30 DAY)');
       
       console.log('✅ Limpeza automática concluída');
@@ -164,14 +159,13 @@ async function setupAutoCleanup(db) {
 }
 
 // Verificar novas inscrições e notificar por DM
-async function checkNewApplications(client, db) {
+async function checkNewApplications(client) {
   if (isShuttingDown() || !await canExecuteDBOperation()) {
     console.log('⏸️ Monitoramento de inscrições pausado (shutdown ou DB indisponível)');
     return;
   }
   
   try {
-    // FIX: Removed the 'db' parameter from the call
     const rows = await safeExecuteQuery(
       'SELECT * FROM inscricoes_pendentes WHERE data_inscricao > ? ORDER BY data_inscricao ASC',
       [lastCheckedApplications]
@@ -184,10 +178,10 @@ async function checkNewApplications(client, db) {
         content: `📢 Há ${rows.length} nova(s) inscrição(ões) pendente(s)! Use /pendentes para visualizar.`
       });
       
-      const roleIdsToNotify = await getNotificationSubscriptions('inscricao_pendente', db);
+      const roleIdsToNotify = await getNotificationSubscriptions('inscricao_pendente');
 
       for (const application of rows) {
-        await sendApplicationEmbed(channel, application, db);
+        await sendApplicationEmbed(channel, application);
         
         const dmEmbed = new EmbedBuilder()
           .setColor('#FF4500')
@@ -216,14 +210,13 @@ async function checkNewApplications(client, db) {
 
 
 // Verificar novos membros e cruzar com a lista de inimigos
-async function checkNewMembersForConflicts(client, db) {
+async function checkNewMembersForConflicts(client) {
     if (isShuttingDown() || !await canExecuteDBOperation()) {
         console.log('⏸️ Monitoramento de conflitos pausado (shutdown ou DB indisponível)');
         return;
     }
 
     try {
-        // FIX: Removed the 'db' parameter from the call
         const newMembers = await safeExecuteQuery(
             `SELECT nome, guild, data_insercao FROM membros WHERE data_insercao > ? AND status = 'novo' ORDER BY data_insercao ASC`,
             [lastCheckedMemberTimestamp]
@@ -231,10 +224,9 @@ async function checkNewMembersForConflicts(client, db) {
 
         if (newMembers.length > 0) {
             const securityChannel = await client.channels.fetch(SECURITY_ALERT_CHANNEL_ID).catch(() => null);
-            const roleIdsToNotify = await getNotificationSubscriptions('alerta_seguranca', db);
+            const roleIdsToNotify = await getNotificationSubscriptions('alerta_seguranca');
 
             for (const member of newMembers) {
-                // FIX: Removed the 'db' parameter from the call
                 const enemies = await safeExecuteQuery(
                     `SELECT nome, guild, status FROM inimigos WHERE nome = ?`,
                     [member.nome]
@@ -277,14 +269,13 @@ async function checkNewMembersForConflicts(client, db) {
 }
 
 // NOVA FUNÇÃO PARA VERIFICAR SAÍDAS E NOTIFICAR
-async function checkDepartingMembers(client, db) {
+async function checkDepartingMembers(client) {
     if (isShuttingDown() || !await canExecuteDBOperation()) {
         console.log('⏸️ Monitoramento de saídas pausado (shutdown ou DB indisponível)');
         return;
     }
 
     try {
-        // FIX: Removed the 'db' parameter from the call
         const departedMembers = await safeExecuteQuery(
             `SELECT nome, data_saida FROM membros WHERE status = 'saiu' AND data_saida > ? ORDER BY data_saida ASC`,
             [lastCheckedDepartureTimestamp]
@@ -292,10 +283,9 @@ async function checkDepartingMembers(client, db) {
 
         if (departedMembers.length > 0) {
             const securityChannel = await client.channels.fetch(SECURITY_ALERT_CHANNEL_ID).catch(() => null);
-            const roleIdsToNotify = await getNotificationSubscriptions('alerta_seguranca', db);
+            const roleIdsToNotify = await getNotificationSubscriptions('alerta_seguranca');
 
             for (const member of departedMembers) {
-                // FIX: Removed the 'db' parameter from the call
                 const applications = await safeExecuteQuery(
                     `SELECT nome, telefone FROM inscricoes WHERE char_principal = ? AND status = 'aprovado' ORDER BY data_avaliacao DESC LIMIT 1`,
                     [member.nome]
@@ -361,23 +351,23 @@ function isValidImageUrl(url) {
 }
 
 // Configurar eventos
-function setupEvents(client, db) {
+function setupEvents(client) {
   // Evento ready
   client.on(Events.ClientReady, async () => {
     console.log(`🤖 Bot conectado como ${client.user.tag}`);
     client.user.setActivity('/ajuda para comandos', { type: 'WATCHING' });
     
-    await setupSecurityMonitoring(client, db);
-    await setupAutoCleanup(db);
+    await setupSecurityMonitoring(client);
+    await setupAutoCleanup();
     
     // Intervalo para verificar novas inscrições
-    setInterval(() => checkNewApplications(client, db), 60000); // 1 minuto
+    setInterval(() => checkNewApplications(client), 60000); // 1 minuto
     
     // Intervalo para verificar conflitos de membros
-    setInterval(() => checkNewMembersForConflicts(client, db), 5 * 60000); // 5 minutos
+    setInterval(() => checkNewMembersForConflicts(client), 5 * 60000); // 5 minutos
     
     // NOVO: Intervalo para verificar saídas de membros
-    setInterval(() => checkDepartingMembers(client, db), 5 * 60000); // 5 minutos
+    setInterval(() => checkDepartingMembers(client), 5 * 60000); // 5 minutos
   });
 
   // Evento interactionCreate com tratamento de erros melhorado
@@ -390,7 +380,7 @@ function setupEvents(client, db) {
         console.log(`🔍 Comando slash detectado: ${interaction.commandName}`, interaction.options.data);
 
         // A verificação de permissão para 'pendentes' agora é feita com base nas subscrições de notificação
-        if (interaction.commandName !== 'pendentes' && !await checkUserPermission(interaction, interaction.commandName, db)) {
+        if (interaction.commandName !== 'pendentes' && !await checkUserPermission(interaction, interaction.commandName)) {
           return interaction.reply({
             content: '❌ Você não tem permissão para usar este comando.',
             flags: MessageFlags.Ephemeral
@@ -404,24 +394,24 @@ function setupEvents(client, db) {
         switch (interaction.commandName) {
           case 'pendentes':
             const page = interaction.options.getInteger('página') || 1;
-            await listPendingApplications(interaction, [page.toString()], db);
+            await listPendingApplications(interaction, [page.toString()]);
             break;
             
           case 'buscar':
             const term = interaction.options.getString('termo');
             const searchPage = interaction.options.getInteger('página') || 1;
-            await searchApplications(interaction, [term, searchPage.toString()], db);
+            await searchApplications(interaction, [term, searchPage.toString()]);
             break;
             
           case 'char':
             const charName = interaction.options.getString('nome');
             console.log(`🔍 Comando /char recebido para personagem: ${charName}`);
-            await searchCharacter(interaction, charName, db);
+            await searchCharacter(interaction, charName);
             break;
             
           case 'ranking':
             const period = interaction.options.getString('período');
-            await showRanking(interaction, period, db);
+            await showRanking(interaction, period);
             break;
             
           case 'ajuda':
@@ -439,7 +429,7 @@ function setupEvents(client, db) {
               await interaction.deferReply({ ephemeral: true });
 
               if (actionNotify === 'list') {
-                  const roleIds = await getNotificationSubscriptions(typeNotify, db);
+                  const roleIds = await getNotificationSubscriptions(typeNotify);
                   if (roleIds.length === 0) {
                       return interaction.editReply(`Nenhum cargo está subscrito para a notificação: **${typeNotify}**.`);
                   }
@@ -452,12 +442,12 @@ function setupEvents(client, db) {
               }
 
               if (actionNotify === 'add') {
-                  const success = await addNotificationSubscription(typeNotify, roleNotify.id, db);
+                  const success = await addNotificationSubscription(typeNotify, roleNotify.id);
                   return interaction.editReply(success ? `✅ O cargo **${roleNotify.name}** agora receberá notificações de **${typeNotify}**.` : '❌ Erro. O cargo talvez já esteja subscrito.');
               }
 
               if (actionNotify === 'remove') {
-                  const success = await removeNotificationSubscription(typeNotify, roleNotify.id, db);
+                  const success = await removeNotificationSubscription(typeNotify, roleNotify.id);
                   return interaction.editReply(success ? `✅ O cargo **${roleNotify.name}** não receberá mais notificações de **${typeNotify}**.` : '❌ Erro. O cargo talvez não estivesse subscrito.');
               }
               break;
@@ -467,7 +457,7 @@ function setupEvents(client, db) {
             await interaction.deferReply();
             
             try {
-              const { chars, totalChars, page, totalPages, lastUpdated } = await get500RCharacters(db);
+              const { chars, totalChars, page, totalPages, lastUpdated } = await get500RCharacters();
               
               if (!chars || chars.length === 0) {
                 return interaction.editReply({
@@ -569,7 +559,7 @@ function setupEvents(client, db) {
 
             try {
               if (action === 'list') {
-                const roleIds = await getCommandPermissions(commandName, db);
+                const roleIds = await getCommandPermissions(commandName);
                 
                 if (roleIds.length === 0) {
                   return interaction.editReply({
@@ -590,7 +580,7 @@ function setupEvents(client, db) {
               }
 
               if (action === 'add') {
-                const success = await addCommandPermission(commandName, role.id, db);
+                const success = await addCommandPermission(commandName, role.id);
                 return interaction.editReply({
                   content: success ? 
                     `✅ Cargo ${role.name} agora tem permissão para /${commandName}` :
@@ -599,7 +589,7 @@ function setupEvents(client, db) {
               }
 
               if (action === 'remove') {
-                const success = await removeCommandPermission(commandName, role.id, db);
+                const success = await removeCommandPermission(commandName, role.id);
                 return interaction.editReply({
                   content: success ? 
                     `✅ Cargo ${role.name} não tem mais permissão para /${commandName}` :
@@ -621,7 +611,7 @@ function setupEvents(client, db) {
             await interaction.deferReply();
 
             try {
-              const result = await blockIP(ip, motivo, db, interaction.user.id);
+              const result = await blockIP(ip, motivo, interaction.user.id);
               
               if (!result.success) {
                 return interaction.editReply({
@@ -674,7 +664,7 @@ function setupEvents(client, db) {
             await interaction.deferReply();
             
             try {
-              const result = await unblockIP(ipToUnblock, db, interaction.user.id);
+              const result = await unblockIP(ipToUnblock, interaction.user.id);
               
               if (!result.success) {
                 return interaction.editReply({
@@ -723,7 +713,7 @@ function setupEvents(client, db) {
             await interaction.deferReply();
 
             try {
-              const result = await queryIP(ipToQuery, db);
+              const result = await queryIP(ipToQuery);
               
               if (!result) {
                 return interaction.editReply({
@@ -788,7 +778,7 @@ function setupEvents(client, db) {
             await interaction.deferReply();
 
             try {
-              const report = await generateSecurityReport(db, periodo);
+              const report = await generateSecurityReport(periodo);
               
               if (!report) {
                 return interaction.editReply({
@@ -845,7 +835,7 @@ function setupEvents(client, db) {
             await interaction.deferReply();
 
             try {
-              const accesses = await getRecentAccess(db, limit, country);
+              const accesses = await getRecentAccess(limit, country);
               
               if (!accesses || accesses.length === 0) {
                 return interaction.editReply({
@@ -892,7 +882,7 @@ function setupEvents(client, db) {
                 }).catch(console.error);
               }
 
-              const result = await manageWhitelist(whitelistAction, ipWhitelist, motivoWhitelist, db, interaction.user.id);
+              const result = await manageWhitelist(whitelistAction, ipWhitelist, motivoWhitelist, interaction.user.id);
               
               if (!result.success) {
                 return interaction.editReply({
@@ -1031,7 +1021,7 @@ function setupEvents(client, db) {
             
             await interaction.deferUpdate().catch(console.error);
             await interaction.message.delete().catch(() => {});
-            await listPendingApplications(interaction, [page.toString()], db);
+            await listPendingApplications(interaction, [page.toString()]);
             return;
           }
           
@@ -1066,7 +1056,7 @@ function setupEvents(client, db) {
             
             await interaction.deferUpdate().catch(console.error);
             await interaction.message.delete().catch(() => {});
-            await searchApplications(interaction, [searchTerm, page.toString()], db);
+            await searchApplications(interaction, [searchTerm, page.toString()]);
             return;
           }
 
@@ -1082,7 +1072,7 @@ function setupEvents(client, db) {
             try {
               const table = status === 'aprovado' ? 'inscricoes' : 'inscricoes_pendentes';
               
-              const [rows] = await db.execute(
+              const rows = await safeExecuteQuery(
                 `SELECT screenshot_path FROM ${table} WHERE id = ?`,
                 [applicationId]
               );
@@ -1136,7 +1126,7 @@ function setupEvents(client, db) {
             const table = status === 'aprovado' ? 'inscricoes' : 'inscricoes_pendentes';
             
             try {
-              const [rows] = await db.execute(
+              const rows = await safeExecuteQuery(
                 `SELECT screenshot_path FROM ${table} WHERE id = ?`,
                 [applicationId]
               );
@@ -1236,7 +1226,7 @@ function setupEvents(client, db) {
             await interaction.deferUpdate();
             
             try {
-              const { chars, totalChars, totalPages, lastUpdated } = await get500RCharacters(db, page);
+              const { chars, totalChars, totalPages, lastUpdated } = await get500RCharacters(page);
               
               if (!chars || chars.length === 0) {
                 return interaction.editReply({
@@ -1320,7 +1310,7 @@ function setupEvents(client, db) {
             const action = interaction.customId.startsWith('approve_') ? 'approve' : 'reject';
             const applicationId = interaction.customId.split('_')[1];
             
-            if (!await checkUserPermission(interaction, 'admin', db)) {
+            if (!await checkUserPermission(interaction, 'admin')) {
               return interaction.reply({
                 content: '❌ Você não tem permissão para realizar esta ação.',
                 flags: MessageFlags.Ephemeral
@@ -1329,11 +1319,8 @@ function setupEvents(client, db) {
             
             try {
               if (action === 'approve') {
-                // CORRIGIDO: Passando o ID da inscrição em vez do objeto de aplicação.
-                await approveApplication(interaction, applicationId, db);
+                await approveApplication(interaction, applicationId);
               } else {
-                // O botão de rejeitar agora abre um modal para inserir o motivo.
-                // Esta é uma melhoria de fluxo, mas a correção principal é no 'approve'.
                 const modal = new ModalBuilder()
                   .setCustomId(`reject_modal_${applicationId}`)
                   .setTitle('Rejeitar Inscrição');
@@ -1351,7 +1338,6 @@ function setupEvents(client, db) {
               }
             } catch (error) {
               console.error(`❌ Erro ao ${action === 'approve' ? 'aprovar' : 'processar'} inscrição:`, error);
-              // Tenta responder à interação se ainda não foi feito
               if (!interaction.replied && !interaction.deferred) {
                 await interaction.reply({
                   content: `❌ Ocorreu um erro ao processar a inscrição.`,
@@ -1364,7 +1350,6 @@ function setupEvents(client, db) {
                 }).catch(console.error);
               }
             }
-            // A mensagem original é editada pelas funções approve/reject, então não é necessário deletá-la aqui.
             return;
           }
           // =================================================================================
@@ -1384,7 +1369,7 @@ function setupEvents(client, db) {
         if (interaction.customId.startsWith('reject_modal_')) {
           const applicationId = interaction.customId.split('_')[2];
           
-          if (!await checkUserPermission(interaction, 'admin', db)) {
+          if (!await checkUserPermission(interaction, 'admin')) {
             return interaction.reply({
               content: '❌ Você não tem permissão para realizar esta ação.',
               flags: MessageFlags.Ephemeral
@@ -1394,11 +1379,7 @@ function setupEvents(client, db) {
           try {
             const reason = interaction.fields.getTextInputValue('motivo_rejeicao');
             
-            // Unificando a lógica: O modal agora chama a função 'rejectApplication'.
-            await rejectApplication(interaction, applicationId, reason, db);
-            
-            // A função rejectApplication já edita a mensagem original, 
-            // então não precisamos deletá-la.
+            await rejectApplication(interaction, applicationId, reason);
             
           } catch (error) {
             console.error('❌ Erro ao processar modal de rejeição:', error);
