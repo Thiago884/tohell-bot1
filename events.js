@@ -7,7 +7,8 @@ const {
     // Novas importações para o sistema de notificação
     addNotificationSubscription, removeNotificationSubscription, getNotificationSubscriptions, sendDmsToRoles 
 } = require('./utils');
-const { isShuttingDown, isConnectionActive } = require('./database');
+// FIX: Import safeExecuteQuery from database
+const { isShuttingDown, isConnectionActive, safeExecuteQuery } = require('./database');
 const { listPendingApplications, searchApplications, sendApplicationEmbed, approveApplication, rejectApplication, showHelp, createImageCarousel } = require('./commands');
 
 // Função auxiliar para verificar se pode executar operações no DB
@@ -19,9 +20,6 @@ async function canExecuteDBOperation() {
   return await isConnectionActive();
 }
 
-// Função auxiliar para executar query com verificação
-
-// safeExecuteQuery local removido — usa-se a versão exportada de database.js
 // --- VARIÁVEIS DE ESTADO PARA OS MONITORES ---
 // Monitor de inscrições pendentes
 let lastCheckedApplications = new Date();
@@ -42,7 +40,8 @@ async function setupSecurityMonitoring(client, db) {
     
     try {
       // IPs com muitas tentativas de login em curto período
-      const suspiciousLogins = await safeExecuteQuery(db, `
+      // FIX: Removed the 'db' parameter from the call
+      const suspiciousLogins = await safeExecuteQuery(`
         SELECT ip, COUNT(*) as tentativas 
         FROM tentativas_login_falhas 
         WHERE data_acesso >= DATE_SUB(NOW(), INTERVAL 1 HOUR)
@@ -52,7 +51,8 @@ async function setupSecurityMonitoring(client, db) {
       `);
       
       // IPs bloqueados que tentaram acessar
-      const blockedAccess = await safeExecuteQuery(db, `
+      // FIX: Removed the 'db' parameter from the call
+      const blockedAccess = await safeExecuteQuery(`
         SELECT v.ip, COUNT(*) as tentativas, MAX(v.data_acesso) as ultima_tentativa
         FROM visitantes v
         JOIN ips_bloqueados b ON v.ip = b.ip
@@ -134,13 +134,16 @@ async function setupAutoCleanup(db) {
       console.log('🔄 Iniciando limpeza automática de registros antigos...');
       
       // Remove bloqueios com mais de 30 dias
-      await safeExecuteQuery(db, 'DELETE FROM ips_bloqueados WHERE data_bloqueio < DATE_SUB(NOW(), INTERVAL 30 DAY)');
+      // FIX: Removed the 'db' parameter from the call
+      await safeExecuteQuery('DELETE FROM ips_bloqueados WHERE data_bloqueio < DATE_SUB(NOW(), INTERVAL 30 DAY)');
       
       // Remove tentativas de login com mais de 7 dias
-      await safeExecuteQuery(db, 'DELETE FROM tentativas_login_falhas WHERE data_acesso < DATE_SUB(NOW(), INTERVAL 7 DAY)');
+      // FIX: Removed the 'db' parameter from the call
+      await safeExecuteQuery('DELETE FROM tentativas_login_falhas WHERE data_acesso < DATE_SUB(NOW(), INTERVAL 7 DAY)');
       
       // Remove registros de visitantes com mais de 30 dias
-      await safeExecuteQuery(db, 'DELETE FROM visitantes WHERE data_acesso < DATE_SUB(NOW(), INTERVAL 30 DAY)');
+      // FIX: Removed the 'db' parameter from the call
+      await safeExecuteQuery('DELETE FROM visitantes WHERE data_acesso < DATE_SUB(NOW(), INTERVAL 30 DAY)');
       
       console.log('✅ Limpeza automática concluída');
       
@@ -168,8 +171,8 @@ async function checkNewApplications(client, db) {
   }
   
   try {
+    // FIX: Removed the 'db' parameter from the call
     const rows = await safeExecuteQuery(
-      db,
       'SELECT * FROM inscricoes_pendentes WHERE data_inscricao > ? ORDER BY data_inscricao ASC',
       [lastCheckedApplications]
     );
@@ -220,8 +223,8 @@ async function checkNewMembersForConflicts(client, db) {
     }
 
     try {
+        // FIX: Removed the 'db' parameter from the call
         const newMembers = await safeExecuteQuery(
-            db,
             `SELECT nome, guild, data_insercao FROM membros WHERE data_insercao > ? AND status = 'novo' ORDER BY data_insercao ASC`,
             [lastCheckedMemberTimestamp]
         );
@@ -231,8 +234,8 @@ async function checkNewMembersForConflicts(client, db) {
             const roleIdsToNotify = await getNotificationSubscriptions('alerta_seguranca', db);
 
             for (const member of newMembers) {
+                // FIX: Removed the 'db' parameter from the call
                 const enemies = await safeExecuteQuery(
-                    db,
                     `SELECT nome, guild, status FROM inimigos WHERE nome = ?`,
                     [member.nome]
                 );
@@ -281,8 +284,8 @@ async function checkDepartingMembers(client, db) {
     }
 
     try {
+        // FIX: Removed the 'db' parameter from the call
         const departedMembers = await safeExecuteQuery(
-            db,
             `SELECT nome, data_saida FROM membros WHERE status = 'saiu' AND data_saida > ? ORDER BY data_saida ASC`,
             [lastCheckedDepartureTimestamp]
         );
@@ -292,8 +295,8 @@ async function checkDepartingMembers(client, db) {
             const roleIdsToNotify = await getNotificationSubscriptions('alerta_seguranca', db);
 
             for (const member of departedMembers) {
+                // FIX: Removed the 'db' parameter from the call
                 const applications = await safeExecuteQuery(
-                    db,
                     `SELECT nome, telefone FROM inscricoes WHERE char_principal = ? AND status = 'aprovado' ORDER BY data_avaliacao DESC LIMIT 1`,
                     [member.nome]
                 );
@@ -342,6 +345,8 @@ async function checkDepartingMembers(client, db) {
         console.error('❌ Erro ao verificar saídas de membros:', error);
     }
 }
+
+// ... (o restante do arquivo permanece o mesmo) ...
 
 // Função auxiliar para validar URLs de imagem
 function isValidImageUrl(url) {
