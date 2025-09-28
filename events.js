@@ -182,9 +182,11 @@ async function checkNewApplications(client) {
     return;
   }
   
+  
+  const db = getDBConnection();
+  if (!db) { console.log("⏸️ DB não disponível em checkNewApplications"); return; }
   try {
     const rows = await safeExecuteQuery(
-      db,
       'SELECT * FROM inscricoes_pendentes WHERE data_inscricao > ? ORDER BY data_inscricao ASC',
       [lastCheckedApplications]
     );
@@ -234,9 +236,11 @@ async function checkNewMembersForConflicts(client) {
         return;
     }
 
-    try {
+    
+  const db = getDBConnection();
+  if (!db) { console.log("⏸️ DB não disponível em checkNewMembersForConflicts"); return; }
+  try {
         const newMembers = await safeExecuteQuery(
-            db,
             `SELECT nome, guild, data_insercao FROM membros WHERE data_insercao > ? AND status = 'novo' ORDER BY data_insercao ASC`,
             [lastCheckedMemberTimestamp]
         );
@@ -247,7 +251,6 @@ async function checkNewMembersForConflicts(client) {
 
             for (const member of newMembers) {
                 const enemies = await safeExecuteQuery(
-                    db,
                     `SELECT nome, guild, status FROM inimigos WHERE nome = ?`,
                     [member.nome]
                 );
@@ -295,9 +298,11 @@ async function checkDepartingMembers(client) {
         return;
     }
 
-    try {
+    
+  const db = getDBConnection();
+  if (!db) { console.log("⏸️ DB não disponível em checkDepartingMembers"); return; }
+  try {
         const departedMembers = await safeExecuteQuery(
-            db,
             `SELECT nome, data_saida FROM membros WHERE status = 'saiu' AND data_saida > ? ORDER BY data_saida ASC`,
             [lastCheckedDepartureTimestamp]
         );
@@ -308,7 +313,6 @@ async function checkDepartingMembers(client) {
 
             for (const member of departedMembers) {
                 const applications = await safeExecuteQuery(
-                    db,
                     `SELECT nome, telefone FROM inscricoes WHERE char_principal = ? AND status = 'aprovado' ORDER BY data_avaliacao DESC LIMIT 1`,
                     [member.nome]
                 );
