@@ -10,16 +10,21 @@ const dbConfig = {
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
-  timezone: 'Z', // Usar UTC para evitar problemas com fusos horários
-  // REMOVIDAS AS OPÇÕES OBSOLETAS:
-  // reconnect: true,
-  // acquireTimeout: 60000,
-  // timeout: 60000,
-  connectTimeout: 10000
+  timezone: 'Z',
+  connectTimeout: 10000,
+  acquireTimeout: 60000,
+  timeout: 60000,
+  reconnect: true
 };
 
-let dbConnection;
+// Variável global para controle de shutdown
+let dbConnection = null;
 let isShuttingDown = false;
+
+// Função para definir o estado de shutdown
+function setShutdownState(shuttingDown) {
+  isShuttingDown = shuttingDown;
+}
 
 // Conexão com o banco de dados
 async function connectDB() {
@@ -77,6 +82,7 @@ async function createTables() {
         FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE CASCADE
       )
     `);    
+    
     // Tabela para permissões de comandos
     await dbConnection.execute(`
       CREATE TABLE IF NOT EXISTS command_permissions (
@@ -265,8 +271,11 @@ async function checkConnection() {
 
 // Função para verificar se a conexão está ativa
 async function isConnectionActive() {
+  if (isShuttingDown || !dbConnection) {
+    return false;
+  }
+  
   try {
-    if (!dbConnection) return false;
     await dbConnection.execute('SELECT 1');
     return true;
   } catch (error) {
@@ -277,12 +286,11 @@ async function isConnectionActive() {
 
 // Função para executar query com verificação de conexão
 async function executeQuery(query, params = []) {
+  if (isShuttingDown) {
+    throw new Error('Database pool is shutting down');
+  }
+  
   try {
-    if (!await isConnectionActive()) {
-      console.log('🔄 Reconectando ao DB antes da query...');
-      await reconnectDB();
-    }
-    
     if (!dbConnection) {
       throw new Error('Conexão com DB não disponível');
     }
@@ -290,19 +298,54 @@ async function executeQuery(query, params = []) {
     const [result] = await dbConnection.execute(query, params);
     return result;
   } catch (error) {
+    if (error.code === 'POOL_CLOSED' || error.message.includes('Pool is closed')) {
+      console.log('⚠️ Pool fechado, tentando reconectar...');
+      throw new Error('POOL_CLOSED');
+    }
     console.error('❌ Erro na execução da query:', error.message);
     throw error;
+  }
+}
+
+// Função auxiliar para executar query com tratamento seguro
+async function safeExecuteQuery(query, params = []) {
+  if (isShuttingDown) {
+    console.log('⏸️ Query cancelada (shutdown em andamento)');
+    return null;
+  }
+  
+  if (!await isConnectionActive()) {
+    console.log('🔄 Reconectando ao DB antes da query...');
+    await reconnectDB();
+  }
+  
+  if (!dbConnection) {
+    console.error('❌ Conexão com DB não disponível após tentativa de reconexão');
+    return null;
+  }
+  
+  try {
+    const [result] = await dbConnection.execute(query, params);
+    return result;
+  } catch (error) {
+    if (error.code === 'POOL_CLOSED' || error.message.includes('Pool is closed')) {
+      console.log('⚠️ Pool fechado durante query, tentando reconectar...');
+      await reconnectDB();
+      return null;
+    }
+    console.error('❌ Erro na execução da query:', error.message);
+    return null;
   }
 }
 
 // Função para registrar logs do cron
 async function logCronMessage(message) {
   try {
-    await executeQuery(
+    const result = await safeExecuteQuery(
       'INSERT INTO cron_logs (message) VALUES (?)',
       [message]
     );
-    return true;
+    return result !== null;
   } catch (error) {
     console.error('❌ Erro ao registrar log do cron:', error);
     return false;
@@ -312,12 +355,12 @@ async function logCronMessage(message) {
 // Função para atualizar status do sistema
 async function updateSystemStatus(key, value) {
   try {
-    await executeQuery(
+    const result = await safeExecuteQuery(
       'INSERT INTO system_status (key_name, key_value) VALUES (?, ?) ' +
       'ON DUPLICATE KEY UPDATE key_value = VALUES(key_value)',
       [key, value]
     );
-    return true;
+    return result !== null;
   } catch (error) {
     console.error('❌ Erro ao atualizar status do sistema:', error);
     return false;
@@ -327,11 +370,11 @@ async function updateSystemStatus(key, value) {
 // Função para obter status do sistema
 async function getSystemStatus(key) {
   try {
-    const [rows] = await executeQuery(
+    const rows = await safeExecuteQuery(
       'SELECT key_value FROM system_status WHERE key_name = ?',
       [key]
     );
-    return rows.length > 0 ? rows[0].key_value : null;
+    return rows && rows.length > 0 ? rows[0].key_value : null;
   } catch (error) {
     console.error('❌ Erro ao obter status do sistema:', error);
     return null;
@@ -341,11 +384,11 @@ async function getSystemStatus(key) {
 // Função para registrar acesso de visitante
 async function logVisitor(ip, pagina, userAgent, referer) {
   try {
-    await executeQuery(
+    const result = await safeExecuteQuery(
       'INSERT INTO visitantes (ip, pagina, user_agent, referer) VALUES (?, ?, ?, ?)',
       [ip, pagina, userAgent, referer]
     );
-    return true;
+    return result !== null;
   } catch (error) {
     console.error('❌ Erro ao registrar visitante:', error);
     return false;
@@ -355,11 +398,11 @@ async function logVisitor(ip, pagina, userAgent, referer) {
 // Função para registrar tentativa de login falha
 async function logFailedLoginAttempt(ip, username, userAgent) {
   try {
-    await executeQuery(
+    const result = await safeExecuteQuery(
       'INSERT INTO tentativas_login_falhas (ip, username, user_agent) VALUES (?, ?, ?)',
       [ip, username, userAgent]
     );
-    return true;
+    return result !== null;
   } catch (error) {
     console.error('❌ Erro ao registrar tentativa de login falha:', error);
     return false;
@@ -369,7 +412,7 @@ async function logFailedLoginAttempt(ip, username, userAgent) {
 // Função para atualizar/criar informações de IP
 async function updateIPInfo(ip, geoData) {
   try {
-    await executeQuery(
+    const result = await safeExecuteQuery(
       'INSERT INTO ips_info (ip, pais, pais_codigo, regiao, cidade, postal, provedor, latitude, longitude, timezone) ' +
       'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
       'ON DUPLICATE KEY UPDATE ' +
@@ -395,7 +438,7 @@ async function updateIPInfo(ip, geoData) {
         geoData.timezone
       ]
     );
-    return true;
+    return result !== null;
   } catch (error) {
     console.error('❌ Erro ao atualizar informações de IP:', error);
     return false;
@@ -405,14 +448,83 @@ async function updateIPInfo(ip, geoData) {
 // Função para buscar inscrições pendentes (usada pelo checkNewApplications)
 async function getPendingApplicationsSince(lastChecked) {
   try {
-    const [rows] = await executeQuery(
+    const rows = await safeExecuteQuery(
       'SELECT * FROM inscricoes_pendentes WHERE data_inscricao > ? ORDER BY data_inscricao DESC',
       [lastChecked]
     );
-    return rows;
+    return rows || [];
   } catch (error) {
     console.error('❌ Erro ao buscar inscrições pendentes:', error);
     return [];
+  }
+}
+
+// Função para buscar novos membros (usada pelo checkNewMembersForConflicts)
+async function getNewMembersSince(lastChecked) {
+  try {
+    const rows = await safeExecuteQuery(
+      `SELECT nome, guild, data_insercao FROM membros WHERE data_insercao > ? AND status = 'novo' ORDER BY data_insercao ASC`,
+      [lastChecked]
+    );
+    return rows || [];
+  } catch (error) {
+    console.error('❌ Erro ao buscar novos membros:', error);
+    return [];
+  }
+}
+
+// Função para buscar membros que saíram (usada pelo checkDepartingMembers)
+async function getDepartedMembersSince(lastChecked) {
+  try {
+    const rows = await safeExecuteQuery(
+      `SELECT nome, data_saida FROM membros WHERE status = 'saiu' AND data_saida > ? ORDER BY data_saida ASC`,
+      [lastChecked]
+    );
+    return rows || [];
+  } catch (error) {
+    console.error('❌ Erro ao buscar membros que saíram:', error);
+    return [];
+  }
+}
+
+// Função para verificar se pode executar operações no DB
+async function canExecuteDBOperation() {
+  if (isShuttingDown) {
+    return false;
+  }
+  
+  return await isConnectionActive();
+}
+
+// Função para obter informações de segurança (usada pelo monitoramento)
+async function getSecurityMonitoringData() {
+  if (!await canExecuteDBOperation()) {
+    return { suspiciousLogins: [], blockedAccess: [] };
+  }
+  
+  try {
+    const [suspiciousLogins] = await dbConnection.execute(`
+      SELECT ip, COUNT(*) as tentativas 
+      FROM tentativas_login_falhas 
+      WHERE data_acesso >= DATE_SUB(NOW(), INTERVAL 1 HOUR)
+      GROUP BY ip 
+      HAVING tentativas > 5
+      ORDER BY tentativas DESC
+    `);
+    
+    const [blockedAccess] = await dbConnection.execute(`
+      SELECT v.ip, COUNT(*) as tentativas, MAX(v.data_acesso) as ultima_tentativa
+      FROM visitantes v
+      JOIN ips_bloqueados b ON v.ip = b.ip
+      WHERE v.data_acesso >= DATE_SUB(NOW(), INTERVAL 1 HOUR)
+      GROUP BY v.ip
+      ORDER BY tentativas DESC
+    `);
+    
+    return { suspiciousLogins, blockedAccess };
+  } catch (error) {
+    console.error('❌ Erro ao buscar dados de segurança:', error);
+    return { suspiciousLogins: [], blockedAccess: [] };
   }
 }
 
@@ -426,17 +538,26 @@ async function closeConnection() {
     } catch (error) {
       console.error('❌ Erro ao encerrar conexão com DB:', error);
     }
+    dbConnection = null;
   }
+}
+
+// Getter para a conexão do banco (para compatibilidade com código existente)
+function getDBConnection() {
+  return dbConnection;
 }
 
 module.exports = {
   connectDB,
-  dbConnection,
-  isShuttingDown,
+  dbConnection: getDBConnection, // Getter function
+  isShuttingDown: () => isShuttingDown, // Getter function
+  setShutdownState,
   checkConnection,
   reconnectDB,
   isConnectionActive,
   executeQuery,
+  safeExecuteQuery,
+  canExecuteDBOperation,
   logCronMessage,
   updateSystemStatus,
   getSystemStatus,
@@ -444,5 +565,8 @@ module.exports = {
   logFailedLoginAttempt,
   updateIPInfo,
   getPendingApplicationsSince,
+  getNewMembersSince,
+  getDepartedMembersSince,
+  getSecurityMonitoringData,
   closeConnection
 };

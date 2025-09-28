@@ -7,8 +7,34 @@ const {
     // Novas importações para o sistema de notificação
     addNotificationSubscription, removeNotificationSubscription, getNotificationSubscriptions, sendDmsToRoles 
 } = require('./utils');
-const { isShuttingDown } = require('./database');
+const { isShuttingDown, isConnectionActive } = require('./database');
 const { listPendingApplications, searchApplications, sendApplicationEmbed, approveApplication, rejectApplication, showHelp, createImageCarousel } = require('./commands');
+
+// Função auxiliar para verificar se pode executar operações no DB
+async function canExecuteDBOperation() {
+  if (isShuttingDown()) {
+    return false;
+  }
+  
+  return await isConnectionActive();
+}
+
+// Função auxiliar para executar query com verificação
+async function safeExecuteQuery(db, query, params = []) {
+  if (!await canExecuteDBOperation()) {
+    throw new Error('POOL_CLOSED');
+  }
+  
+  try {
+    const [result] = await db.execute(query, params);
+    return result;
+  } catch (error) {
+    if (error.code === 'POOL_CLOSED' || error.message.includes('Pool is closed')) {
+      throw new Error('POOL_CLOSED');
+    }
+    throw error;
+  }
+}
 
 // --- VARIÁVEIS DE ESTADO PARA OS MONITORES ---
 // Monitor de inscrições pendentes
@@ -23,11 +49,14 @@ const SECURITY_ALERT_CHANNEL_ID = '1256287757135908884';
 async function setupSecurityMonitoring(client, db) {
   // Verifica tentativas suspeitas a cada 5 minutos
   setInterval(async () => {
-    if (isShuttingDown) return;
+    if (isShuttingDown() || !await canExecuteDBOperation()) {
+      console.log('⏸️ Monitoramento de segurança pausado (shutdown ou DB indisponível)');
+      return;
+    }
     
     try {
       // IPs com muitas tentativas de login em curto período
-      const [suspiciousLogins] = await db.execute(`
+      const suspiciousLogins = await safeExecuteQuery(db, `
         SELECT ip, COUNT(*) as tentativas 
         FROM tentativas_login_falhas 
         WHERE data_acesso >= DATE_SUB(NOW(), INTERVAL 1 HOUR)
@@ -37,7 +66,7 @@ async function setupSecurityMonitoring(client, db) {
       `);
       
       // IPs bloqueados que tentaram acessar
-      const [blockedAccess] = await db.execute(`
+      const blockedAccess = await safeExecuteQuery(db, `
         SELECT v.ip, COUNT(*) as tentativas, MAX(v.data_acesso) as ultima_tentativa
         FROM visitantes v
         JOIN ips_bloqueados b ON v.ip = b.ip
@@ -84,6 +113,10 @@ async function setupSecurityMonitoring(client, db) {
         await securityChannel.send({ embeds: [embed] });
       }
     } catch (error) {
+      if (error.message === 'POOL_CLOSED') {
+        console.log('⏸️ Pool fechado, parando monitoramento de segurança...');
+        return;
+      }
       console.error('Erro no monitoramento de segurança:', error);
     }
   }, 5 * 60 * 1000); // 5 minutos
@@ -105,32 +138,34 @@ async function setupAutoCleanup(db) {
   const timeUntilCleanup = nextCleanup - now;
   
   setTimeout(async function runCleanup() {
-    if (isShuttingDown) return;
+    if (isShuttingDown() || !await canExecuteDBOperation()) {
+      console.log('⏸️ Limpeza automática pausada (shutdown ou DB indisponível)');
+      setTimeout(runCleanup, 60 * 60 * 1000); // Tenta novamente em 1 hora
+      return;
+    }
     
     try {
       console.log('🔄 Iniciando limpeza automática de registros antigos...');
       
       // Remove bloqueios com mais de 30 dias
-      await db.execute(
-        'DELETE FROM ips_bloqueados WHERE data_bloqueio < DATE_SUB(NOW(), INTERVAL 30 DAY)'
-      );
+      await safeExecuteQuery(db, 'DELETE FROM ips_bloqueados WHERE data_bloqueio < DATE_SUB(NOW(), INTERVAL 30 DAY)');
       
       // Remove tentativas de login com mais de 7 dias
-      await db.execute(
-        'DELETE FROM tentativas_login_falhas WHERE data_acesso < DATE_SUB(NOW(), INTERVAL 7 DAY)'
-      );
+      await safeExecuteQuery(db, 'DELETE FROM tentativas_login_falhas WHERE data_acesso < DATE_SUB(NOW(), INTERVAL 7 DAY)');
       
       // Remove registros de visitantes com mais de 30 dias
-      await db.execute(
-        'DELETE FROM visitantes WHERE data_acesso < DATE_SUB(NOW(), INTERVAL 30 DAY)'
-      );
+      await safeExecuteQuery(db, 'DELETE FROM visitantes WHERE data_acesso < DATE_SUB(NOW(), INTERVAL 30 DAY)');
       
       console.log('✅ Limpeza automática concluída');
       
       // Agenda a próxima limpeza para 24 horas depois
       setTimeout(runCleanup, 24 * 60 * 60 * 1000);
     } catch (error) {
-      console.error('❌ Erro na limpeza automática:', error);
+      if (error.message === 'POOL_CLOSED') {
+        console.log('⏸️ Pool fechado, parando limpeza automática...');
+      } else {
+        console.error('❌ Erro na limpeza automática:', error);
+      }
       // Tenta novamente em 1 hora se falhar
       setTimeout(runCleanup, 60 * 60 * 1000);
     }
@@ -141,15 +176,14 @@ async function setupAutoCleanup(db) {
 
 // Verificar novas inscrições e notificar por DM
 async function checkNewApplications(client, db) {
-  if (isShuttingDown) return;
+  if (isShuttingDown() || !await canExecuteDBOperation()) {
+    console.log('⏸️ Monitoramento de inscrições pausado (shutdown ou DB indisponível)');
+    return;
+  }
   
   try {
-    if (!db || !(await db.execute('SELECT 1').catch(() => false))) {
-      console.log('⚠️ Conexão com o banco de dados não está disponível para checar inscrições.');
-      return;
-    }
-
-    const [rows] = await db.execute(
+    const rows = await safeExecuteQuery(
+      db,
       'SELECT * FROM inscricoes_pendentes WHERE data_inscricao > ? ORDER BY data_inscricao ASC',
       [lastCheckedApplications]
     );
@@ -161,13 +195,11 @@ async function checkNewApplications(client, db) {
         content: `📢 Há ${rows.length} nova(s) inscrição(ões) pendente(s)! Use /pendentes para visualizar.`
       });
       
-      // Busca os cargos que devem ser notificados por DM
       const roleIdsToNotify = await getNotificationSubscriptions('inscricao_pendente', db);
 
       for (const application of rows) {
         await sendApplicationEmbed(channel, application, db);
         
-        // Envia a notificação por DM
         const dmEmbed = new EmbedBuilder()
           .setColor('#FF4500')
           .setTitle('🔔 Nova Inscrição Pendente')
@@ -182,30 +214,28 @@ async function checkNewApplications(client, db) {
         await sendDmsToRoles(client, roleIdsToNotify, { embeds: [dmEmbed] });
       }
       
-      // <-- CORREÇÃO APLICADA AQUI -->
-      // Atualiza o timestamp APENAS UMA VEZ, após o loop, com a data da última inscrição processada.
       lastCheckedApplications = new Date(rows[rows.length - 1].data_inscricao);
     }
   } catch (error) {
-    if (error.code === 'POOL_CLOSED') {
-      console.log('⚠️ Pool de conexão fechado, aguardando reconexão...');
-    } else {
-      console.error('❌ Erro ao verificar novas inscrições:', error);
+    if (error.message === 'POOL_CLOSED') {
+      console.log('⏸️ Pool fechado, parando monitoramento de inscrições...');
+      return;
     }
+    console.error('❌ Erro ao verificar novas inscrições:', error);
   }
 }
 
+
 // Verificar novos membros e cruzar com a lista de inimigos
 async function checkNewMembersForConflicts(client, db) {
-    if (isShuttingDown) return;
+    if (isShuttingDown() || !await canExecuteDBOperation()) {
+        console.log('⏸️ Monitoramento de conflitos pausado (shutdown ou DB indisponível)');
+        return;
+    }
 
     try {
-        if (!db || !(await db.execute('SELECT 1').catch(() => false))) {
-            console.log('⚠️ Conexão com o banco de dados não está disponível para checar conflitos.');
-            return;
-        }
-
-        const [newMembers] = await db.execute(
+        const newMembers = await safeExecuteQuery(
+            db,
             `SELECT nome, guild, data_insercao FROM membros WHERE data_insercao > ? AND status = 'novo' ORDER BY data_insercao ASC`,
             [lastCheckedMemberTimestamp]
         );
@@ -215,7 +245,8 @@ async function checkNewMembersForConflicts(client, db) {
             const roleIdsToNotify = await getNotificationSubscriptions('alerta_seguranca', db);
 
             for (const member of newMembers) {
-                const [enemies] = await db.execute(
+                const enemies = await safeExecuteQuery(
+                    db,
                     `SELECT nome, guild, status FROM inimigos WHERE nome = ?`,
                     [member.nome]
                 );
@@ -238,54 +269,45 @@ async function checkNewMembersForConflicts(client, db) {
                         )
                         .setFooter({ text: 'Ação recomendada: verificar histórico e intenções do membro.' });
 
-                    // Envia para o canal de segurança
                     if (securityChannel) {
                         await securityChannel.send({ embeds: [alertEmbed] });
                     }
 
-                    // Envia DM para os cargos de segurança
                     await sendDmsToRoles(client, roleIdsToNotify, { embeds: [alertEmbed] });
                 }
-
-                // Atualiza o timestamp para a próxima verificação
                 lastCheckedMemberTimestamp = new Date(member.data_insercao);
             }
         }
     } catch (error) {
-        if (error.code === 'POOL_CLOSED') {
-            console.log('⚠️ Pool de conexão fechado, aguardando reconexão...');
-        } else {
-            console.error('❌ Erro ao verificar conflitos de membros:', error);
+        if (error.message === 'POOL_CLOSED') {
+            console.log('⏸️ Pool fechado, parando monitoramento de conflitos...');
+            return;
         }
+        console.error('❌ Erro ao verificar conflitos de membros:', error);
     }
 }
 
-// ==========================================================
 // NOVA FUNÇÃO PARA VERIFICAR SAÍDAS E NOTIFICAR
-// ==========================================================
 async function checkDepartingMembers(client, db) {
-    if (isShuttingDown) return;
+    if (isShuttingDown() || !await canExecuteDBOperation()) {
+        console.log('⏸️ Monitoramento de saídas pausado (shutdown ou DB indisponível)');
+        return;
+    }
 
     try {
-        if (!db || !(await db.execute('SELECT 1').catch(() => false))) {
-            console.log('⚠️ Conexão com o banco de dados não está disponível para checar saídas.');
-            return;
-        }
-
-        // Busca membros que saíram desde a última verificação
-        const [departedMembers] = await db.execute(
+        const departedMembers = await safeExecuteQuery(
+            db,
             `SELECT nome, data_saida FROM membros WHERE status = 'saiu' AND data_saida > ? ORDER BY data_saida ASC`,
             [lastCheckedDepartureTimestamp]
         );
 
         if (departedMembers.length > 0) {
             const securityChannel = await client.channels.fetch(SECURITY_ALERT_CHANNEL_ID).catch(() => null);
-            // Reutiliza a notificação de 'alerta_seguranca' para notificar os mesmos cargos
             const roleIdsToNotify = await getNotificationSubscriptions('alerta_seguranca', db);
 
             for (const member of departedMembers) {
-                // Busca a inscrição correspondente na tabela de inscrições aprovadas
-                const [applications] = await db.execute(
+                const applications = await safeExecuteQuery(
+                    db,
                     `SELECT nome, telefone FROM inscricoes WHERE char_principal = ? AND status = 'aprovado' ORDER BY data_avaliacao DESC LIMIT 1`,
                     [member.nome]
                 );
@@ -317,28 +339,23 @@ async function checkDepartingMembers(client, db) {
 
                     const messagePayload = { embeds: [departureEmbed], components: [actionRow] };
 
-                    // Envia para o canal de segurança
                     if (securityChannel) {
                         await securityChannel.send(messagePayload);
                     }
 
-                    // Envia DMs para os cargos subscritos
                     await sendDmsToRoles(client, roleIdsToNotify, messagePayload);
                 }
-
-                // Atualiza o timestamp para a data de saída do membro atual
                 lastCheckedDepartureTimestamp = new Date(member.data_saida);
             }
         }
     } catch (error) {
-        if (error.code === 'POOL_CLOSED') {
-            console.log('⚠️ Pool de conexão fechado, aguardando reconexão...');
-        } else {
-            console.error('❌ Erro ao verificar saídas de membros:', error);
+        if (error.message === 'POOL_CLOSED') {
+            console.log('⏸️ Pool fechado, parando monitoramento de saídas...');
+            return;
         }
+        console.error('❌ Erro ao verificar saídas de membros:', error);
     }
 }
-// ==========================================================
 
 // Função auxiliar para validar URLs de imagem
 function isValidImageUrl(url) {
@@ -374,7 +391,7 @@ function setupEvents(client, db) {
 
   // Evento interactionCreate com tratamento de erros melhorado
   client.on(Events.InteractionCreate, async interaction => {
-    if (isShuttingDown) return;
+    if (isShuttingDown()) return;
 
     try {
       // Comandos slash
@@ -389,6 +406,10 @@ function setupEvents(client, db) {
           }).catch(console.error);
         }
 
+        // (O resto do switch/case permanece inalterado)
+        // ...
+// O restante do arquivo events.js continua a partir daqui, sem mais alterações nesta seção.
+// ...
         switch (interaction.commandName) {
           case 'pendentes':
             const page = interaction.options.getInteger('página') || 1;

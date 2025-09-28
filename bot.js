@@ -5,13 +5,13 @@ require('dotenv').config();
 // Importações dos outros módulos
 const { setupCommands } = require('./commands');
 const { setupEvents } = require('./events');
-const { connectDB } = require('./database');
+const { connectDB, setShutdownState, closeConnection, isConnectionActive } = require('./database');
 
 // Configurações do bot
 const client = new Client({
   intents: [
     IntentsBitField.Flags.Guilds,
-    IntentsBitField.Flags.GuildMembers, // <-- CORREÇÃO APLICADA AQUI
+    IntentsBitField.Flags.GuildMembers,
     IntentsBitField.Flags.GuildMessages,
     IntentsBitField.Flags.MessageContent,
     IntentsBitField.Flags.GuildMessageReactions
@@ -24,13 +24,29 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 app.get('/', (_, res) => res.status(200).json({ status: 'ok' }));
-app.get('/health', (_, res) => res.status(200).json({ status: 'healthy' }));
+
+// Health check melhorado
+app.get('/health', async (_, res) => {
+  try {
+    const dbHealthy = await isConnectionActive();
+    const discordHealthy = client.isReady();
+    
+    res.status(200).json({ 
+      status: dbHealthy && discordHealthy ? 'healthy' : 'degraded',
+      database: dbHealthy ? 'connected' : 'disconnected',
+      discord: discordHealthy ? 'connected' : 'disconnected',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      status: 'unhealthy',
+      error: error.message 
+    });
+  }
+});
 
 // Variável para armazenar a conexão com o banco de dados
 let db;
-
-// Variável global para controle de shutdown
-let isShuttingDown = false;
 
 // Inicialização do bot
 async function startBot() {
@@ -71,20 +87,17 @@ async function startBot() {
 function gracefulShutdown(server) {
   return async (signal) => {
     console.log(`🛑 Recebido ${signal}, encerrando graceful...`);
-    isShuttingDown = true; // Atualiza a variável global
+    setShutdownState(true); // Atualiza a variável global em todos os módulos
     
     try {
       // Desconectar o bot do Discord
       if (client && !client.destroyed) {
-        await client.destroy();
+        client.destroy();
         console.log('🤖 Bot desconectado do Discord');
       }
       
       // Encerrar conexão com o banco de dados
-      if (db) {
-        await db.end();
-        console.log('🔌 Conexão com DB encerrada');
-      }
+      await closeConnection();
       
       // Encerrar servidor HTTP
       server.close(() => {
@@ -105,11 +118,7 @@ function gracefulShutdown(server) {
   };
 }
 
-// ==========================================
-// MELHORIAS ADICIONADAS
-// ==========================================
-// Manipuladores para exceções não tratadas e rejeições de Promise para
-// aumentar a estabilidade e evitar que o processo do bot morra inesperadamente.
+// Manipuladores para exceções não tratadas
 process.on('unhandledRejection', error => {
     console.error('❌ Rejeição de Promise não tratada:', error);
 });
@@ -117,7 +126,6 @@ process.on('unhandledRejection', error => {
 process.on('uncaughtException', error => {
     console.error('❌ Exceção não capturada:', error);
 });
-// ==========================================
 
 startBot();
 

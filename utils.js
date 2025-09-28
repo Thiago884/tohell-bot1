@@ -13,6 +13,7 @@ const axios = require('axios');
 const axiosRetry = require('axios-retry');
 const { JSDOM } = require('jsdom');
 const moment = require('moment-timezone');
+const { isShuttingDown } = require('./database');
 
 // Configura axios para tentar novamente em caso de falha
 axiosRetry(axios, {
@@ -22,6 +23,20 @@ axiosRetry(axios, {
     axiosRetry.isNetworkOrIdempotentRequestError(error) || 
     error.code === 'ECONNABORTED'
 });
+
+// Função auxiliar para verificar conexão
+async function checkDBAvailable(dbConnection) {
+  if (isShuttingDown() || !dbConnection) {
+    return false;
+  }
+  
+  try {
+    await dbConnection.execute('SELECT 1');
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 // Configurações
 const ITEMS_PER_PAGE = 5;
@@ -702,9 +717,13 @@ async function showRanking(interaction, period, dbConnection) {
 
 // Gerenciar permissões de comandos
 async function addCommandPermission(commandName, roleId, dbConnection) {
+  if (!await checkDBAvailable(dbConnection)) {
+    console.log('⏸️ DB indisponível para addCommandPermission');
+    return false;
+  }
   try {
-    if (!commandName || !roleId || !dbConnection) {
-      console.error('❌ Parámetros inválidos para addCommandPermission');
+    if (!commandName || !roleId) {
+      console.error('❌ Parâmetros inválidos para addCommandPermission');
       return false;
     }
     await dbConnection.execute(
@@ -713,15 +732,23 @@ async function addCommandPermission(commandName, roleId, dbConnection) {
     );
     return true;
   } catch (error) {
+    if (error.code === 'POOL_CLOSED') {
+      console.log('⏸️ Pool fechado em addCommandPermission');
+      return false;
+    }
     console.error('❌ Erro ao adicionar permissão:', error);
     return false;
   }
 }
 
 async function removeCommandPermission(commandName, roleId, dbConnection) {
+  if (!await checkDBAvailable(dbConnection)) {
+    console.log('⏸️ DB indisponível para removeCommandPermission');
+    return false;
+  }
   try {
-    if (!commandName || !roleId || !dbConnection) {
-      console.error('❌ Parámetros inválidos para removeCommandPermission');
+    if (!commandName || !roleId) {
+      console.error('❌ Parâmetros inválidos para removeCommandPermission');
       return false;
     }
     const [result] = await dbConnection.execute(
@@ -730,23 +757,32 @@ async function removeCommandPermission(commandName, roleId, dbConnection) {
     );
     return result.affectedRows > 0;
   } catch (error) {
+    if (error.code === 'POOL_CLOSED') {
+      console.log('⏸️ Pool fechado em removeCommandPermission');
+      return false;
+    }
     console.error('❌ Erro ao remover permissão:', error);
     return false;
   }
 }
 
 async function getCommandPermissions(commandName, dbConnection) {
+  if (!await checkDBAvailable(dbConnection)) {
+    console.log('⏸️ DB indisponível para getCommandPermissions');
+    return [];
+  }
+  
   try {
-    if (!commandName || !dbConnection) {
-      console.error('❌ Parámetros inválidos para getCommandPermissions');
-      return [];
-    }
     const [rows] = await dbConnection.execute(
       'SELECT role_id FROM command_permissions WHERE command_name = ?',
       [commandName]
     );
     return rows.map(row => row.role_id);
   } catch (error) {
+    if (error.code === 'POOL_CLOSED') {
+      console.log('⏸️ Pool fechado em getCommandPermissions');
+      return [];
+    }
     console.error('❌ Erro ao obter permissões:', error);
     return [];
   }
@@ -1163,6 +1199,10 @@ async function get500RCharacters(dbConnection, page = 1, perPage = 5) {
 // NOVAS FUNÇÕES PARA SISTEMA DE NOTIFICAÇÕES
 // ==============================================
 async function addNotificationSubscription(type, roleId, dbConnection) {
+  if (!await checkDBAvailable(dbConnection)) {
+    console.log('⏸️ DB indisponível para addNotificationSubscription');
+    return false;
+  }
   try {
     await dbConnection.execute(
       'INSERT INTO notification_subscriptions (notification_type, role_id) VALUES (?, ?)',
@@ -1170,12 +1210,20 @@ async function addNotificationSubscription(type, roleId, dbConnection) {
     );
     return true;
   } catch (error) {
+    if (error.code === 'POOL_CLOSED') {
+      console.log('⏸️ Pool fechado em addNotificationSubscription');
+      return false;
+    }
     console.error('❌ Erro ao adicionar subscrição de notificação:', error);
     return false;
   }
 }
 
 async function removeNotificationSubscription(type, roleId, dbConnection) {
+  if (!await checkDBAvailable(dbConnection)) {
+    console.log('⏸️ DB indisponível para removeNotificationSubscription');
+    return false;
+  }
   try {
     const [result] = await dbConnection.execute(
       'DELETE FROM notification_subscriptions WHERE notification_type = ? AND role_id = ?',
@@ -1183,12 +1231,20 @@ async function removeNotificationSubscription(type, roleId, dbConnection) {
     );
     return result.affectedRows > 0;
   } catch (error) {
+    if (error.code === 'POOL_CLOSED') {
+      console.log('⏸️ Pool fechado em removeNotificationSubscription');
+      return false;
+    }
     console.error('❌ Erro ao remover subscrição de notificação:', error);
     return false;
   }
 }
 
 async function getNotificationSubscriptions(type, dbConnection) {
+  if (!await checkDBAvailable(dbConnection)) {
+    console.log('⏸️ DB indisponível para getNotificationSubscriptions');
+    return [];
+  }
   try {
     const [rows] = await dbConnection.execute(
       'SELECT role_id FROM notification_subscriptions WHERE notification_type = ?',
@@ -1196,6 +1252,10 @@ async function getNotificationSubscriptions(type, dbConnection) {
     );
     return rows.map(row => row.role_id);
   } catch (error) {
+    if (error.code === 'POOL_CLOSED') {
+      console.log('⏸️ Pool fechado em getNotificationSubscriptions');
+      return [];
+    }
     console.error('❌ Erro ao obter subscrições de notificação:', error);
     return [];
   }
