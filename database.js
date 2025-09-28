@@ -12,7 +12,6 @@ const dbConfig = {
   queueLimit: 0,
   timezone: 'Z',
   connectTimeout: 10000,
-  acquireTimeout: 60000
 };
 
 // Variável global para controle de shutdown

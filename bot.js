@@ -51,7 +51,7 @@ async function startBot() {
     console.log('🔌 Conectando ao banco de dados...');
     await connectDB();
     
-    if (!db) {
+    if (!await isConnectionActive()) {
       throw new Error('Não foi possível estabelecer conexão com o banco de dados');
     }
 
