@@ -296,13 +296,28 @@ async function checkDepartingMembers(client) {
                 if (applications.length > 0) {
                     const application = applications[0];
 
+                    const originalPhone = application.telefone || 'Não informado';
+                    let phoneLinkValue = originalPhone;
+
+                    if (application.telefone) {
+                        // Remove caracteres não numéricos para criar o link
+                        const normalizedPhone = application.telefone.replace(/\D/g, '');
+
+                        // Adiciona o código do país (55 para Brasil) se não estiver presente
+                        if (normalizedPhone.length >= 10) {
+                            const whatsappNumber = normalizedPhone.startsWith('55') ? normalizedPhone : `55${normalizedPhone}`;
+                            const whatsappUrl = `https://wa.me/${whatsappNumber}`;
+                            phoneLinkValue = `[${originalPhone}](${whatsappUrl})`;
+                        }
+                    }
+
                     const departureEmbed = new EmbedBuilder()
                         .setColor('#FFA500')
                         .setTitle('👤 Membro Saiu da Guild')
                         .setDescription(`O personagem **${member.nome}** foi marcado como "saiu".`)
                         .addFields(
                             { name: '📋 Nome na Inscrição', value: application.nome, inline: true },
-                            { name: '📞 Telefone na Inscrição', value: application.telefone || 'Não informado', inline: true },
+                            { name: '📞 Telefone na Inscrição', value: phoneLinkValue, inline: true },
                             { name: '🗓️ Data da Saída', value: formatBrazilianDate(member.data_saida), inline: false }
                         )
                         .setFooter({ text: 'Aguardando classificação da saída.' });
