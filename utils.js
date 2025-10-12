@@ -1216,29 +1216,39 @@ async function getNotificationSubscriptions(type) {
   }
 }
 
+// FUNÇÃO ATUALIZADA para retornar as mensagens enviadas
 async function sendDmsToRoles(client, roleIds, messageContent) {
-  if (!roleIds || roleIds.length === 0) return;
+  if (!roleIds || roleIds.length === 0) return [];
 
   const notifiedUserIds = new Set();
+  const sentMessages = []; // Array para rastrear mensagens enviadas com sucesso
 
   try {
     // Itera por todos os servidores onde o bot está
     for (const guild of client.guilds.cache.values()) {
-      // Busca todos os membros do servidor
-      const members = await guild.members.fetch();
-      members.forEach(member => {
+      // Busca todos os membros do servidor para garantir que a cache está atualizada
+      await guild.members.fetch();
+
+      for (const member of guild.members.cache.values()) {
         // Se o membro não for um bot, não tiver sido notificado ainda e tiver um dos cargos
         if (!member.user.bot && !notifiedUserIds.has(member.id) && member.roles.cache.some(role => roleIds.includes(role.id))) {
-          member.send(messageContent).catch(error => {
-            console.error(`❌ Falha ao enviar DM para ${member.user.tag}: ${error.message}`);
-          });
+          try {
+            const sentMessage = await member.send(messageContent);
+            sentMessages.push(sentMessage); // Adiciona a mensagem enviada à lista
+          } catch (error) {
+            // Não loga erro se for por DMs desabilitadas
+            if (error.code !== 50007) {
+              console.error(`❌ Falha ao enviar DM para ${member.user.tag}: ${error.message}`);
+            }
+          }
           notifiedUserIds.add(member.id);
         }
-      });
+      }
     }
   } catch (error) {
     console.error('❌ Erro ao enviar DMs para cargos:', error);
   }
+  return sentMessages; // Retorna a lista de mensagens enviadas
 }
 
 

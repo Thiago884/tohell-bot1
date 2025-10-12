@@ -31,6 +31,9 @@ let lastCheckedMemberTimestamp = new Date();
 let lastCheckedDepartureTimestamp = new Date();
 const SECURITY_ALERT_CHANNEL_ID = '1256287757135908884';
 
+// NOVO: Mapa para rastrear mensagens de notificação de saída para atualização em massa
+const activeDepartureMessages = new Map();
+
 // Monitoramento de segurança
 async function setupSecurityMonitoring(client) {
   // Verifica tentativas suspeitas a cada 5 minutos
@@ -270,7 +273,7 @@ async function checkNewMembersForConflicts(client) {
     }
 }
 
-// NOVA FUNÇÃO PARA VERIFICAR SAÍDAS E NOTIFICAR
+// FUNÇÃO ATUALIZADA PARA VERIFICAR SAÍDAS E NOTIFICAR
 async function checkDepartingMembers(client) {
     if (isShuttingDown() || !await canExecuteDBOperation()) {
         console.log('⏸️ Monitoramento de saídas pausado (shutdown ou DB indisponível)');
@@ -288,22 +291,23 @@ async function checkDepartingMembers(client) {
             const roleIdsToNotify = await getNotificationSubscriptions('alerta_seguranca');
 
             for (const member of departedMembers) {
+                // MODIFICADO: Busca também o discord e o ip
                 const applications = await safeExecuteQuery(
-                    `SELECT nome, telefone FROM inscricoes WHERE char_principal = ? AND status = 'aprovado' ORDER BY data_avaliacao DESC LIMIT 1`,
+                    `SELECT nome, telefone, discord, ip FROM inscricoes WHERE char_principal = ? AND status = 'aprovado' ORDER BY data_avaliacao DESC LIMIT 1`,
                     [member.nome]
                 );
 
                 if (applications.length > 0) {
                     const application = applications[0];
+                    // MODIFICADO: Cria um ID único para este evento de saída para rastrear as mensagens
+                    const departureId = `${member.nome.replace(/[^a-zA-Z0-9]/g, '')}-${Date.now()}`;
+                    const messageReferences = [];
 
                     const originalPhone = application.telefone || 'Não informado';
                     let phoneLinkValue = originalPhone;
 
                     if (application.telefone) {
-                        // Remove caracteres não numéricos para criar o link
                         const normalizedPhone = application.telefone.replace(/\D/g, '');
-
-                        // Adiciona o código do país (55 para Brasil) se não estiver presente
                         if (normalizedPhone.length >= 10) {
                             const whatsappNumber = normalizedPhone.startsWith('55') ? normalizedPhone : `55${normalizedPhone}`;
                             const whatsappUrl = `https://wa.me/${whatsappNumber}`;
@@ -318,17 +322,21 @@ async function checkDepartingMembers(client) {
                         .addFields(
                             { name: '📋 Nome na Inscrição', value: application.nome, inline: true },
                             { name: '📞 Telefone na Inscrição', value: phoneLinkValue, inline: true },
+                            // ADICIONADO: Exibe o Discord e o IP
+                            { name: '🎮 Discord', value: application.discord || 'Não informado', inline: true },
+                            { name: '🌐 IP', value: application.ip || 'Não informado', inline: true },
                             { name: '🗓️ Data da Saída', value: formatBrazilianDate(member.data_saida), inline: false }
                         )
                         .setFooter({ text: 'Aguardando classificação da saída.' });
-
+                    
+                    // MODIFICADO: CustomId dos botões agora inclui o departureId
                     const actionRow = new ActionRowBuilder().addComponents(
                         new ButtonBuilder()
-                            .setCustomId(`departed_cs_volta_${member.nome}`)
+                            .setCustomId(`departed_cs_${departureId}`)
                             .setLabel('Saiu para cs, mas volta!')
                             .setStyle(ButtonStyle.Success),
                         new ButtonBuilder()
-                            .setCustomId(`departed_left_guild_${member.nome}`)
+                            .setCustomId(`departed_left_${departureId}`)
                             .setLabel('Saiu da guild')
                             .setStyle(ButtonStyle.Danger)
                     );
@@ -336,10 +344,23 @@ async function checkDepartingMembers(client) {
                     const messagePayload = { embeds: [departureEmbed], components: [actionRow] };
 
                     if (securityChannel) {
-                        await securityChannel.send(messagePayload);
+                        try {
+                            const channelMessage = await securityChannel.send(messagePayload);
+                            messageReferences.push({ channelId: channelMessage.channel.id, messageId: channelMessage.id });
+                        } catch (e) {
+                            console.error("Falha ao enviar para o canal de segurança:", e);
+                        }
                     }
 
-                    await sendDmsToRoles(client, roleIdsToNotify, messagePayload);
+                    const dmMessages = await sendDmsToRoles(client, roleIdsToNotify, messagePayload);
+                    for (const dm of dmMessages) {
+                        messageReferences.push({ channelId: dm.channel.id, messageId: dm.id });
+                    }
+
+                    // ADICIONADO: Armazena as referências de todas as mensagens enviadas
+                    if (messageReferences.length > 0) {
+                        activeDepartureMessages.set(departureId, messageReferences);
+                    }
                 }
                 lastCheckedDepartureTimestamp = new Date(member.data_saida);
             }
@@ -352,6 +373,7 @@ async function checkDepartingMembers(client) {
         console.error('❌ Erro ao verificar saídas de membros:', error);
     }
 }
+
 
 // Configurar eventos
 function setupEvents(client) {
@@ -1024,19 +1046,43 @@ function setupEvents(client) {
             return;
           }
           
-          if (interaction.customId.startsWith('departed_cs_volta_') || interaction.customId.startsWith('departed_left_guild_')) {
+          // LÓGICA ATUALIZADA para botões de saída de membros
+          if (interaction.customId.startsWith('departed_')) {
               try {
-                  const isCS = interaction.customId.startsWith('departed_cs_volta_');
+                  await interaction.deferUpdate();
+
+                  const [_, action, departureId] = interaction.customId.split('_');
+                  
+                  const isCS = action === 'cs';
                   const statusText = isCS ? "Saiu para cs, mas volta!" : "Saiu da guild";
                   
-                  await interaction.deferUpdate();
-      
                   const originalEmbed = interaction.message.embeds[0];
                   const updatedEmbed = new EmbedBuilder(originalEmbed)
                       .setColor(isCS ? '#00FF00' : '#FF0000') 
                       .setFooter({ text: `Status definido como: "${statusText}" por ${interaction.user.tag}` });
-      
-                  await interaction.editReply({ embeds: [updatedEmbed], components: [] });
+
+                  const messageRefs = activeDepartureMessages.get(departureId);
+
+                  if (messageRefs && messageRefs.length > 0) {
+                      const updatePromises = messageRefs.map(async (ref) => {
+                          try {
+                              const channel = await client.channels.fetch(ref.channelId);
+                              const message = await channel.messages.fetch(ref.messageId);
+                              await message.edit({ embeds: [updatedEmbed], components: [] });
+                          } catch (error) {
+                              // Ignora erros se a mensagem não for encontrada (ex: DM fechada, mensagem deletada)
+                              if (error.code !== 10008 && error.code !== 10003) {
+                                console.error(`Falha ao atualizar mensagem de saída ${ref.messageId}:`, error.message);
+                              }
+                          }
+                      });
+
+                      await Promise.allSettled(updatePromises);
+                      activeDepartureMessages.delete(departureId); // Limpa o mapa após a atualização
+                  } else {
+                      // Fallback: se as mensagens não foram rastreadas (ex: após restart), atualiza apenas a interação atual
+                      await interaction.editReply({ embeds: [updatedEmbed], components: [] });
+                  }
       
               } catch (error) {
                   console.error('Erro ao processar botão de status de saída:', error);
@@ -1046,6 +1092,7 @@ function setupEvents(client) {
               }
               return; 
           }
+
 
           if (interaction.customId.startsWith('search_prev_') || interaction.customId.startsWith('search_next_')) {
             const [direction, searchTerm, pageStr] = interaction.customId.split('_').slice(1);
