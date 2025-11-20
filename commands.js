@@ -297,7 +297,7 @@ function processImageUrls(imageData) {
   }
 }
 
-// Função para criar um carrossel de imagens (CORRIGIDA)
+// Função para criar um carrossel de imagens
 async function createImageCarousel(interaction, images, applicationId, status) {
   const processedImages = processImageUrls(images);
   
@@ -342,7 +342,6 @@ async function createImageCarousel(interaction, images, applicationId, status) {
   );
   
   // Usa safeInteractionReply em vez de .reply() para lidar com interações adiadas
-  // A flag "Ephemeral" foi removida para tornar a mensagem pública
   return safeInteractionReply(interaction, {
     embeds: [embed],
     components: [row]
@@ -616,7 +615,7 @@ async function searchApplications(context, args) {
   }
 }
 
-// Função para enviar embed de inscrição (atualizada com formatação de telefone)
+// Função para enviar embed de inscrição (atualizada com link do WhatsApp)
 async function sendApplicationEmbed(channel, application) {
   const screenshots = processImageUrls(application.screenshot_path);
   const screenshotLinks = screenshots.slice(0, 5).map((screenshot, index) =>
@@ -625,14 +624,32 @@ async function sendApplicationEmbed(channel, application) {
 
   const isApproved = application.status === 'aprovado';
 
-  // Normaliza o telefone para exibição consistente
-  const normalizePhoneForDisplay = (phone) => {
+  // Formata o telefone e cria link para WhatsApp
+  const formatPhoneLink = (phone) => {
     if (!phone) return 'Não informado';
+    
     const digits = phone.replace(/\D/g, '');
+    
+    // Formatação visual para exibir no embed
+    let displayPhone = phone;
     if (digits.length === 11) {
-      return `(${digits.substring(0, 2)}) ${digits.substring(2, 7)}-${digits.substring(7)}`;
+      displayPhone = `(${digits.substring(0, 2)}) ${digits.substring(2, 7)}-${digits.substring(7)}`;
+    } else if (digits.length === 10) {
+      displayPhone = `(${digits.substring(0, 2)}) ${digits.substring(2, 6)}-${digits.substring(6)}`;
     }
-    return phone;
+    
+    // Lógica de criação do link
+    if (digits.length >= 10) {
+        // Se o número tiver 10 ou 11 dígitos e não começar com 55, assume BR e adiciona 55
+        // Caso contrário, usa o número como veio (assumindo que já tem DDI ou é internacional)
+        let waNumber = digits;
+        if ((digits.length === 10 || digits.length === 11) && !digits.startsWith('55')) {
+          waNumber = `55${digits}`;
+        }
+        return `[${displayPhone}](https://wa.me/${waNumber})`;
+    }
+    
+    return displayPhone;
   };
 
   const embed = new EmbedBuilder()
@@ -640,7 +657,7 @@ async function sendApplicationEmbed(channel, application) {
     .setTitle(`Inscrição #${application.id} (${isApproved ? 'Aprovada' : 'Pendente'})`)
     .setDescription(`**${application.nome}** deseja se juntar à guild!`)
     .addFields(
-      { name: '📱 Telefone', value: normalizePhoneForDisplay(application.telefone), inline: true },
+      { name: '📱 Telefone', value: formatPhoneLink(application.telefone), inline: true },
       { name: '🎮 Discord', value: application.discord, inline: true },
       { name: '⚔️ Char Principal', value: application.char_principal, inline: true },
       { name: '🏰 Guild Anterior', value: application.guild_anterior || 'Nenhuma', inline: true },
@@ -754,6 +771,8 @@ async function approveApplication(context, applicationId, user = null) {
       if (context.message && context.message.editable) {
         const embed = new EmbedBuilder(context.message.embeds[0]);
         embed.setColor('#00FF00');
+        // MODIFICAÇÃO: Atualiza o título
+        embed.setTitle(`Inscrição #${applicationId} (Aprovada)`);
         embed.setFooter({ text: `✅ Aprovado por ${user?.username || context.user?.username || 'Sistema'}` });
 
         await context.message.edit({
@@ -812,6 +831,8 @@ async function rejectApplication(context, applicationId, reason, user = null) {
       if (context.message && context.message.editable) {
         const embed = new EmbedBuilder(context.message.embeds[0]);
         embed.setColor('#FF0000');
+        // MODIFICAÇÃO: Atualiza o título
+        embed.setTitle(`Inscrição #${applicationId} (Rejeitada)`);
 
         if (reason) {
           embed.addFields({ name: 'Motivo da Rejeição', value: reason });
