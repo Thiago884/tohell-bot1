@@ -50,7 +50,7 @@ function formatBrazilianDate(dateString) {
   }
 }
 
-// Função para validar URL de imagem (atualizada)
+// Função para validar URL de imagem
 function isValidImageUrl(url) {
   if (!url) return false;
   
@@ -71,7 +71,7 @@ function isValidImageUrl(url) {
   }
 }
 
-// Função para processar URLs de imagens (atualizada)
+// Função para processar URLs de imagens
 function processImageUrls(imageData) {
   try {
     // Se for string, tentar parsear como JSON
@@ -788,7 +788,7 @@ async function safeSend(channel, content) {
 // FUNÇÕES PARA SISTEMA DE IP
 // ==============================================
 
-// Função para bloquear IP (atualizada)
+// Função para bloquear IP
 async function blockIP(ip, motivo, userId) {
   try {
     // Verifica se o IP já está bloqueado
@@ -1052,7 +1052,7 @@ async function manageWhitelist(action, ip, motivo, userId) {
   }
 }
 
-// Função para consultar número de telefone (atualizada)
+// Função para consultar número de telefone
 async function checkPhoneNumber(phoneNumber) {
   try {
     // Normaliza o número removendo caracteres não numéricos
@@ -1108,57 +1108,66 @@ async function checkPhoneNumber(phoneNumber) {
 }
 
 // ==============================================
-// NOVAS FUNÇÕES PARA PERSONAGENS 500+ RESETS
+// NOVAS FUNÇÕES PARA PERSONAGENS 500+ RESETS (CORRIGIDA)
 // ==============================================
 
-// utils.js - função get500RCharacters SEM cache
-async function get500RCharacters(page = 1, perPage = 5) {
+/**
+ * Busca avançada de personagens 500+ resets com inteligência de dados
+ */
+async function get500RCharacters(page = 1, perPage = 1) {
   try {
-    // Busca todos personagens 500+ resets no banco de dados SEM cache
-    // Incluindo informações de status e datas
-    const result = await safeExecuteQuery(`
+    const offset = (page - 1) * perPage;
+
+    // Query OTIMIZADA:
+    // 1. Exclui ToHeLL_ e ToHeLL2
+    // 2. Faz Join com tabela de inimigos para verificar status
+    // 3. Ordena por Resets (Decrescente) e Data de Atualização (Mais recente primeiro)
+    const query = `
       SELECT 
+        c.id,
         c.name, 
         c.guild, 
-        c.last_resets as resets, 
-        c.last_seen as last_updated,
-        m.status,
+        c.last_level,
+        c.last_resets, 
+        c.last_seen,
         CASE 
-          WHEN m.status = 'novo' THEN m.data_insercao
-          WHEN m.status = 'saiu' THEN m.data_saida
-          ELSE NULL
-        END as status_date
+          WHEN i.id IS NOT NULL THEN 'inimigo'
+          WHEN c.guild IS NULL OR c.guild = '' THEN 'sem_guild'
+          ELSE 'outra_guild'
+        END as relation_status,
+        i.guild as enemy_guild_record
       FROM characters c
-      LEFT JOIN membros m ON c.name = m.nome
+      LEFT JOIN inimigos i ON c.name = i.nome
       WHERE c.last_resets >= 500
-      AND c.guild NOT IN ('ToHeLL_', 'ToHeLL2')
+      AND (c.guild IS NULL OR c.guild NOT IN ('ToHeLL_', 'ToHeLL2'))
       ORDER BY c.last_resets DESC, c.last_level DESC
-    `);
+      LIMIT ? OFFSET ?
+    `;
     
-    const chars = result;
-    const lastUpdated = new Date().toISOString();
+    // Query para contar total (para paginação)
+    const countQuery = `
+      SELECT COUNT(*) as total 
+      FROM characters c
+      WHERE c.last_resets >= 500
+      AND (c.guild IS NULL OR c.guild NOT IN ('ToHeLL_', 'ToHeLL2'))
+    `;
+
+    const rows = await safeExecuteQuery(query, [perPage, offset]);
+    const countResult = await safeExecuteQuery(countQuery);
     
-    // Paginação
-    const totalChars = chars.length;
+    const totalChars = countResult[0].total;
     const totalPages = Math.ceil(totalChars / perPage);
-    const paginatedChars = chars.slice((page - 1) * perPage, page * perPage);
-    
+
     return {
-      chars: paginatedChars,
+      chars: rows,
       totalChars,
       page,
       totalPages,
-      lastUpdated
+      lastUpdated: new Date().toISOString()
     };
   } catch (error) {
     console.error('Erro em get500RCharacters:', error);
-    return {
-      chars: [],
-      totalChars: 0,
-      page: 1,
-      totalPages: 1,
-      lastUpdated: new Date().toISOString()
-    };
+    return { chars: [], totalChars: 0, page: 1, totalPages: 1 };
   }
 }
 
@@ -1250,7 +1259,6 @@ async function sendDmsToRoles(client, roleIds, messageContent) {
   }
   return sentMessages; // Retorna a lista de mensagens enviadas
 }
-
 
 module.exports = {
   formatBrazilianDate,
