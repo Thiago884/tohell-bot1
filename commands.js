@@ -955,91 +955,9 @@ function setupCommands(client) {
       console.error('❌ Erro ao registrar comandos slash:', error);
     }
   });
-
-  // Lógica para botões atualizada
-  client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isButton()) return;
-
-    // Lógica para char500 com Refresh e Inteligência
-    if (interaction.customId.startsWith('char500_')) {
-      const parts = interaction.customId.split('_');
-      const action = parts[1];
-      
-      if (action === 'close') {
-        await interaction.message.delete().catch(() => {});
-        return;
-      }
-
-      // Lógica de Atualização em Tempo Real (Inteligente)
-      if (action === 'update') {
-        const charName = parts[2];
-        const currentPage = parseInt(parts[3]);
-        
-        await interaction.deferUpdate();
-        
-        // 1. Força busca no site (bypass cache local do utils, atualiza DB)
-        const freshData = await searchCharacterWithCache(charName);
-        
-        if (freshData) {
-            // 2. Busca novamente do DB para pegar o status atualizado
-            const refreshedList = await get500RCharacters(currentPage, 1);
-            
-            if (refreshedList.chars && refreshedList.chars.length > 0) {
-              const newEmbed = createAdvancedCharEmbed(
-                refreshedList.chars[0], 
-                currentPage, 
-                refreshedList.totalPages, 
-                refreshedList.totalChars
-              );
-              const newButtons = createPaginationButtons(currentPage, refreshedList.totalPages, refreshedList.chars[0].name);
-              
-              await interaction.editReply({ embeds: [newEmbed], components: newButtons });
-              await interaction.followUp({ content: `✅ Dados de **${charName}** atualizados com sucesso direto do site!`, flags: MessageFlags.Ephemeral });
-              return;
-            }
-        }
-        
-        await interaction.followUp({ content: `❌ Não foi possível atualizar **${charName}**. O site pode estar indisponível.`, flags: MessageFlags.Ephemeral });
-        return;
-      }
-      
-      // Navegação Padrão
-      const pageStr = parts[parts.length - 1]; // Pega o último elemento como página
-      let page = parseInt(pageStr);
-
-      if (action === 'prev') page = Math.max(1, page - 1);
-      if (action === 'next') page = page + 1;
-
-      await interaction.deferUpdate();
-
-      const listData = await get500RCharacters(page, 1);
-      
-      if (!listData.chars || listData.chars.length === 0) {
-        return interaction.followUp({ content: 'Fim da lista ou erro ao carregar.', flags: MessageFlags.Ephemeral });
-      }
-
-      const charData = listData.chars[0];
-      const embed = createAdvancedCharEmbed(charData, page, listData.totalPages, listData.totalChars);
-      const buttons = createPaginationButtons(page, listData.totalPages, charData.name);
-
-      await interaction.editReply({ 
-        embeds: [embed],
-        components: buttons 
-      });
-      return;
-    }
-
-    // Seus outros handlers de botão (não alterados) devem estar no events.js ou aqui.
-    // Como o events.js lida com a maior parte, e o prompt pede o arquivo commands.js,
-    // esta lógica aqui é apenas um exemplo de onde colocar se a estrutura fosse centralizada.
-    // No entanto, a lógica do char500 DEVE estar onde o interactionCreate é tratado.
-    // Se o interactionCreate principal estiver no events.js, mova o bloco acima para lá.
-    // Pelo contexto fornecido no arquivo original, o interactionCreate está no events.js, 
-    // mas o comando original foi passado aqui.
-    // **IMPORTANTE:** Para este código funcionar, a lógica dentro do bloco `case 'char500':`
-    // abaixo deve ser usada no switch do `interactionCreate` onde quer que ele esteja (provavelmente events.js),
-    // e as funções auxiliares devem ser exportadas.
-  });
+  
+  // REMOVIDO: O listener duplicado de interactionCreate que estava causando erros 10062 e 40060.
+  // A lógica foi movida para events.js
 }
 
 module.exports = {

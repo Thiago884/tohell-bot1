@@ -11,7 +11,18 @@ const {
 } = require('./utils');
 // FIX: Import safeExecuteQuery from database
 const { isShuttingDown, isConnectionActive, safeExecuteQuery } = require('./database');
-const { listPendingApplications, searchApplications, sendApplicationEmbed, approveApplication, rejectApplication, showHelp, createImageCarousel } = require('./commands');
+const { 
+  listPendingApplications, 
+  searchApplications, 
+  sendApplicationEmbed, 
+  approveApplication, 
+  rejectApplication, 
+  showHelp, 
+  createImageCarousel,
+  // Importação dos helpers para char500
+  createAdvancedCharEmbed,
+  createPaginationButtons 
+} = require('./commands');
 
 // Função auxiliar para verificar se pode executar operações no DB
 async function canExecuteDBOperation() {
@@ -478,7 +489,7 @@ function setupEvents(client) {
             await interaction.deferReply();
             
             try {
-              const { chars, totalChars, page, totalPages, lastUpdated } = await get500RCharacters();
+              const { chars, totalChars, page, totalPages, lastUpdated } = await get500RCharacters(1, 1);
               
               if (!chars || chars.length === 0) {
                 return interaction.editReply({
@@ -487,65 +498,15 @@ function setupEvents(client) {
                 });
               }
 
-              // Criar múltiplos embeds - um para cada personagem
-              const embeds = chars.map((char, index) => {
-                const userbarUrl = `https://www.mucabrasil.com.br/forum/userbar.php?n=${encodeURIComponent(char.name)}&size=small&t=${Date.now()}`;
-                
-                // Determinar o status e a data apropriada
-                let statusText = '';
-                if (char.status) {
-                  const statusDate = char.status_date ? formatBrazilianDate(char.status_date) : '';
-                  switch(char.status) {
-                    case 'novo':
-                      statusText = `🆕 Novo (desde ${statusDate})`;
-                      break;
-                    case 'saiu':
-                      statusText = `🚪 Saiu (em ${statusDate})`;
-                      break;
-                    case 'ativo':
-                      statusText = `✅ Ativo`;
-                      break;
-                    default:
-                      statusText = `❓ Status desconhecido`;
-                  }
-                } else {
-                  statusText = '❓ Não cadastrado';
-                }
-                
-                return new EmbedBuilder()
-                  .setColor('#FFA500')
-                  .setTitle(`🏆 ${char.name} — #${(page - 1) * 5 + index + 1}`)
-                  .setDescription(
-                    `🏰 **Guilda:** ${char.guild}\n` +
-                    `🔄 **Resets:** ${char.resets}\n` +
-                    `📌 **Status:** ${statusText}`
-                  )
-                  .setImage(userbarUrl)
-                  .setFooter({ text: `Atualizado em ${formatBrazilianDate(lastUpdated)}` });
-              });
-
-              // Botões de navegação
-              const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                  .setCustomId(`char500_prev_${page}`)
-                  .setLabel('Anterior')
-                  .setStyle(ButtonStyle.Primary)
-                  .setDisabled(page <= 1),
-                new ButtonBuilder()
-                  .setCustomId(`char500_next_${page}`)
-                  .setLabel('Próxima')
-                  .setStyle(ButtonStyle.Primary)
-                  .setDisabled(page >= totalPages),
-                new ButtonBuilder()
-                  .setCustomId('char500_close')
-                  .setLabel('Fechar')
-                  .setStyle(ButtonStyle.Danger)
-              );
+              // Usar a nova lógica de embed avançado
+              const charData = chars[0];
+              const embed = createAdvancedCharEmbed(charData, 1, totalPages, totalChars);
+              const buttons = createPaginationButtons(1, totalPages, charData.name);
 
               await interaction.editReply({ 
-                content: `**Personagens 500+ Resets** (Página ${page}/${totalPages} - Total: ${totalChars})`,
-                embeds: embeds,
-                components: [row] 
+                content: `**Personagens 500+ Resets** (Total: ${totalChars})`,
+                embeds: [embed],
+                components: buttons 
               });
 
             } catch (error) {
@@ -1254,20 +1215,64 @@ function setupEvents(client) {
             return;
           }
 
+          // LÓGICA ATUALIZADA E CENTRALIZADA DO CHAR500
           if (interaction.customId.startsWith('char500_')) {
-            const [_, action, pageStr] = interaction.customId.split('_');
+            const parts = interaction.customId.split('_');
+            const action = parts[1]; // 'prev', 'next', 'close', 'update'
             
+            // Tratamento especial para 'close'
             if (action === 'close') {
-              try {
-                await interaction.message.delete().catch(error => {
-                  if (error.code !== 10008) throw error; // Ignora "Unknown Message" error
-                });
-              } catch (error) {
-                console.error('Erro ao fechar lista de personagens:', error);
-              }
+              await interaction.message.delete().catch(() => {});
               return;
             }
+
+            // Tratamento especial para 'update' (Atualização Inteligente)
+            if (action === 'update') {
+                const charName = parts[2];
+                const currentPage = parseInt(parts[3]);
+
+                await interaction.deferUpdate();
+
+                try {
+                    // 1. Força busca no site (atualiza DB)
+                    // Nota: Assume-se que searchCharacterWithCache atualiza o DB se encontrar dados
+                    const freshData = await searchCharacterWithCache(charName);
+
+                    if (freshData) {
+                        // 2. Busca novamente do DB para pegar o status atualizado
+                        const refreshedList = await get500RCharacters(currentPage, 1);
+
+                        if (refreshedList.chars && refreshedList.chars.length > 0) {
+                            // Filtra para garantir que estamos mostrando o char certo (caso a ordem tenha mudado)
+                            // Na verdade, get500RCharacters retorna paginado, então pegamos o da página atual
+                            // Se a atualização mudou a ordem drasticamente, pode mostrar outro char, mas é o esperado na paginação.
+                            const charData = refreshedList.chars[0];
+
+                            const newEmbed = createAdvancedCharEmbed(
+                                charData, 
+                                currentPage, 
+                                refreshedList.totalPages, 
+                                refreshedList.totalChars
+                            );
+                            const newButtons = createPaginationButtons(currentPage, refreshedList.totalPages, charData.name);
+
+                            await interaction.editReply({ embeds: [newEmbed], components: newButtons });
+                            await interaction.followUp({ content: `✅ Dados de **${charName}** atualizados com sucesso direto do site!`, flags: MessageFlags.Ephemeral });
+                            return;
+                        }
+                    } 
+                    
+                    await interaction.followUp({ content: `❌ Não foi possível atualizar **${charName}**. O site pode estar indisponível ou o personagem não foi encontrado.`, flags: MessageFlags.Ephemeral });
+                    
+                } catch (error) {
+                    console.error('Erro ao atualizar char500:', error);
+                    await interaction.followUp({ content: 'Ocorreu um erro durante a atualização.', flags: MessageFlags.Ephemeral });
+                }
+                return;
+            }
             
+            // Navegação (Prev/Next)
+            const pageStr = parts[parts.length - 1]; 
             let page = parseInt(pageStr);
             
             if (action === 'prev') {
@@ -1279,71 +1284,22 @@ function setupEvents(client) {
             await interaction.deferUpdate();
             
             try {
-              const { chars, totalChars, totalPages, lastUpdated } = await get500RCharacters(page);
+              const { chars, totalChars, totalPages } = await get500RCharacters(page, 1);
               
               if (!chars || chars.length === 0) {
-                return interaction.editReply({
-                  content: 'Nenhum personagem com 500+ resets encontrado.',
-                  flags: MessageFlags.Ephemeral
-                });
+                 // Caso a página fique vazia (ex: filtro mudou), volta pra 1 ou avisa
+                 await interaction.followUp({ content: 'Não foi possível carregar a página solicitada.', flags: MessageFlags.Ephemeral });
+                 return;
               }
 
-              const embeds = chars.map((char, index) => {
-                const userbarUrl = `https://www.mucabrasil.com.br/forum/userbar.php?n=${encodeURIComponent(char.name)}&size=small&t=${Date.now()}`;
-                
-                let statusText = '';
-                if (char.status) {
-                  const statusDate = char.status_date ? formatBrazilianDate(char.status_date) : '';
-                  switch(char.status) {
-                    case 'novo':
-                      statusText = `🆕 Novo (desde ${statusDate})`;
-                      break;
-                    case 'saiu':
-                      statusText = `🚪 Saiu (em ${statusDate})`;
-                      break;
-                    case 'ativo':
-                      statusText = `✅ Ativo`;
-                      break;
-                    default:
-                      statusText = `❓ Status desconhecido`;
-                  }
-                } else {
-                  statusText = '❓ Não cadastrado';
-                }
-                
-                return new EmbedBuilder()
-                  .setColor('#FFA500')
-                  .setTitle(`🏆 ${char.name} — #${(page - 1) * 5 + index + 1}`)
-                  .setDescription(
-                    `🏰 **Guilda:** ${char.guild}\n` +
-                    `🔄 **Resets:** ${char.resets}\n` +
-                    `📌 **Status:** ${statusText}`
-                  )
-                  .setImage(userbarUrl)
-                  .setFooter({ text: `Atualizado em ${formatBrazilianDate(lastUpdated)}` });
-              });
-
-              const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                  .setCustomId(`char500_prev_${page}`)
-                  .setLabel('Anterior')
-                  .setStyle(ButtonStyle.Primary)
-                  .setDisabled(page <= 1),
-                new ButtonBuilder()
-                  .setCustomId(`char500_next_${page}`)
-                  .setLabel('Próxima')
-                  .setStyle(ButtonStyle.Primary)
-                  .setDisabled(page >= totalPages),
-                new ButtonBuilder()
-                  .setCustomId('char500_close')
-                  .setLabel('Fechar')
-                  .setStyle(ButtonStyle.Danger)
-              );
+              const charData = chars[0];
+              const embed = createAdvancedCharEmbed(charData, page, totalPages, totalChars);
+              const buttons = createPaginationButtons(page, totalPages, charData.name);
 
               await interaction.editReply({ 
-                content: `**Personagens 500+ Resets** (Página ${page}/${totalPages} - Total: ${totalChars})`,
-                embeds: embeds,
-                components: [row] 
+                content: `**Personagens 500+ Resets** (Total: ${totalChars})`,
+                embeds: [embed],
+                components: buttons 
               });
 
             } catch (error) {
