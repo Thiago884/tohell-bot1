@@ -4,12 +4,9 @@ const {
     getCommandPermissions, addCommandPermission, removeCommandPermission, checkUserPermission, 
     formatBrazilianDate, processImageUrls, blockIP, unblockIP, queryIP, getIPInfo, 
     generateSecurityReport, getRecentAccess, manageWhitelist, checkPhoneNumber, get500RCharacters,
-    // Novas importações para o sistema de notificação
     addNotificationSubscription, removeNotificationSubscription, getNotificationSubscriptions, sendDmsToRoles,
-    // Importação da função de validação de URL
     isValidImageUrl
 } = require('./utils');
-// FIX: Import safeExecuteQuery from database
 const { isShuttingDown, isConnectionActive, safeExecuteQuery } = require('./database');
 const { 
   listPendingApplications, 
@@ -19,7 +16,6 @@ const {
   rejectApplication, 
   showHelp, 
   createImageCarousel,
-  // Importação dos helpers para char500
   createAdvancedCharEmbed,
   createPaginationButtons 
 } = require('./commands');
@@ -34,20 +30,16 @@ async function canExecuteDBOperation() {
 }
 
 // --- VARIÁVEIS DE ESTADO PARA OS MONITORES ---
-// Monitor de inscrições pendentes
 let lastCheckedApplications = new Date();
-// Monitor de novos membros (para verificação de inimigos)
 let lastCheckedMemberTimestamp = new Date();
-// NOVO: Monitor de membros que saíram
 let lastCheckedDepartureTimestamp = new Date();
-const SECURITY_ALERT_CHANNEL_ID = '1256287757135908884';
+const SECURITY_ALERT_CHANNEL_ID = '1256287757135908884'; // ID do canal de segurança
 
-// NOVO: Mapa para rastrear mensagens de notificação de saída para atualização em massa
+// Mapa para rastrear mensagens de notificação de saída para atualização em massa
 const activeDepartureMessages = new Map();
 
 // Monitoramento de segurança
 async function setupSecurityMonitoring(client) {
-  // Verifica tentativas suspeitas a cada 5 minutos
   setInterval(async () => {
     if (isShuttingDown() || !await canExecuteDBOperation()) {
       console.log('⏸️ Monitoramento de segurança pausado (shutdown ou DB indisponível)');
@@ -55,7 +47,6 @@ async function setupSecurityMonitoring(client) {
     }
     
     try {
-      // IPs com muitas tentativas de login em curto período
       const suspiciousLogins = await safeExecuteQuery(`
         SELECT ip, COUNT(*) as tentativas 
         FROM tentativas_login_falhas 
@@ -65,7 +56,6 @@ async function setupSecurityMonitoring(client) {
         ORDER BY tentativas DESC
       `);
       
-      // IPs bloqueados que tentaram acessar
       const blockedAccess = await safeExecuteQuery(`
         SELECT v.ip, COUNT(*) as tentativas, MAX(v.data_acesso) as ultima_tentativa
         FROM visitantes v
@@ -75,7 +65,6 @@ async function setupSecurityMonitoring(client) {
         ORDER BY tentativas DESC
       `);
       
-      // Envia notificações se houver atividade suspeita
       const securityChannel = await client.channels.fetch(process.env.SECURITY_CHANNEL_ID).catch(() => null);
       if (!securityChannel) return;
       
@@ -126,7 +115,6 @@ async function setupSecurityMonitoring(client) {
 
 // Limpeza automática de registros
 async function setupAutoCleanup() {
-  // Executa a limpeza diária às 3:00 AM
   const now = new Date();
   const nextCleanup = new Date(
     now.getFullYear(),
@@ -140,25 +128,17 @@ async function setupAutoCleanup() {
   setTimeout(async function runCleanup() {
     if (isShuttingDown() || !await canExecuteDBOperation()) {
       console.log('⏸️ Limpeza automática pausada (shutdown ou DB indisponível)');
-      setTimeout(runCleanup, 60 * 60 * 1000); // Tenta novamente em 1 hora
+      setTimeout(runCleanup, 60 * 60 * 1000);
       return;
     }
     
     try {
       console.log('🔄 Iniciando limpeza automática de registros antigos...');
-      
-      // Remove bloqueios com mais de 30 dias
       await safeExecuteQuery('DELETE FROM ips_bloqueados WHERE data_bloqueio < DATE_SUB(NOW(), INTERVAL 30 DAY)');
-      
-      // Remove tentativas de login com mais de 7 dias
       await safeExecuteQuery('DELETE FROM tentativas_login_falhas WHERE data_acesso < DATE_SUB(NOW(), INTERVAL 7 DAY)');
-      
-      // Remove registros de visitantes com mais de 30 dias
       await safeExecuteQuery('DELETE FROM visitantes WHERE data_acesso < DATE_SUB(NOW(), INTERVAL 30 DAY)');
       
       console.log('✅ Limpeza automática concluída');
-      
-      // Agenda a próxima limpeza para 24 horas depois
       setTimeout(runCleanup, 24 * 60 * 60 * 1000);
     } catch (error) {
       if (error.message === 'POOL_CLOSED') {
@@ -166,7 +146,6 @@ async function setupAutoCleanup() {
       } else {
         console.error('❌ Erro na limpeza automática:', error);
       }
-      // Tenta novamente em 1 hora se falhar
       setTimeout(runCleanup, 60 * 60 * 1000);
     }
   }, timeUntilCleanup);
@@ -284,7 +263,7 @@ async function checkNewMembersForConflicts(client) {
     }
 }
 
-// FUNÇÃO ATUALIZADA PARA VERIFICAR SAÍDAS E NOTIFICAR
+// --- FUNÇÃO ATUALIZADA: VERIFICAR SAÍDAS E DETECTAR SE FOI PARA INIMIGOS ---
 async function checkDepartingMembers(client) {
     if (isShuttingDown() || !await canExecuteDBOperation()) {
         console.log('⏸️ Monitoramento de saídas pausado (shutdown ou DB indisponível)');
@@ -302,7 +281,7 @@ async function checkDepartingMembers(client) {
             const roleIdsToNotify = await getNotificationSubscriptions('alerta_seguranca');
 
             for (const member of departedMembers) {
-                // MODIFICADO: Busca também o discord e o ip
+                // 1. Busca informações da inscrição (Discord, Tel, IP)
                 const applications = await safeExecuteQuery(
                     `SELECT nome, telefone, discord, ip FROM inscricoes WHERE char_principal = ? AND status = 'aprovado' ORDER BY data_avaliacao DESC LIMIT 1`,
                     [member.nome]
@@ -310,10 +289,45 @@ async function checkDepartingMembers(client) {
 
                 if (applications.length > 0) {
                     const application = applications[0];
-                    // MODIFICADO: Cria um ID único para este evento de saída para rastrear as mensagens
                     const departureId = `${member.nome.replace(/[^a-zA-Z0-9]/g, '')}-${Date.now()}`;
                     const messageReferences = [];
 
+                    // --- NOVA LÓGICA DE DETECÇÃO DE GUILD INIMIGA ---
+                    let currentGuild = 'Não identificada';
+                    let isEnemyGuild = false;
+                    let enemyAlertText = '';
+
+                    try {
+                        // Busca dados atualizados do site para ver onde ele está AGORA
+                        // Isso é necessário porque o registro de saída local não diz para onde ele foi
+                        const charData = await searchCharacterWithCache(member.nome); //
+                        
+                        if (charData && charData.guild) {
+                            currentGuild = charData.guild;
+
+                            // Ignora se for apenas troca entre guilds aliadas (ToHeLL, ToHeLL2, etc)
+                            const isAlliedParams = ['ToHeLL', 'ToHeLL2', 'ToHeLL3', 'ToHeLL4', 'ToHeLL5']; 
+                            
+                            // Se a nova guild não for uma das aliadas, verifica se é inimiga
+                            if (!isAlliedParams.some(ally => currentGuild.includes(ally))) {
+                                // Verifica se a nova guild existe na tabela de inimigos
+                                const enemyCheck = await safeExecuteQuery(
+                                    `SELECT COUNT(*) as total FROM inimigos WHERE guild = ?`,
+                                    [currentGuild]
+                                );
+
+                                if (enemyCheck[0].total > 0) {
+                                    isEnemyGuild = true;
+                                    enemyAlertText = `⚠️ **ALERTA CRÍTICO:** O membro juntou-se à guild inimiga **${currentGuild}**!`;
+                                }
+                            }
+                        }
+                    } catch (err) {
+                        console.error(`Erro ao verificar guild destino de ${member.nome}:`, err);
+                    }
+                    // ------------------------------------------------
+
+                    // Formatação do telefone
                     const originalPhone = application.telefone || 'Não informado';
                     let phoneLinkValue = originalPhone;
 
@@ -326,21 +340,24 @@ async function checkDepartingMembers(client) {
                         }
                     }
 
+                    // Configuração do Embed (Muda cor e título se for inimigo)
+                    const embedColor = isEnemyGuild ? '#FF0000' : '#FFA500'; // Vermelho se inimigo, Laranja se normal
+                    const embedTitle = isEnemyGuild ? '🚨 TRAIÇÃO DETECTADA: Membro foi para Inimigos' : '👤 Membro Saiu da Guild';
+
                     const departureEmbed = new EmbedBuilder()
-                        .setColor('#FFA500')
-                        .setTitle('👤 Membro Saiu da Guild')
-                        .setDescription(`O personagem **${member.nome}** foi marcado como "saiu".`)
+                        .setColor(embedColor)
+                        .setTitle(embedTitle)
+                        .setDescription(isEnemyGuild ? enemyAlertText : `O personagem **${member.nome}** foi marcado como "saiu".`)
                         .addFields(
                             { name: '📋 Nome na Inscrição', value: application.nome, inline: true },
-                            { name: '📞 Telefone na Inscrição', value: phoneLinkValue, inline: true },
-                            // ADICIONADO: Exibe o Discord e o IP
+                            { name: '📞 Telefone', value: phoneLinkValue, inline: true },
+                            { name: '🏰 Guild Atual (Site)', value: currentGuild, inline: true }, // Campo adicional
                             { name: '🎮 Discord', value: application.discord || 'Não informado', inline: true },
                             { name: '🌐 IP', value: application.ip || 'Não informado', inline: true },
                             { name: '🗓️ Data da Saída', value: formatBrazilianDate(member.data_saida), inline: false }
                         )
-                        .setFooter({ text: 'Aguardando classificação da saída.' });
+                        .setFooter({ text: isEnemyGuild ? 'Recomendação: Bloquear acesso e verificar logs.' : 'Aguardando classificação da saída.' });
                     
-                    // MODIFICADO: CustomId dos botões agora inclui o departureId
                     const actionRow = new ActionRowBuilder().addComponents(
                         new ButtonBuilder()
                             .setCustomId(`departed_cs_${departureId}`)
@@ -356,7 +373,9 @@ async function checkDepartingMembers(client) {
 
                     if (securityChannel) {
                         try {
-                            const channelMessage = await securityChannel.send(messagePayload);
+                            // Se for inimigo, menciona @here no canal de segurança
+                            const content = isEnemyGuild ? '@here 🚨 Atenção! Possível vazamento de informações.' : null;
+                            const channelMessage = await securityChannel.send({ ...messagePayload, content });
                             messageReferences.push({ channelId: channelMessage.channel.id, messageId: channelMessage.id });
                         } catch (e) {
                             console.error("Falha ao enviar para o canal de segurança:", e);
@@ -368,7 +387,6 @@ async function checkDepartingMembers(client) {
                         messageReferences.push({ channelId: dm.channel.id, messageId: dm.id });
                     }
 
-                    // ADICIONADO: Armazena as referências de todas as mensagens enviadas
                     if (messageReferences.length > 0) {
                         activeDepartureMessages.set(departureId, messageReferences);
                     }
@@ -402,7 +420,7 @@ function setupEvents(client) {
     // Intervalo para verificar conflitos de membros
     setInterval(() => checkNewMembersForConflicts(client), 5 * 60000); // 5 minutos
     
-    // NOVO: Intervalo para verificar saídas de membros
+    // Intervalo para verificar saídas de membros
     setInterval(() => checkDepartingMembers(client), 5 * 60000); // 5 minutos
   });
 
@@ -415,7 +433,6 @@ function setupEvents(client) {
       if (interaction.isCommand()) {
         console.log(`🔍 Comando slash detectado: ${interaction.commandName}`, interaction.options.data);
 
-        // A verificação de permissão para 'pendentes' agora é feita com base nas subscrições de notificação
         if (interaction.commandName !== 'pendentes' && !await checkUserPermission(interaction, interaction.commandName)) {
           return interaction.reply({
             content: '❌ Você não tem permissão para usar este comando.',
@@ -498,7 +515,6 @@ function setupEvents(client) {
                 });
               }
 
-              // Usar a nova lógica de embed avançado
               const charData = chars[0];
               const embed = createAdvancedCharEmbed(charData, 1, totalPages, totalChars);
               const buttons = createPaginationButtons(1, totalPages, charData.name);
@@ -736,7 +752,6 @@ function setupEvents(client) {
                 );
               }
 
-              // Adicionar coordenadas se disponíveis
               if (result.geoInfo?.coordinates) {
                 embed.addFields(
                   { name: 'Coordenadas', value: result.geoInfo.coordinates, inline: true },
@@ -941,7 +956,6 @@ function setupEvents(client) {
                 }).catch(console.error);
               }
               
-              // Embed simplificado com informações básicas
               const embed = new EmbedBuilder()
                 .setColor('#0099ff')
                 .setTitle('📱 Informações do Telefone')
@@ -958,7 +972,6 @@ function setupEvents(client) {
               
               await interaction.editReply({ embeds: [embed] });
               
-              // Envia os formatos diretamente no canal (visível para todos)
               const formatsMessage = `**Formatos do número ${phoneNumber}:**\n` +
                                     `• Número Internacional: ${result.data.number || 'N/A'}\n` +
                                     `• Formato Brasileiro: 0, 0XX${phoneNumber.replace(/^\+55/, '')}\n` +
@@ -1007,7 +1020,6 @@ function setupEvents(client) {
             return;
           }
           
-          // LÓGICA ATUALIZADA para botões de saída de membros
           if (interaction.customId.startsWith('departed_')) {
               try {
                   await interaction.deferUpdate();
@@ -1031,7 +1043,6 @@ function setupEvents(client) {
                               const message = await channel.messages.fetch(ref.messageId);
                               await message.edit({ embeds: [updatedEmbed], components: [] });
                           } catch (error) {
-                              // Ignora erros se a mensagem não for encontrada (ex: DM fechada, mensagem deletada)
                               if (error.code !== 10008 && error.code !== 10003) {
                                 console.error(`Falha ao atualizar mensagem de saída ${ref.messageId}:`, error.message);
                               }
@@ -1039,9 +1050,8 @@ function setupEvents(client) {
                       });
 
                       await Promise.allSettled(updatePromises);
-                      activeDepartureMessages.delete(departureId); // Limpa o mapa após a atualização
+                      activeDepartureMessages.delete(departureId); 
                   } else {
-                      // Fallback: se as mensagens não foram rastreadas (ex: após restart), atualiza apenas a interação atual
                       await interaction.editReply({ embeds: [updatedEmbed], components: [] });
                   }
       
@@ -1068,7 +1078,6 @@ function setupEvents(client) {
           }
 
           if (interaction.customId.startsWith('view_screenshots_')) {
-            // Adia a resposta de forma pública para evitar o erro "Unknown Interaction"
             await interaction.deferReply();
 
             const [_, __, applicationId, status] = interaction.customId.split('_');
@@ -1082,7 +1091,6 @@ function setupEvents(client) {
               );
               
               if (rows.length === 0) {
-                // Usa editReply porque a resposta já foi adiada
                 return interaction.editReply({
                   content: 'Inscrição não encontrada.',
                 }).catch(console.error);
@@ -1098,13 +1106,10 @@ function setupEvents(client) {
               }
               
               const processedScreenshots = processImageUrls(screenshots);
-              
-              // Passa o 'status' para a função do carrossel
               await createImageCarousel(interaction, processedScreenshots, applicationId, status);
               
             } catch (error) {
               console.error('❌ Erro ao buscar screenshots:', error);
-              // Usa editReply no bloco catch também
               await interaction.editReply({
                 content: 'Ocorreu um erro ao buscar as screenshots.',
               }).catch(console.error);
@@ -1163,7 +1168,6 @@ function setupEvents(client) {
                 }).catch(console.error);
               }
               
-              // Atualiza o índice
               if (action === 'prev') {
                 currentIndex = (currentIndex - 1 + totalImages) % totalImages;
               } else if (action === 'next') {
@@ -1172,7 +1176,6 @@ function setupEvents(client) {
 
               const imageUrl = processedScreenshots[currentIndex];
 
-              // ADICIONADA VALIDAÇÃO DA URL ANTES DE USAR
               if (!imageUrl || !isValidImageUrl(imageUrl)) {
                   return interaction.update({
                       content: `A imagem ${currentIndex + 1} de ${totalImages} possui uma URL inválida e não pode ser exibida.`,
@@ -1215,18 +1218,15 @@ function setupEvents(client) {
             return;
           }
 
-          // LÓGICA ATUALIZADA E CENTRALIZADA DO CHAR500
           if (interaction.customId.startsWith('char500_')) {
             const parts = interaction.customId.split('_');
-            const action = parts[1]; // 'prev', 'next', 'close', 'update'
+            const action = parts[1]; 
             
-            // Tratamento especial para 'close'
             if (action === 'close') {
               await interaction.message.delete().catch(() => {});
               return;
             }
 
-            // Tratamento especial para 'update' (Atualização Inteligente)
             if (action === 'update') {
                 const charName = parts[2];
                 const currentPage = parseInt(parts[3]);
@@ -1234,18 +1234,12 @@ function setupEvents(client) {
                 await interaction.deferUpdate();
 
                 try {
-                    // 1. Força busca no site (atualiza DB)
-                    // Nota: Assume-se que searchCharacterWithCache atualiza o DB se encontrar dados
-                    const freshData = await searchCharacterWithCache(charName);
+                    const freshData = await searchCharacterWithCache(charName); //
 
                     if (freshData) {
-                        // 2. Busca novamente do DB para pegar o status atualizado
                         const refreshedList = await get500RCharacters(currentPage, 1);
 
                         if (refreshedList.chars && refreshedList.chars.length > 0) {
-                            // Filtra para garantir que estamos mostrando o char certo (caso a ordem tenha mudado)
-                            // Na verdade, get500RCharacters retorna paginado, então pegamos o da página atual
-                            // Se a atualização mudou a ordem drasticamente, pode mostrar outro char, mas é o esperado na paginação.
                             const charData = refreshedList.chars[0];
 
                             const newEmbed = createAdvancedCharEmbed(
@@ -1271,7 +1265,6 @@ function setupEvents(client) {
                 return;
             }
             
-            // Navegação (Prev/Next)
             const pageStr = parts[parts.length - 1]; 
             let page = parseInt(pageStr);
             
@@ -1287,7 +1280,6 @@ function setupEvents(client) {
               const { chars, totalChars, totalPages } = await get500RCharacters(page, 1);
               
               if (!chars || chars.length === 0) {
-                 // Caso a página fique vazia (ex: filtro mudou), volta pra 1 ou avisa
                  await interaction.followUp({ content: 'Não foi possível carregar a página solicitada.', flags: MessageFlags.Ephemeral });
                  return;
               }
