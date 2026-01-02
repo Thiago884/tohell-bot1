@@ -203,7 +203,6 @@ async function checkNewApplications(client) {
   }
 }
 
-
 // Verificar novos membros e cruzar com a lista de inimigos
 async function checkNewMembersForConflicts(client) {
     if (isShuttingDown() || !await canExecuteDBOperation()) {
@@ -263,7 +262,7 @@ async function checkNewMembersForConflicts(client) {
     }
 }
 
-// --- FUNÇÃO ATUALIZADA: VERIFICAR SAÍDAS E DETECTAR SE FOI PARA INIMIGOS ---
+// --- FUNÇÃO ATUALIZADA: VERIFICAR SAÍDAS (SUPORTE A MÚLTIPLOS CHARS) ---
 async function checkDepartingMembers(client) {
     if (isShuttingDown() || !await canExecuteDBOperation()) {
         console.log('⏸️ Monitoramento de saídas pausado (shutdown ou DB indisponível)');
@@ -281,36 +280,40 @@ async function checkDepartingMembers(client) {
             const roleIdsToNotify = await getNotificationSubscriptions('alerta_seguranca');
 
             for (const member of departedMembers) {
-                // 1. Busca informações da inscrição (Discord, Tel, IP)
-                const applications = await safeExecuteQuery(
-                    `SELECT nome, telefone, discord, ip FROM inscricoes WHERE char_principal = ? AND status = 'aprovado' ORDER BY data_avaliacao DESC LIMIT 1`,
-                    [member.nome]
+                // MODIFICAÇÃO: Busca flexível usando LIKE para encontrar o char dentro da string composta
+                // Ex: Se char_principal é "Kratos, Atreus" e member.nome é "Kratos", o LIKE '%Kratos%' vai achar.
+                const potentialApplications = await safeExecuteQuery(
+                    `SELECT nome, telefone, discord, ip, char_principal 
+                     FROM inscricoes 
+                     WHERE status = 'aprovado' 
+                     AND (char_principal = ? OR char_principal LIKE ?) 
+                     ORDER BY data_avaliacao DESC`,
+                    [member.nome, `%${member.nome}%`]
                 );
 
-                if (applications.length > 0) {
-                    const application = applications[0];
+                // FILTRAGEM PRECISA EM JS:
+                // Garante que "Thor" não dê match falso em "ThorOdinson" dividindo a string pelas vírgulas
+                const application = potentialApplications.find(app => {
+                    const chars = app.char_principal.split(',').map(c => c.trim().toLowerCase());
+                    return chars.includes(member.nome.toLowerCase());
+                });
+
+                if (application) {
                     const departureId = `${member.nome.replace(/[^a-zA-Z0-9]/g, '')}-${Date.now()}`;
                     const messageReferences = [];
 
-                    // --- NOVA LÓGICA DE DETECÇÃO DE GUILD INIMIGA ---
+                    // --- DETECÇÃO DE GUILD INIMIGA ---
                     let currentGuild = 'Não identificada';
                     let isEnemyGuild = false;
                     let enemyAlertText = '';
 
                     try {
-                        // Busca dados atualizados do site para ver onde ele está AGORA
-                        // Isso é necessário porque o registro de saída local não diz para onde ele foi
-                        const charData = await searchCharacterWithCache(member.nome); //
-                        
+                        const charData = await searchCharacterWithCache(member.nome);
                         if (charData && charData.guild) {
                             currentGuild = charData.guild;
-
-                            // Ignora se for apenas troca entre guilds aliadas (ToHeLL, ToHeLL2, etc)
                             const isAlliedParams = ['ToHeLL', 'ToHeLL2', 'ToHeLL3', 'ToHeLL4', 'ToHeLL5']; 
                             
-                            // Se a nova guild não for uma das aliadas, verifica se é inimiga
                             if (!isAlliedParams.some(ally => currentGuild.includes(ally))) {
-                                // Verifica se a nova guild existe na tabela de inimigos
                                 const enemyCheck = await safeExecuteQuery(
                                     `SELECT COUNT(*) as total FROM inimigos WHERE guild = ?`,
                                     [currentGuild]
@@ -325,7 +328,6 @@ async function checkDepartingMembers(client) {
                     } catch (err) {
                         console.error(`Erro ao verificar guild destino de ${member.nome}:`, err);
                     }
-                    // ------------------------------------------------
 
                     // Formatação do telefone
                     const originalPhone = application.telefone || 'Não informado';
@@ -340,8 +342,13 @@ async function checkDepartingMembers(client) {
                         }
                     }
 
-                    // Configuração do Embed (Muda cor e título se for inimigo)
-                    const embedColor = isEnemyGuild ? '#FF0000' : '#FFA500'; // Vermelho se inimigo, Laranja se normal
+                    // Formata a lista de chars para mostrar quais outros chars pertencem a essa pessoa
+                    const allChars = application.char_principal.split(',').map(c => c.trim());
+                    const otherChars = allChars.filter(c => c.toLowerCase() !== member.nome.toLowerCase());
+                    const otherCharsText = otherChars.length > 0 ? otherChars.join(', ') : 'Nenhum outro registrado';
+
+                    // Configuração do Embed
+                    const embedColor = isEnemyGuild ? '#FF0000' : '#FFA500';
                     const embedTitle = isEnemyGuild ? '🚨 TRAIÇÃO DETECTADA: Membro foi para Inimigos' : '👤 Membro Saiu da Guild';
 
                     const departureEmbed = new EmbedBuilder()
@@ -351,9 +358,9 @@ async function checkDepartingMembers(client) {
                         .addFields(
                             { name: '📋 Nome na Inscrição', value: application.nome, inline: true },
                             { name: '📞 Telefone', value: phoneLinkValue, inline: true },
-                            { name: '🏰 Guild Atual (Site)', value: currentGuild, inline: true }, // Campo adicional
+                            { name: '🏰 Guild Atual (Site)', value: currentGuild, inline: true },
                             { name: '🎮 Discord', value: application.discord || 'Não informado', inline: true },
-                            { name: '🌐 IP', value: application.ip || 'Não informado', inline: true },
+                            { name: '👥 Outros Chars da Conta', value: otherCharsText, inline: true },
                             { name: '🗓️ Data da Saída', value: formatBrazilianDate(member.data_saida), inline: false }
                         )
                         .setFooter({ text: isEnemyGuild ? 'Recomendação: Bloquear acesso e verificar logs.' : 'Aguardando classificação da saída.' });
@@ -373,7 +380,6 @@ async function checkDepartingMembers(client) {
 
                     if (securityChannel) {
                         try {
-                            // Se for inimigo, menciona @here no canal de segurança
                             const content = isEnemyGuild ? '@here 🚨 Atenção! Possível vazamento de informações.' : null;
                             const channelMessage = await securityChannel.send({ ...messagePayload, content });
                             messageReferences.push({ channelId: channelMessage.channel.id, messageId: channelMessage.id });
@@ -402,7 +408,6 @@ async function checkDepartingMembers(client) {
         console.error('❌ Erro ao verificar saídas de membros:', error);
     }
 }
-
 
 // Configurar eventos
 function setupEvents(client) {

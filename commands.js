@@ -625,7 +625,7 @@ async function searchApplications(context, args) {
   }
 }
 
-// Função para enviar embed de inscrição (atualizada com link do WhatsApp)
+// Função para enviar embed de inscrição (atualizada com link do WhatsApp e suporte a múltiplos chars)
 async function sendApplicationEmbed(channel, application) {
   const screenshots = processImageUrls(application.screenshot_path);
   const screenshotLinks = screenshots.slice(0, 5).map((screenshot, index) =>
@@ -633,6 +633,11 @@ async function sendApplicationEmbed(channel, application) {
   ).join('\n') || 'Nenhuma imagem enviada';
 
   const isApproved = application.status === 'aprovado';
+
+  // Processa a lista de chars (agora suporta múltiplos separados por vírgula)
+  const charList = application.char_principal
+    ? application.char_principal.split(',').map(c => `• ${c.trim()}`).join('\n')
+    : 'Não informado';
 
   // Formata o telefone e cria link para WhatsApp
   const formatPhoneLink = (phone) => {
@@ -669,7 +674,7 @@ async function sendApplicationEmbed(channel, application) {
     .addFields(
       { name: '📱 Telefone', value: formatPhoneLink(application.telefone), inline: true },
       { name: '🎮 Discord', value: application.discord, inline: true },
-      { name: '⚔️ Char Principal', value: application.char_principal, inline: true },
+      { name: '⚔️ Personagens', value: charList, inline: true },
       { name: '🏰 Guild Anterior', value: application.guild_anterior || 'Nenhuma', inline: true },
       { name: '📸 Screenshots', value: screenshotLinks, inline: false },
       { name: '📅 Data', value: formatBrazilianDate(application.data_inscricao), inline: true },
@@ -955,9 +960,6 @@ function setupCommands(client) {
       console.error('❌ Erro ao registrar comandos slash:', error);
     }
   });
-  
-  // REMOVIDO: O listener duplicado de interactionCreate que estava causando erros 10062 e 40060.
-  // A lógica foi movida para events.js
 }
 
 module.exports = {
