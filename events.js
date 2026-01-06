@@ -270,158 +270,149 @@ async function checkDepartingMembers(client) {
     }
 
     try {
-        // MODIFICAÇÃO: Incluída a coluna 'guild' na query
-        const departedMembers = await safeExecuteQuery(
+        // Pega membros que saíram desde a última checagem
+        const departedRows = await safeExecuteQuery(
             `SELECT nome, guild, data_saida FROM membros WHERE status = 'saiu' AND data_saida > ? ORDER BY data_saida ASC`,
             [lastCheckedDepartureTimestamp]
         );
 
-        if (departedMembers.length > 0) {
+        if (departedRows.length > 0) {
             const securityChannel = await client.channels.fetch(SECURITY_ALERT_CHANNEL_ID).catch(() => null);
             const roleIdsToNotify = await getNotificationSubscriptions('alerta_seguranca');
+            
+            // Agrupar por dono usando as inscrições
+            const groups = new Map();
+            let maxTimestamp = lastCheckedDepartureTimestamp;
 
-            for (const member of departedMembers) {
-                // Busca a inscrição original para pegar telefone e lista de chars
-                const potentialApplications = await safeExecuteQuery(
-                    `SELECT nome, telefone, discord, ip, char_principal 
+            for (const row of departedRows) {
+                // Atualiza o timestamp máximo
+                if (new Date(row.data_saida) > maxTimestamp) {
+                    maxTimestamp = new Date(row.data_saida);
+                }
+
+                // Busca a inscrição original para agrupar por dono
+                const apps = await safeExecuteQuery(
+                    `SELECT id, nome, telefone, discord, char_principal 
                      FROM inscricoes 
-                     WHERE status = 'aprovado' 
-                     AND (char_principal = ? OR char_principal LIKE ?) 
-                     ORDER BY data_avaliacao DESC`,
-                    [member.nome, `%${member.nome}%`]
+                     WHERE status = 'aprovado' AND (char_principal LIKE ?) 
+                     ORDER BY data_avaliacao DESC LIMIT 1`,
+                    [`%${row.nome}%`]
                 );
+                
+                const app = apps[0] || null;
+                // Usa o ID da inscrição como chave de agrupamento, ou o nome do char se não houver inscrição
+                const groupKey = app ? `app_${app.id}` : `char_${row.nome}`;
 
-                const application = potentialApplications.find(app => {
-                    const chars = app.char_principal.split(',').map(c => c.trim().toLowerCase());
-                    return chars.includes(member.nome.toLowerCase());
-                });
+                if (!groups.has(groupKey)) {
+                    groups.set(groupKey, { 
+                        app, 
+                        departures: [], 
+                        timestamp: row.data_saida 
+                    });
+                }
+                groups.get(groupKey).departures.push(row);
+            }
 
-                if (application) {
-                    const departureId = `${member.nome.replace(/[^a-zA-Z0-9]/g, '')}-${Date.now()}`;
-                    const messageReferences = [];
-                    
-                    // A Guild que ele saiu (vindo do banco de dados, registro histórico)
-                    const guildQueSaiu = member.guild || 'Não registrada';
+            // Processa cada grupo
+            for (const [key, data] of groups) {
+                const { app, departures, timestamp } = data;
+                let charStatusLines = [];
+                
+                // Determina todos os chars a verificar
+                let charsToVerify = app ? 
+                    app.char_principal.split(',').map(c => c.trim()) : 
+                    departures.map(d => d.nome);
 
-                    // --- VERIFICAÇÃO DE TODOS OS PERSONAGENS DA CONTA EM TEMPO REAL ---
-                    const allChars = application.char_principal.split(',').map(c => c.trim());
-                    let isEnemyGuildDetected = false;
-                    let enemyAlertText = '';
-                    
-                    // Array para montar o texto do status de cada char
-                    const charStatusLines = [];
-
-                    // Processa cada personagem em paralelo para ser rápido
-                    await Promise.all(allChars.map(async (charName) => {
-                        let statusIcon = '❓';
-                        let currentGuild = 'Buscando...';
-                        
-                        try {
-                            // Verifica status ATUAL no site (via cache/crawler)
-                            const charData = await searchCharacterWithCache(charName);
-                            
-                            if (charData && charData.guild) {
-                                currentGuild = charData.guild;
-                                
-                                // Verifica se é aliada (Hardcoded)
-                                const isAllied = ['ToHeLL', 'ToHeLL2', 'ToHeLL3', 'ToHeLL4', 'ToHeLL5', 'ToHeLL6', 'ToHeLL7', 'ToHeLL8', 'ToHeLL9', 'ToHeLL10'].some(g => currentGuild.includes(g));
-                                
-                                if (isAllied) {
-                                    statusIcon = '✅'; // Ainda está na guild ou em guild aliada
-                                } else {
-                                    // Verifica se é inimiga
-                                    const enemyCheck = await safeExecuteQuery(
-                                        `SELECT COUNT(*) as total FROM inimigos WHERE guild = ?`,
-                                        [currentGuild]
-                                    );
-                                    
-                                    if (enemyCheck[0].total > 0) {
-                                        statusIcon = '🚨'; // INIMIGO
-                                        isEnemyGuildDetected = true;
-                                        enemyAlertText = `⚠️ **ALERTA CRÍTICO:** O char **${charName}** está na guild inimiga **${currentGuild}**!`;
-                                    } else {
-                                        statusIcon = '⚠️'; // Outra guild (neutra/desconhecida)
-                                    }
-                                }
-                            } else {
-                                currentGuild = 'Sem Guild';
-                                statusIcon = '❌'; // Saiu/Sem Guild
-                            }
-                        } catch (err) {
-                            console.error(`Erro ao verificar char ${charName}:`, err);
-                            currentGuild = 'Erro na busca';
-                        }
-                        
-                        // Formata a linha: 🚨 CharName (Guild: NomeDaGuild)
-                        charStatusLines.push(`${statusIcon} **${charName}** (Guild: ${currentGuild})`);
-                    }));
-                    // --- FIM DA VERIFICAÇÃO DE CHARS ---
-
-                    // Formatação do telefone
-                    const originalPhone = application.telefone || 'Não informado';
-                    let phoneLinkValue = originalPhone;
-
-                    if (application.telefone) {
-                        const normalizedPhone = application.telefone.replace(/\D/g, '');
-                        if (normalizedPhone.length >= 10) {
-                            const whatsappNumber = normalizedPhone.startsWith('55') ? normalizedPhone : `55${normalizedPhone}`;
-                            const whatsappUrl = `https://wa.me/${whatsappNumber}`;
-                            phoneLinkValue = `[${originalPhone}](${whatsappUrl})`;
-                        }
-                    }
-
-                    // Configuração do Embed
-                    const embedColor = isEnemyGuildDetected ? '#FF0000' : '#FFA500';
-                    const embedTitle = isEnemyGuildDetected ? '🚨 TRAIÇÃO DETECTADA: Movimentação para Inimigos' : '👤 Membro Saiu da Guild';
-
-                    const departureEmbed = new EmbedBuilder()
-                        .setColor(embedColor)
-                        .setTitle(embedTitle)
-                        .setDescription(isEnemyGuildDetected ? enemyAlertText : `O personagem **${member.nome}** foi registrado como "saiu" da guild.`)
-                        .addFields(
-                            { name: '📋 Nome na Inscrição', value: application.nome, inline: true },
-                            { name: '📞 Telefone', value: phoneLinkValue, inline: true },
-                            { name: '🏰 Guild que Saiu', value: guildQueSaiu, inline: true }, // Campo renomeado e usando dado do DB
-                            { name: '🎮 Discord', value: application.discord || 'Não informado', inline: true },
-                            { name: '👥 Situação dos Personagens (Atual)', value: charStatusLines.join('\n') || 'Nenhum char listado', inline: false }, // Lista detalhada de todos os chars
-                            { name: '🗓️ Data da Saída', value: formatBrazilianDate(member.data_saida), inline: false }
-                        )
-                        .setFooter({ text: isEnemyGuildDetected ? 'Recomendação: Bloquear acesso imediatamente.' : 'Verifique se foi apenas troca de guild interna.' });
-                    
-                    const actionRow = new ActionRowBuilder().addComponents(
-                        new ButtonBuilder()
-                            .setCustomId(`departed_cs_${departureId}`)
-                            .setLabel('Saiu para CS (Volta)')
-                            .setStyle(ButtonStyle.Success),
-                        new ButtonBuilder()
-                            .setCustomId(`departed_left_${departureId}`)
-                            .setLabel('Saiu da Guild (Definitivo)')
-                            .setStyle(ButtonStyle.Danger)
+                // Verifica o status atual de cada char na tabela membros
+                for (const charName of charsToVerify) {
+                    // Consulta o status real na tabela membros
+                    const currentStatus = await safeExecuteQuery(
+                        `SELECT guild, status FROM membros WHERE nome = ?`, 
+                        [charName]
                     );
 
-                    const messagePayload = { embeds: [departureEmbed], components: [actionRow] };
+                    let icon = '❌';
+                    let guildName = 'Sem Guild / Saiu';
 
-                    if (securityChannel) {
-                        try {
-                            const content = isEnemyGuildDetected ? '@here 🚨 Atenção! Possível vazamento de informações.' : null;
-                            const channelMessage = await securityChannel.send({ ...messagePayload, content });
-                            messageReferences.push({ channelId: channelMessage.channel.id, messageId: channelMessage.id });
-                        } catch (e) {
-                            console.error("Falha ao enviar para o canal de segurança:", e);
+                    if (currentStatus.length > 0) {
+                        const status = currentStatus[0].status;
+                        guildName = currentStatus[0].guild || 'Sem Guild';
+                        
+                        if (status === 'ativo' || status === 'novo') {
+                            icon = '✅';
+                        } else if (status === 'saiu') {
+                            icon = '❌';
                         }
                     }
+                    
+                    // Verifica se este char está na lista dos que acabaram de sair
+                    const isNewDeparture = departures.find(d => 
+                        d.nome.toLowerCase() === charName.toLowerCase()
+                    );
+                    const note = isNewDeparture ? ` ⬅️ **(Saiu Agora)**` : '';
+                    charStatusLines.push(`${icon} **${charName}** [Guild: ${guildName}]${note}`);
+                }
 
-                    const dmMessages = await sendDmsToRoles(client, roleIdsToNotify, messagePayload);
-                    for (const dm of dmMessages) {
-                        messageReferences.push({ channelId: dm.channel.id, messageId: dm.id });
-                    }
+                // Cria ID único para o agrupamento
+                const departureId = `dep_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+                
+                // Monta o embed
+                const embed = new EmbedBuilder()
+                    .setColor('#FFA500')
+                    .setTitle(`👤 Membro(s) Saíram da Guild`)
+                    .setDescription(`Detectada a saída de personagens associados a: **${app ? app.nome : departures[0].nome}**`)
+                    .addFields(
+                        { name: '📋 Nome na Inscrição', value: app ? app.nome : 'Não encontrada', inline: true },
+                        { name: '🏰 Guild de Saída', value: departures[0].guild, inline: true },
+                        { name: '📅 Data/Hora', value: formatBrazilianDate(timestamp), inline: true },
+                        { name: '👥 Status da Conta (Banco de Dados)', 
+                          value: charStatusLines.join('\n') || 'Nenhum char listado', 
+                          inline: false }
+                    )
+                    .setTimestamp(new Date(timestamp));
 
-                    if (messageReferences.length > 0) {
-                        activeDepartureMessages.set(departureId, messageReferences);
+                // Botões de ação
+                const buttons = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder()
+                        .setCustomId(`departed_cs_${departureId}`)
+                        .setLabel('Saiu p/ CS (Volta)')
+                        .setStyle(ButtonStyle.Success),
+                    new ButtonBuilder()
+                        .setCustomId(`departed_left_${departureId}`)
+                        .setLabel('Saiu Definitivo')
+                        .setStyle(ButtonStyle.Danger)
+                );
+
+                const messagePayload = { embeds: [embed], components: [buttons] };
+                const messageReferences = [];
+
+                if (securityChannel) {
+                    try {
+                        const channelMessage = await securityChannel.send(messagePayload);
+                        messageReferences.push({ 
+                            channelId: channelMessage.channel.id, 
+                            messageId: channelMessage.id 
+                        });
+                    } catch (e) {
+                        console.error("Falha ao enviar para o canal de segurança:", e);
                     }
                 }
-                lastCheckedDepartureTimestamp = new Date(member.data_saida);
+
+                const dmMessages = await sendDmsToRoles(client, roleIdsToNotify, messagePayload);
+                for (const dm of dmMessages) {
+                    messageReferences.push({ 
+                        channelId: dm.channel.id, 
+                        messageId: dm.id 
+                    });
+                }
+
+                if (messageReferences.length > 0) {
+                    activeDepartureMessages.set(departureId, messageReferences);
+                }
             }
+            
+            // Atualiza o timestamp da última verificação
+            lastCheckedDepartureTimestamp = maxTimestamp;
         }
     } catch (error) {
         if (error.message === 'POOL_CLOSED') {
@@ -528,7 +519,6 @@ function setupEvents(client) {
                   return interaction.editReply(success ? `✅ O cargo **${roleNotify.name}** não receberá mais notificações de **${typeNotify}**.` : '❌ Erro. O cargo talvez não estivesse subscrito.');
               }
               break;
-
 
           case 'char500':
             await interaction.deferReply();
@@ -1092,7 +1082,6 @@ function setupEvents(client) {
               return; 
           }
 
-
           if (interaction.customId.startsWith('search_prev_') || interaction.customId.startsWith('search_next_')) {
             const [direction, searchTerm, pageStr] = interaction.customId.split('_').slice(1);
             let page = parseInt(pageStr);
@@ -1262,7 +1251,7 @@ function setupEvents(client) {
                 await interaction.deferUpdate();
 
                 try {
-                    const freshData = await searchCharacterWithCache(charName); //
+                    const freshData = await searchCharacterWithCache(charName);
 
                     if (freshData) {
                         const refreshedList = await get500RCharacters(currentPage, 1);
