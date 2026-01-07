@@ -29,6 +29,29 @@ async function canExecuteDBOperation() {
   return await isConnectionActive();
 }
 
+// Função auxiliar local para formatar link de WhatsApp
+function formatWhatsAppLink(phone) {
+  if (!phone) return 'Não informado';
+  
+  // Remove tudo que não é dígito
+  const digits = phone.replace(/\D/g, '');
+  
+  if (digits.length < 8) return phone; // Número muito curto, retorna texto puro
+
+  // Formatação visual
+  let displayPhone = phone;
+  
+  // Lógica para o link (wa.me)
+  let waNumber = digits;
+  
+  // Se tiver 10 ou 11 dígitos e não começar com 55 (assumindo BR), adiciona 55
+  if ((digits.length === 10 || digits.length === 11) && !digits.startsWith('55')) {
+    waNumber = `55${digits}`;
+  }
+  
+  return `[${displayPhone}](https://wa.me/${waNumber})`;
+}
+
 // --- VARIÁVEIS DE ESTADO PARA OS MONITORES ---
 let lastCheckedApplications = new Date();
 let lastCheckedMemberTimestamp = new Date();
@@ -262,7 +285,7 @@ async function checkNewMembersForConflicts(client) {
     }
 }
 
-// --- FUNÇÃO ATUALIZADA: VERIFICAR SAÍDAS (COM STATUS DE TODOS OS CHARS E "GUILD QUE SAIU") ---
+// --- FUNÇÃO ATUALIZADA: VERIFICAR SAÍDAS (COM FILTRO DE INSCRIÇÃO OBRIGATÓRIA) ---
 async function checkDepartingMembers(client) {
     if (isShuttingDown() || !await canExecuteDBOperation()) {
         console.log('⏸️ Monitoramento de saídas pausado (shutdown ou DB indisponível)');
@@ -285,23 +308,30 @@ async function checkDepartingMembers(client) {
             let maxTimestamp = lastCheckedDepartureTimestamp;
 
             for (const row of departedRows) {
-                // Atualiza o timestamp máximo
+                // Atualiza o timestamp máximo para evitar reprocessar o mesmo registro,
+                // mesmo que ele seja pulado pelo filtro abaixo.
                 if (new Date(row.data_saida) > maxTimestamp) {
                     maxTimestamp = new Date(row.data_saida);
                 }
 
-                // Busca a inscrição original para agrupar por dono
+                // Busca a inscrição original para agrupar por dono e verificar existência
                 const apps = await safeExecuteQuery(
                     `SELECT id, nome, telefone, discord, char_principal 
                      FROM inscricoes 
-                     WHERE status = 'aprovado' AND (char_principal LIKE ?) 
-                     ORDER BY data_avaliacao DESC LIMIT 1`,
-                    [`%${row.nome}%`]
+                     WHERE status = 'aprovado' AND (LOWER(char_principal) LIKE LOWER(?)) 
+                     ORDER BY id DESC LIMIT 1`,
+                    [`%${row.nome.trim()}%`]
                 );
                 
                 const app = apps[0] || null;
-                // Usa o ID da inscrição como chave de agrupamento, ou o nome do char se não houver inscrição
-                const groupKey = app ? `app_${app.id}` : `char_${row.nome}`;
+
+                // CORREÇÃO: Se não encontrar inscrição, IGNORA o alerta
+                if (!app) {
+                    // console.log(`Saída ignorada (sem inscrição): ${row.nome}`);
+                    continue; 
+                }
+
+                const groupKey = `app_${app.id}`;
 
                 if (!groups.has(groupKey)) {
                     groups.set(groupKey, { 
@@ -313,15 +343,13 @@ async function checkDepartingMembers(client) {
                 groups.get(groupKey).departures.push(row);
             }
 
-            // Processa cada grupo
+            // Processa cada grupo (que agora garantidamente tem uma app associada)
             for (const [key, data] of groups) {
                 const { app, departures, timestamp } = data;
                 let charStatusLines = [];
                 
-                // Determina todos os chars a verificar
-                let charsToVerify = app ? 
-                    app.char_principal.split(',').map(c => c.trim()) : 
-                    departures.map(d => d.nome);
+                // Determina todos os chars a verificar baseados na inscrição encontrada
+                let charsToVerify = app.char_principal.split(',').map(c => c.trim());
 
                 // Verifica o status atual de cada char na tabela membros
                 for (const charName of charsToVerify) {
@@ -356,13 +384,16 @@ async function checkDepartingMembers(client) {
                 // Cria ID único para o agrupamento
                 const departureId = `dep_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
                 
+                const waLink = formatWhatsAppLink(app.telefone);
+
                 // Monta o embed
                 const embed = new EmbedBuilder()
                     .setColor('#FFA500')
                     .setTitle(`👤 Membro(s) Saíram da Guild`)
-                    .setDescription(`Detectada a saída de personagens associados a: **${app ? app.nome : departures[0].nome}**`)
+                    .setDescription(`Detectada a saída de personagens associados a: **${app.nome}**`)
                     .addFields(
-                        { name: '📋 Nome na Inscrição', value: app ? app.nome : 'Não encontrada', inline: true },
+                        { name: '📋 Nome na Inscrição', value: app.nome, inline: true },
+                        { name: '📱 Contato (WhatsApp)', value: waLink, inline: true },
                         { name: '🏰 Guild de Saída', value: departures[0].guild, inline: true },
                         { name: '📅 Data/Hora', value: formatBrazilianDate(timestamp), inline: true },
                         { name: '👥 Status da Conta (Banco de Dados)', 
