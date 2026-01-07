@@ -285,7 +285,7 @@ async function checkNewMembersForConflicts(client) {
     }
 }
 
-// --- FUNÇÃO ATUALIZADA: VERIFICAR SAÍDAS (COM FILTRO DE INSCRIÇÃO OBRIGATÓRIA) ---
+// --- FUNÇÃO ATUALIZADA: VERIFICAR SAÍDAS (CORRIGIDO: MATCH EXATO E TIMESTAMP CORRETO) ---
 async function checkDepartingMembers(client) {
     if (isShuttingDown() || !await canExecuteDBOperation()) {
         console.log('⏸️ Monitoramento de saídas pausado (shutdown ou DB indisponível)');
@@ -313,18 +313,27 @@ async function checkDepartingMembers(client) {
                     maxTimestamp = new Date(row.data_saida);
                 }
 
-                // Busca a inscrição original para agrupar por dono e verificar existência
-                const apps = await safeExecuteQuery(
+                const charName = row.nome.trim();
+
+                // CORREÇÃO 1: Busca ampla e filtro rigoroso em JavaScript
+                // Primeiro, buscamos inscrições que *possam* conter o nome (usando LIKE para reduzir carga)
+                const candidateApps = await safeExecuteQuery(
                     `SELECT id, nome, telefone, discord, char_principal 
                      FROM inscricoes 
                      WHERE status = 'aprovado' AND (LOWER(char_principal) LIKE LOWER(?)) 
-                     ORDER BY id DESC LIMIT 1`,
-                    [`%${row.nome.trim()}%`]
+                     ORDER BY id DESC`,
+                    [`%${charName}%`]
                 );
                 
-                const app = apps[0] || null;
+                // Filtro rigoroso: Verifica se o nome exato existe na lista separada por vírgulas
+                // Isso evita que "Viego" dê match em "VIEGO_MSJ"
+                const app = candidateApps.find(application => {
+                    if (!application.char_principal) return false;
+                    const chars = application.char_principal.split(',').map(c => c.trim().toLowerCase());
+                    return chars.includes(charName.toLowerCase());
+                });
 
-                // CORREÇÃO: Se não encontrar inscrição, IGNORA o alerta
+                // Se não encontrar inscrição exata, IGNORA o alerta
                 if (!app) {
                     continue; 
                 }
@@ -335,13 +344,13 @@ async function checkDepartingMembers(client) {
                     groups.set(groupKey, { 
                         app, 
                         departures: [], 
-                        timestamp: row.data_saida 
+                        timestamp: row.data_saida // CORREÇÃO 2: Usa o timestamp exato da saída deste membro
                     });
                 }
                 groups.get(groupKey).departures.push(row);
             }
 
-            // Processa cada grupo (que agora garantidamente tem uma app associada)
+            // Processa cada grupo
             for (const [key, data] of groups) {
                 const { app, departures, timestamp } = data;
                 let charStatusLines = [];
@@ -371,7 +380,7 @@ async function checkDepartingMembers(client) {
                         }
                     }
                     
-                    // Verifica se este char está na lista dos que acabaram de sair
+                    // Verifica se este char está na lista dos que acabaram de sair (Match estrito)
                     const isNewDeparture = departures.find(d => 
                         d.nome.toLowerCase() === charName.toLowerCase()
                     );
@@ -384,25 +393,24 @@ async function checkDepartingMembers(client) {
                 
                 const waLink = formatWhatsAppLink(app.telefone);
 
-                // MODIFICAÇÃO: Lista os nomes que saíram para a descrição
+                // Lista os nomes que saíram para a descrição
                 const departedNames = departures.map(d => `**${d.nome}**`).join(', ');
 
                 // Monta o embed
                 const embed = new EmbedBuilder()
                     .setColor('#FFA500')
                     .setTitle(`👤 Membro(s) Saíram da Guild`)
-                    // MODIFICAÇÃO: Nova descrição listando os chars que mudaram status
                     .setDescription(`${departedNames} mudaram para status **saiu**`)
                     .addFields(
                         { name: '📋 Nome na Inscrição', value: app.nome, inline: true },
                         { name: '📱 Contato (WhatsApp)', value: waLink, inline: true },
-                        // MODIFICAÇÃO: Removido 'Guild de Saída', mantido apenas Data/Hora e Status da Conta
-                        { name: '📅 Data/Hora', value: formatBrazilianDate(timestamp), inline: true },
+                        // CORREÇÃO 2: Exibe o timestamp exato do evento (data_saida)
+                        { name: '📅 Data/Hora (Saída)', value: formatBrazilianDate(timestamp), inline: true },
                         { name: '👥 Status da Conta (Banco de Dados)', 
                           value: charStatusLines.join('\n') || 'Nenhum char listado', 
                           inline: false }
                     )
-                    .setTimestamp(new Date(timestamp));
+                    .setTimestamp(new Date(timestamp)); // Define o timestamp do embed para a data de saída real
 
                 // Botões de ação
                 const buttons = new ActionRowBuilder().addComponents(
