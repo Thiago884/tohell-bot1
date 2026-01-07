@@ -308,8 +308,7 @@ async function checkDepartingMembers(client) {
             let maxTimestamp = lastCheckedDepartureTimestamp;
 
             for (const row of departedRows) {
-                // Atualiza o timestamp máximo para evitar reprocessar o mesmo registro,
-                // mesmo que ele seja pulado pelo filtro abaixo.
+                // Atualiza o timestamp máximo para evitar reprocessar o mesmo registro
                 if (new Date(row.data_saida) > maxTimestamp) {
                     maxTimestamp = new Date(row.data_saida);
                 }
@@ -327,7 +326,6 @@ async function checkDepartingMembers(client) {
 
                 // CORREÇÃO: Se não encontrar inscrição, IGNORA o alerta
                 if (!app) {
-                    // console.log(`Saída ignorada (sem inscrição): ${row.nome}`);
                     continue; 
                 }
 
@@ -386,15 +384,19 @@ async function checkDepartingMembers(client) {
                 
                 const waLink = formatWhatsAppLink(app.telefone);
 
+                // MODIFICAÇÃO: Lista os nomes que saíram para a descrição
+                const departedNames = departures.map(d => `**${d.nome}**`).join(', ');
+
                 // Monta o embed
                 const embed = new EmbedBuilder()
                     .setColor('#FFA500')
                     .setTitle(`👤 Membro(s) Saíram da Guild`)
-                    .setDescription(`Detectada a saída de personagens associados a: **${app.nome}**`)
+                    // MODIFICAÇÃO: Nova descrição listando os chars que mudaram status
+                    .setDescription(`${departedNames} mudaram para status **saiu**`)
                     .addFields(
                         { name: '📋 Nome na Inscrição', value: app.nome, inline: true },
                         { name: '📱 Contato (WhatsApp)', value: waLink, inline: true },
-                        { name: '🏰 Guild de Saída', value: departures[0].guild, inline: true },
+                        // MODIFICAÇÃO: Removido 'Guild de Saída', mantido apenas Data/Hora e Status da Conta
                         { name: '📅 Data/Hora', value: formatBrazilianDate(timestamp), inline: true },
                         { name: '👥 Status da Conta (Banco de Dados)', 
                           value: charStatusLines.join('\n') || 'Nenhum char listado', 
