@@ -39,11 +39,13 @@ const webhookQueue = [];
 let isProcessingWebhook = false;
 
 // Função para formatar data no padrão brasileiro com fuso horário
-function formatBrazilianDate(dateString) {
-  if (!dateString) return 'Data inválida';
+function formatBrazilianDate(dateInput) {
+  if (!dateInput) return 'Data inválida';
   
   try {
-    return moment(dateString).tz('America/Sao_Paulo').format('DD/MM/YYYY HH:mm');
+    // Com timezone: 'Z' removido do database.js, o dateInput virá como data local ou string.
+    // O moment irá parsear isso corretamente e converter para o timezone desejado.
+    return moment(dateInput).tz('America/Sao_Paulo').format('DD/MM/YYYY HH:mm');
   } catch (error) {
     console.error('Erro ao formatar data:', error);
     return 'Data inválida';

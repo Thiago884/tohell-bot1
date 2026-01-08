@@ -10,7 +10,7 @@ const dbConfig = {
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
-  timezone: 'Z',
+  // timezone: 'Z', <--- ESTA LINHA FOI REMOVIDA PARA CORRIGIR O HORÁRIO
   connectTimeout: 10000,
 };
 
