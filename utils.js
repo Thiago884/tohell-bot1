@@ -39,13 +39,14 @@ const webhookQueue = [];
 let isProcessingWebhook = false;
 
 // Função para formatar data no padrão brasileiro com fuso horário
+// CORREÇÃO APLICADA: Usando .utc() para evitar dupla conversão de fuso horário
 function formatBrazilianDate(dateInput) {
   if (!dateInput) return 'Data inválida';
   
   try {
-    // Com timezone: 'Z' removido do database.js, o dateInput virá como data local ou string.
-    // O moment irá parsear isso corretamente e converter para o timezone desejado.
-    return moment(dateInput).tz('America/Sao_Paulo').format('DD/MM/YYYY HH:mm');
+    // Ao usar .utc(), mantemos o horário "bruto" vindo do banco (ex: 14:27)
+    // sem subtrair mais 3 horas, corrigindo o problema do horário errado na notificação.
+    return moment(dateInput).utc().format('DD/MM/YYYY HH:mm');
   } catch (error) {
     console.error('Erro ao formatar data:', error);
     return 'Data inválida';
