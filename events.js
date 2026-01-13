@@ -52,11 +52,24 @@ function formatWhatsAppLink(phone) {
   return `[${displayPhone}](https://wa.me/${waNumber})`;
 }
 
+// Função auxiliar para calcular dias
+function calculateDays(date1, date2) {
+    if (!date1 || !date2) return '?';
+    const d1 = new Date(date1);
+    const d2 = new Date(date2);
+    const diffTime = Math.abs(d2 - d1);
+    return Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
+}
+
 // --- VARIÁVEIS DE ESTADO PARA OS MONITORES ---
 let lastCheckedApplications = new Date();
 let lastCheckedMemberTimestamp = new Date();
 let lastCheckedDepartureTimestamp = new Date();
 const SECURITY_ALERT_CHANNEL_ID = '1256287757135908884'; // ID do canal de segurança
+
+// Variáveis para monitoramento de Traidores (Ex-Membros -> Inimigos)
+let knownTraitors = new Set();
+let isFirstTraitorCheck = true;
 
 // Mapa para rastrear mensagens de notificação de saída para atualização em massa
 const activeDepartureMessages = new Map();
@@ -226,7 +239,7 @@ async function checkNewApplications(client) {
   }
 }
 
-// Verificar novos membros e cruzar com a lista de inimigos
+// Verificar novos membros e cruzar com a lista de inimigos (Inimigo -> Membro)
 async function checkNewMembersForConflicts(client) {
     if (isShuttingDown() || !await canExecuteDBOperation()) {
         console.log('⏸️ Monitoramento de conflitos pausado (shutdown ou DB indisponível)');
@@ -285,7 +298,89 @@ async function checkNewMembersForConflicts(client) {
     }
 }
 
-// --- FUNÇÃO ATUALIZADA: VERIFICAR SAÍDAS (CORRIGIDO: MATCH EXATO E TIMESTAMP CORRETO) ---
+// --- NOVA FUNÇÃO: VERIFICAR EX-MEMBROS QUE VIRARAM INIMIGOS (Membro -> Inimigo) ---
+async function checkTraitors(client) {
+    if (isShuttingDown() || !await canExecuteDBOperation()) {
+        return;
+    }
+
+    try {
+        // Busca interseção: Pessoas que estão na tabela INIMIGOS E na tabela MEMBROS (com status 'saiu')
+        // Filtramos inimigos que não estejam com status 'saiu' na tabela inimigos (caso ela tenha esse campo de histórico)
+        const traitors = await safeExecuteQuery(`
+            SELECT 
+                i.nome, 
+                i.guild as enemy_guild, 
+                i.status as enemy_status,
+                m.guild as former_guild, 
+                m.data_saida,
+                m.data_insercao
+            FROM inimigos i
+            INNER JOIN membros m ON i.nome = m.nome
+            WHERE m.status = 'saiu' 
+            AND (i.status IS NULL OR i.status != 'saiu')
+        `);
+
+        const currentTraitorNames = new Set(traitors.map(t => t.nome));
+        const securityChannel = await client.channels.fetch(SECURITY_ALERT_CHANNEL_ID).catch(() => null);
+        const roleIdsToNotify = await getNotificationSubscriptions('alerta_seguranca');
+
+        // Se for a primeira execução, apenas populamos o cache para não alertar coisas antigas
+        if (isFirstTraitorCheck) {
+            traitors.forEach(t => knownTraitors.add(t.nome));
+            isFirstTraitorCheck = false;
+            console.log(`🛡️ Cache de traidores inicializado com ${knownTraitors.size} registros.`);
+            return;
+        }
+
+        // Verifica novos nomes que apareceram na lista
+        for (const traitor of traitors) {
+            if (!knownTraitors.has(traitor.nome)) {
+                // É UM NOVO CASO!
+                console.log(`🚨 Novo traidor detectado: ${traitor.nome}`);
+                knownTraitors.add(traitor.nome);
+
+                const alertEmbed = new EmbedBuilder()
+                    .setColor('#8B0000') // Vermelho escuro
+                    .setTitle('🐍 ALERTA: Ex-Membro detectado como Inimigo')
+                    .setDescription(`O personagem **${traitor.nome}**, que saiu da guild recentemente, foi identificado na lista de inimigos.`)
+                    .addFields(
+                        { name: '👤 Personagem', value: traitor.nome, inline: true },
+                        { name: '🏴 Guild Inimiga', value: traitor.enemy_guild || 'Desconhecida', inline: true },
+                        { name: '🏠 Ex-Guild (Nossa)', value: traitor.former_guild || 'Não informado', inline: true },
+                        { name: '📅 Data da Saída', value: formatBrazilianDate(traitor.data_saida), inline: true },
+                        { name: '📅 Tempo de Casa', value: `${calculateDays(traitor.data_insercao, traitor.data_saida)} dias`, inline: true }
+                    )
+                    .setFooter({ text: 'Sistema de Inteligência ToHeLL • Monitoramento Cruzado' })
+                    .setTimestamp();
+
+                const messagePayload = { embeds: [alertEmbed] };
+
+                // Envia para o canal de segurança
+                if (securityChannel) {
+                    await securityChannel.send(messagePayload);
+                }
+
+                // Envia DM para os cargos configurados
+                await sendDmsToRoles(client, roleIdsToNotify, messagePayload);
+            }
+        }
+
+        // Limpeza de cache: Se alguém saiu da lista de inimigos (ex: virou aliado de novo ou saiu do inimigo), removemos do Set
+        // Isso permite que o alerta dispare novamente caso ele vire inimigo outra vez no futuro.
+        for (const name of knownTraitors) {
+            if (!currentTraitorNames.has(name)) {
+                knownTraitors.delete(name);
+            }
+        }
+
+    } catch (error) {
+        if (error.message === 'POOL_CLOSED') return;
+        console.error('❌ Erro ao verificar traidores:', error);
+    }
+}
+
+// --- FUNÇÃO VERIFICAR SAÍDAS (Membro Ativo -> Saiu) ---
 async function checkDepartingMembers(client) {
     if (isShuttingDown() || !await canExecuteDBOperation()) {
         console.log('⏸️ Monitoramento de saídas pausado (shutdown ou DB indisponível)');
@@ -315,8 +410,7 @@ async function checkDepartingMembers(client) {
 
                 const charName = row.nome.trim();
 
-                // CORREÇÃO 1: Busca ampla e filtro rigoroso em JavaScript
-                // Primeiro, buscamos inscrições que *possam* conter o nome (usando LIKE para reduzir carga)
+                // Busca ampla e filtro rigoroso em JavaScript
                 const candidateApps = await safeExecuteQuery(
                     `SELECT id, nome, telefone, discord, char_principal 
                      FROM inscricoes 
@@ -326,7 +420,6 @@ async function checkDepartingMembers(client) {
                 );
                 
                 // Filtro rigoroso: Verifica se o nome exato existe na lista separada por vírgulas
-                // Isso evita que "Viego" dê match em "VIEGO_MSJ"
                 const app = candidateApps.find(application => {
                     if (!application.char_principal) return false;
                     const chars = application.char_principal.split(',').map(c => c.trim().toLowerCase());
@@ -344,7 +437,7 @@ async function checkDepartingMembers(client) {
                     groups.set(groupKey, { 
                         app, 
                         departures: [], 
-                        timestamp: row.data_saida // CORREÇÃO 2: Usa o timestamp exato da saída deste membro
+                        timestamp: row.data_saida 
                     });
                 }
                 groups.get(groupKey).departures.push(row);
@@ -404,13 +497,12 @@ async function checkDepartingMembers(client) {
                     .addFields(
                         { name: '📋 Nome na Inscrição', value: app.nome, inline: true },
                         { name: '📱 Contato (WhatsApp)', value: waLink, inline: true },
-                        // CORREÇÃO 2: Exibe o timestamp exato do evento (data_saida)
                         { name: '📅 Data/Hora (Saída)', value: formatBrazilianDate(timestamp), inline: true },
                         { name: '👥 Status da Conta (Banco de Dados)', 
                           value: charStatusLines.join('\n') || 'Nenhum char listado', 
                           inline: false }
                     )
-                    .setTimestamp(new Date(timestamp)); // Define o timestamp do embed para a data de saída real
+                    .setTimestamp(new Date(timestamp)); 
 
                 // Botões de ação
                 const buttons = new ActionRowBuilder().addComponents(
@@ -477,11 +569,16 @@ function setupEvents(client) {
     // Intervalo para verificar novas inscrições
     setInterval(() => checkNewApplications(client), 60000); // 1 minuto
     
-    // Intervalo para verificar conflitos de membros
+    // Intervalo para verificar conflitos de membros (Inimigo -> Membro)
     setInterval(() => checkNewMembersForConflicts(client), 5 * 60000); // 5 minutos
     
-    // Intervalo para verificar saídas de membros
+    // Intervalo para verificar saídas de membros (Membro -> Saiu)
     setInterval(() => checkDepartingMembers(client), 5 * 60000); // 5 minutos
+
+    // NOVO: Intervalo para verificar ex-membros virando inimigos (Saiu -> Inimigo)
+    // Executa imediatamente para popular cache e depois a cada 5 minutos
+    checkTraitors(client);
+    setInterval(() => checkTraitors(client), 5 * 60000); // 5 minutos
   });
 
   // Evento interactionCreate com tratamento de erros melhorado
