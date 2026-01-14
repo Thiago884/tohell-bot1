@@ -305,8 +305,6 @@ async function checkTraitors(client) {
     }
 
     try {
-        // Busca interseção: Pessoas que estão na tabela INIMIGOS E na tabela MEMBROS (com status 'saiu')
-        // Filtramos inimigos que não estejam com status 'saiu' na tabela inimigos (caso ela tenha esse campo de histórico)
         const traitors = await safeExecuteQuery(`
             SELECT 
                 i.nome, 
@@ -325,7 +323,6 @@ async function checkTraitors(client) {
         const securityChannel = await client.channels.fetch(SECURITY_ALERT_CHANNEL_ID).catch(() => null);
         const roleIdsToNotify = await getNotificationSubscriptions('alerta_seguranca');
 
-        // Se for a primeira execução, apenas populamos o cache para não alertar coisas antigas
         if (isFirstTraitorCheck) {
             traitors.forEach(t => knownTraitors.add(t.nome));
             isFirstTraitorCheck = false;
@@ -333,15 +330,13 @@ async function checkTraitors(client) {
             return;
         }
 
-        // Verifica novos nomes que apareceram na lista
         for (const traitor of traitors) {
             if (!knownTraitors.has(traitor.nome)) {
-                // É UM NOVO CASO!
                 console.log(`🚨 Novo traidor detectado: ${traitor.nome}`);
                 knownTraitors.add(traitor.nome);
 
                 const alertEmbed = new EmbedBuilder()
-                    .setColor('#8B0000') // Vermelho escuro
+                    .setColor('#8B0000')
                     .setTitle('🐍 ALERTA: Ex-Membro detectado como Inimigo')
                     .setDescription(`O personagem **${traitor.nome}**, que saiu da guild recentemente, foi identificado na lista de inimigos.`)
                     .addFields(
@@ -356,18 +351,14 @@ async function checkTraitors(client) {
 
                 const messagePayload = { embeds: [alertEmbed] };
 
-                // Envia para o canal de segurança
                 if (securityChannel) {
                     await securityChannel.send(messagePayload);
                 }
 
-                // Envia DM para os cargos configurados
                 await sendDmsToRoles(client, roleIdsToNotify, messagePayload);
             }
         }
 
-        // Limpeza de cache: Se alguém saiu da lista de inimigos (ex: virou aliado de novo ou saiu do inimigo), removemos do Set
-        // Isso permite que o alerta dispare novamente caso ele vire inimigo outra vez no futuro.
         for (const name of knownTraitors) {
             if (!currentTraitorNames.has(name)) {
                 knownTraitors.delete(name);
@@ -388,7 +379,6 @@ async function checkDepartingMembers(client) {
     }
 
     try {
-        // Pega membros que saíram desde a última checagem
         const departedRows = await safeExecuteQuery(
             `SELECT nome, guild, data_saida FROM membros WHERE status = 'saiu' AND data_saida > ? ORDER BY data_saida ASC`,
             [lastCheckedDepartureTimestamp]
@@ -398,19 +388,16 @@ async function checkDepartingMembers(client) {
             const securityChannel = await client.channels.fetch(SECURITY_ALERT_CHANNEL_ID).catch(() => null);
             const roleIdsToNotify = await getNotificationSubscriptions('alerta_seguranca');
             
-            // Agrupar por dono usando as inscrições
             const groups = new Map();
             let maxTimestamp = lastCheckedDepartureTimestamp;
 
             for (const row of departedRows) {
-                // Atualiza o timestamp máximo para evitar reprocessar o mesmo registro
                 if (new Date(row.data_saida) > maxTimestamp) {
                     maxTimestamp = new Date(row.data_saida);
                 }
 
                 const charName = row.nome.trim();
 
-                // Busca ampla e filtro rigoroso em JavaScript
                 const candidateApps = await safeExecuteQuery(
                     `SELECT id, nome, telefone, discord, char_principal 
                      FROM inscricoes 
@@ -419,14 +406,12 @@ async function checkDepartingMembers(client) {
                     [`%${charName}%`]
                 );
                 
-                // Filtro rigoroso: Verifica se o nome exato existe na lista separada por vírgulas
                 const app = candidateApps.find(application => {
                     if (!application.char_principal) return false;
                     const chars = application.char_principal.split(',').map(c => c.trim().toLowerCase());
                     return chars.includes(charName.toLowerCase());
                 });
 
-                // Se não encontrar inscrição exata, IGNORA o alerta
                 if (!app) {
                     continue; 
                 }
@@ -443,53 +428,56 @@ async function checkDepartingMembers(client) {
                 groups.get(groupKey).departures.push(row);
             }
 
-            // Processa cada grupo
             for (const [key, data] of groups) {
                 const { app, departures, timestamp } = data;
                 let charStatusLines = [];
                 
-                // Determina todos os chars a verificar baseados na inscrição encontrada
                 let charsToVerify = app.char_principal.split(',').map(c => c.trim());
 
-                // Verifica o status atual de cada char na tabela membros
                 for (const charName of charsToVerify) {
-                    // Consulta o status real na tabela membros
                     const currentStatus = await safeExecuteQuery(
                         `SELECT guild, status FROM membros WHERE nome = ?`, 
                         [charName]
                     );
 
                     let icon = '❌';
-                    let guildName = 'Sem Guild / Saiu';
+                    let guildName = '';
 
                     if (currentStatus.length > 0) {
                         const status = currentStatus[0].status;
-                        guildName = currentStatus[0].guild || 'Sem Guild';
+                        guildName = currentStatus[0].guild || '';
                         
-                        if (status === 'ativo' || status === 'novo') {
+                        if (status === 'saiu') {
+                            guildName = guildName || '';
+                        } else if (status === 'ativo' || status === 'novo') {
                             icon = '✅';
-                        } else if (status === 'saiu') {
-                            icon = '❌';
+                            guildName = guildName || '';
                         }
                     }
                     
-                    // Verifica se este char está na lista dos que acabaram de sair (Match estrito)
                     const isNewDeparture = departures.find(d => 
                         d.nome.toLowerCase() === charName.toLowerCase()
                     );
-                    const note = isNewDeparture ? ` ⬅️ **(Saiu Agora)**` : '';
-                    charStatusLines.push(`${icon} **${charName}** [Guild: ${guildName}]${note}`);
+                    
+                    let statusLine = `${icon} **${charName}**`;
+                    
+                    if (guildName) {
+                        statusLine += ` [${guildName}]`;
+                    }
+                    
+                    if (isNewDeparture) {
+                        statusLine += ` ⬅️ **(Saiu Agora)**`;
+                    }
+                    
+                    charStatusLines.push(statusLine);
                 }
 
-                // Cria ID único para o agrupamento
                 const departureId = `dep_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
                 
                 const waLink = formatWhatsAppLink(app.telefone);
 
-                // Lista os nomes que saíram para a descrição
                 const departedNames = departures.map(d => `**${d.nome}**`).join(', ');
 
-                // Monta o embed
                 const embed = new EmbedBuilder()
                     .setColor('#FFA500')
                     .setTitle(`👤 Membro(s) Saíram da Guild`)
@@ -498,13 +486,11 @@ async function checkDepartingMembers(client) {
                         { name: '📋 Nome na Inscrição', value: app.nome, inline: true },
                         { name: '📱 Contato (WhatsApp)', value: waLink, inline: true },
                         { name: '📅 Data/Hora (Saída)', value: formatBrazilianDate(timestamp), inline: true },
-                        { name: '👥 Status da Conta (Banco de Dados)', 
+                        { name: '👥 Status da Conta', 
                           value: charStatusLines.join('\n') || 'Nenhum char listado', 
                           inline: false }
-                    )
-                    .setTimestamp(new Date(timestamp)); 
-
-                // Botões de ação
+                    );
+                     
                 const buttons = new ActionRowBuilder().addComponents(
                     new ButtonBuilder()
                         .setCustomId(`departed_cs_${departureId}`)
@@ -544,7 +530,6 @@ async function checkDepartingMembers(client) {
                 }
             }
             
-            // Atualiza o timestamp da última verificação
             lastCheckedDepartureTimestamp = maxTimestamp;
         }
     } catch (error) {
@@ -566,19 +551,11 @@ function setupEvents(client) {
     await setupSecurityMonitoring(client);
     await setupAutoCleanup();
     
-    // Intervalo para verificar novas inscrições
-    setInterval(() => checkNewApplications(client), 60000); // 1 minuto
-    
-    // Intervalo para verificar conflitos de membros (Inimigo -> Membro)
-    setInterval(() => checkNewMembersForConflicts(client), 5 * 60000); // 5 minutos
-    
-    // Intervalo para verificar saídas de membros (Membro -> Saiu)
-    setInterval(() => checkDepartingMembers(client), 5 * 60000); // 5 minutos
-
-    // NOVO: Intervalo para verificar ex-membros virando inimigos (Saiu -> Inimigo)
-    // Executa imediatamente para popular cache e depois a cada 5 minutos
+    setInterval(() => checkNewApplications(client), 60000);
+    setInterval(() => checkNewMembersForConflicts(client), 5 * 60000);
+    setInterval(() => checkDepartingMembers(client), 5 * 60000);
     checkTraitors(client);
-    setInterval(() => checkTraitors(client), 5 * 60000); // 5 minutos
+    setInterval(() => checkTraitors(client), 5 * 60000);
   });
 
   // Evento interactionCreate com tratamento de erros melhorado
@@ -788,7 +765,6 @@ function setupEvents(client) {
 
               await interaction.editReply({ embeds: [embed] });
 
-              // Notificar canal de segurança
               const securityChannel = await client.channels.fetch(process.env.SECURITY_CHANNEL_ID);
               if (securityChannel) {
                 const notifyEmbed = new EmbedBuilder()
@@ -838,7 +814,6 @@ function setupEvents(client) {
 
               await interaction.editReply({ embeds: [embed] });
 
-              // Notificar canal de segurança
               const securityChannel = await client.channels.fetch(process.env.SECURITY_CHANNEL_ID);
               if (securityChannel) {
                 const notifyEmbed = new EmbedBuilder()
@@ -1072,7 +1047,6 @@ function setupEvents(client) {
                   flags: MessageFlags.Ephemeral
                 }).catch(console.error);
 
-                // Notificar canal de segurança
                 const securityChannel = await client.channels.fetch(process.env.SECURITY_CHANNEL_ID);
                 if (securityChannel) {
                   const actionText = whitelistAction === 'add' ? 'adicionado à' : 'removido da';
