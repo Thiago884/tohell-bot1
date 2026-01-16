@@ -3,7 +3,9 @@ const {
     safeSend, searchCharacterWithCache, showRanking, searchCharacter, 
     getCommandPermissions, addCommandPermission, removeCommandPermission, checkUserPermission, 
     formatBrazilianDate, processImageUrls, blockIP, unblockIP, queryIP, getIPInfo, 
-    generateSecurityReport, getRecentAccess, manageWhitelist, checkPhoneNumber, get500RCharacters,
+    generateSecurityReport, getRecentAccess, manageWhitelist, checkPhoneNumber, 
+    // MODIFICADO: Importando a nova função de busca de lista 500 resets
+    getChar500List, 
     addNotificationSubscription, removeNotificationSubscription, getNotificationSubscriptions, sendDmsToRoles,
     isValidImageUrl
 } = require('./utils');
@@ -16,8 +18,9 @@ const {
   rejectApplication, 
   showHelp, 
   createImageCarousel,
-  createAdvancedCharEmbed, 
-  createPaginationButtons 
+  // MODIFICADO: Importando os novos helpers visuais para o comando char500
+  createChar500Embed, 
+  createChar500Buttons 
 } = require('./commands');
 
 // Função auxiliar para verificar se pode executar operações no DB
@@ -298,7 +301,7 @@ async function checkNewMembersForConflicts(client) {
     }
 }
 
-// --- NOVA FUNÇÃO: VERIFICAR EX-MEMBROS QUE VIRARAM INIMIGOS (Membro -> Inimigo) ---
+// --- FUNÇÃO VERIFICAR EX-MEMBROS QUE VIRARAM INIMIGOS (Membro -> Inimigo) ---
 async function checkTraitors(client) {
     if (isShuttingDown() || !await canExecuteDBOperation()) {
         return;
@@ -635,35 +638,27 @@ function setupEvents(client) {
               }
               break;
 
+          // MODIFICADO: Comando Char500 atualizado com nova lógica
           case 'char500':
+            const pageOpt = interaction.options.getInteger('pagina') || 1;
             await interaction.deferReply();
             
             try {
-              const { chars, totalChars, page, totalPages, lastUpdated } = await get500RCharacters(1, 1);
-              
-              if (!chars || chars.length === 0) {
-                return interaction.editReply({
-                  content: 'Nenhum personagem com 500+ resets encontrado.',
-                  flags: MessageFlags.Ephemeral
+                // Chama a nova função de lista direta do DB
+                const data = await getChar500List(pageOpt);
+                const embed = createChar500Embed(data);
+                const row = createChar500Buttons(data.page, data.totalPages);
+                
+                await interaction.editReply({ 
+                    embeds: [embed], 
+                    components: [row] 
                 });
-              }
-
-              const charData = chars[0];
-              const embed = createAdvancedCharEmbed(charData, 1, totalPages, totalChars);
-              const buttons = createPaginationButtons(1, totalPages, charData.name);
-
-              await interaction.editReply({ 
-                content: `**Personagens 500+ Resets** (Total: ${totalChars})`,
-                embeds: [embed],
-                components: buttons 
-              });
-
             } catch (error) {
-              console.error('Erro no comando char500:', error);
-              await interaction.editReply({
-                content: 'Ocorreu um erro ao buscar os personagens. Por favor, tente novamente mais tarde.',
-                flags: MessageFlags.Ephemeral
-              });
+                console.error('Erro no char500:', error);
+                await interaction.editReply({ 
+                    content: 'Ocorreu um erro ao buscar os personagens.',
+                    flags: MessageFlags.Ephemeral 
+                });
             }
             break;
 
@@ -1347,85 +1342,34 @@ function setupEvents(client) {
             return;
           }
 
-          if (interaction.customId.startsWith('char500_')) {
+          // MODIFICADO: Novos Handlers para o botão new500_
+          if (interaction.customId.startsWith('new500_')) {
             const parts = interaction.customId.split('_');
-            const action = parts[1]; 
-            
-            if (action === 'close') {
-              await interaction.message.delete().catch(() => {});
-              return;
-            }
+            const action = parts[1];
+            let page = parseInt(parts[2]);
 
-            if (action === 'update') {
-                const charName = parts[2];
-                const currentPage = parseInt(parts[3]);
-
-                await interaction.deferUpdate();
-
-                try {
-                    const freshData = await searchCharacterWithCache(charName);
-
-                    if (freshData) {
-                        const refreshedList = await get500RCharacters(currentPage, 1);
-
-                        if (refreshedList.chars && refreshedList.chars.length > 0) {
-                            const charData = refreshedList.chars[0];
-
-                            const newEmbed = createAdvancedCharEmbed(
-                                charData, 
-                                currentPage, 
-                                refreshedList.totalPages, 
-                                refreshedList.totalChars
-                            );
-                            const newButtons = createPaginationButtons(currentPage, refreshedList.totalPages, charData.name);
-
-                            await interaction.editReply({ embeds: [newEmbed], components: newButtons });
-                            await interaction.followUp({ content: `✅ Dados de **${charName}** atualizados com sucesso direto do site!`, flags: MessageFlags.Ephemeral });
-                            return;
-                        }
-                    } 
-                    
-                    await interaction.followUp({ content: `❌ Não foi possível atualizar **${charName}**. O site pode estar indisponível ou o personagem não foi encontrado.`, flags: MessageFlags.Ephemeral });
-                    
-                } catch (error) {
-                    console.error('Erro ao atualizar char500:', error);
-                    await interaction.followUp({ content: 'Ocorreu um erro durante a atualização.', flags: MessageFlags.Ephemeral });
-                }
-                return;
-            }
-            
-            const pageStr = parts[parts.length - 1]; 
-            let page = parseInt(pageStr);
-            
             if (action === 'prev') {
               page = Math.max(1, page - 1);
             } else if (action === 'next') {
               page = page + 1;
             }
-            
+            // se for refresh, page mantém igual
+
             await interaction.deferUpdate();
             
             try {
-              const { chars, totalChars, totalPages } = await get500RCharacters(page, 1);
-              
-              if (!chars || chars.length === 0) {
-                 await interaction.followUp({ content: 'Não foi possível carregar a página solicitada.', flags: MessageFlags.Ephemeral });
-                 return;
-              }
-
-              const charData = chars[0];
-              const embed = createAdvancedCharEmbed(charData, page, totalPages, totalChars);
-              const buttons = createPaginationButtons(page, totalPages, charData.name);
+              const data = await getChar500List(page);
+              const embed = createChar500Embed(data);
+              const buttons = createChar500Buttons(data.page, data.totalPages);
 
               await interaction.editReply({ 
-                content: `**Personagens 500+ Resets** (Total: ${totalChars})`,
                 embeds: [embed],
-                components: buttons 
+                components: [buttons] 
               });
 
             } catch (error) {
               console.error('Erro ao navegar lista de personagens:', error);
-              await interaction.editReply({
+              await interaction.followUp({
                 content: 'Ocorreu um erro ao navegar a lista de personagens.',
                 flags: MessageFlags.Ephemeral
               });

@@ -2,11 +2,7 @@ const {
   EmbedBuilder, 
   ActionRowBuilder, 
   ButtonBuilder, 
-  ButtonStyle, 
-  ModalBuilder, 
-  TextInputBuilder, 
-  TextInputStyle,
-  ApplicationCommandOptionType,
+  ButtonStyle,
   MessageFlags
 } = require('discord.js');
 const axios = require('axios');
@@ -39,13 +35,10 @@ const webhookQueue = [];
 let isProcessingWebhook = false;
 
 // Função para formatar data no padrão brasileiro com fuso horário
-// CORREÇÃO APLICADA: Usando .utc() para evitar dupla conversão de fuso horário
 function formatBrazilianDate(dateInput) {
   if (!dateInput) return 'Data inválida';
   
   try {
-    // Ao usar .utc(), mantemos o horário "bruto" vindo do banco (ex: 14:27)
-    // sem subtrair mais 3 horas, corrigindo o problema do horário errado na notificação.
     return moment(dateInput).utc().format('DD/MM/YYYY HH:mm');
   } catch (error) {
     console.error('Erro ao formatar data:', error);
@@ -777,7 +770,7 @@ async function checkUserPermission(interaction, commandName) {
 async function safeSend(channel, content) {
   try {
     if (!channel || !content) {
-      console.error('❌ Parámetros inválidos para safeSend');
+      console.error('❌ Parâmetros inválidos para safeSend');
       return null;
     }
     return await channel.send(content);
@@ -1111,53 +1104,43 @@ async function checkPhoneNumber(phoneNumber) {
 }
 
 // ==============================================
-// NOVAS FUNÇÕES PARA PERSONAGENS 500+ RESETS (CORRIGIDA)
+// NOVA FUNÇÃO: CHAR500 (SEM CACHE, LISTA DIRETA DO DB)
 // ==============================================
 
-/**
- * Busca avançada de personagens 500+ resets com inteligência de dados
- */
-async function get500RCharacters(page = 1, perPage = 1) {
-  try {
-    const offset = (page - 1) * perPage;
+async function getChar500List(page = 1) {
+  const perPage = 5;
+  const offset = (page - 1) * perPage;
 
-    // Query OTIMIZADA:
-    // 1. Exclui ToHeLL_ e ToHeLL2
-    // 2. Faz Join com tabela de inimigos para verificar status
-    // 3. Ordena por Resets (Decrescente) e Data de Atualização (Mais recente primeiro)
+  try {
+    // Query direta ao banco combinando characters e membros
+    // Filtra: Resets = 500, Exclui as Guilds ToHeLL especificadas
     const query = `
       SELECT 
-        c.id,
         c.name, 
         c.guild, 
-        c.last_level,
         c.last_resets, 
-        c.last_seen,
-        CASE 
-          WHEN i.id IS NOT NULL THEN 'inimigo'
-          WHEN c.guild IS NULL OR c.guild = '' THEN 'sem_guild'
-          ELSE 'outra_guild'
-        END as relation_status,
-        i.guild as enemy_guild_record
+        c.last_level,
+        m.status as status_db,
+        m.cargo as cargo_db
       FROM characters c
-      LEFT JOIN inimigos i ON c.name = i.nome
-      WHERE c.last_resets >= 500
-      AND (c.guild IS NULL OR c.guild NOT IN ('ToHeLL_', 'ToHeLL2'))
-      ORDER BY c.last_resets DESC, c.last_level DESC
+      LEFT JOIN membros m ON c.name = m.nome
+      WHERE c.last_resets = 500
+      AND (c.guild IS NULL OR c.guild NOT IN ('ToHeLL_', 'ToHeLL2', 'ToHeLL10'))
+      ORDER BY c.name ASC
       LIMIT ? OFFSET ?
     `;
-    
-    // Query para contar total (para paginação)
+
+    // Conta o total para paginação
     const countQuery = `
       SELECT COUNT(*) as total 
       FROM characters c
-      WHERE c.last_resets >= 500
-      AND (c.guild IS NULL OR c.guild NOT IN ('ToHeLL_', 'ToHeLL2'))
+      WHERE c.last_resets = 500
+      AND (c.guild IS NULL OR c.guild NOT IN ('ToHeLL_', 'ToHeLL2', 'ToHeLL10'))
     `;
 
     const rows = await safeExecuteQuery(query, [perPage, offset]);
     const countResult = await safeExecuteQuery(countQuery);
-    
+
     const totalChars = countResult[0].total;
     const totalPages = Math.ceil(totalChars / perPage);
 
@@ -1165,11 +1148,10 @@ async function get500RCharacters(page = 1, perPage = 1) {
       chars: rows,
       totalChars,
       page,
-      totalPages,
-      lastUpdated: new Date().toISOString()
+      totalPages
     };
   } catch (error) {
-    console.error('Erro em get500RCharacters:', error);
+    console.error('Erro em getChar500List:', error);
     return { chars: [], totalChars: 0, page: 1, totalPages: 1 };
   }
 }
@@ -1291,9 +1273,9 @@ module.exports = {
   manageWhitelist,
   // Função para consulta de telefone
   checkPhoneNumber,
-  // Novas funções para personagens 500+ resets
-  get500RCharacters,
-  // Novas funções para sistema de notificações
+  // Nova função para personagens 500+ resets
+  getChar500List,
+  // Funções para sistema de notificações
   addNotificationSubscription,
   removeNotificationSubscription,
   getNotificationSubscriptions,

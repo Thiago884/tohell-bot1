@@ -283,7 +283,15 @@ const slashCommands = [
   },
   {
     name: 'char500',
-    description: 'Lista personagens com 500+ resets'
+    description: 'Lista personagens com exatos 500 resets (excluindo ToHeLL principal)',
+    options: [
+      {
+        name: 'pagina',
+        description: 'Número da página',
+        type: ApplicationCommandOptionType.Integer,
+        required: false
+      }
+    ]
   }
 ];
 
@@ -880,74 +888,79 @@ async function rejectApplication(context, applicationId, reason, user = null) {
   }
 }
 
-// ==============================================
-// HELPERS PARA O NOVO SISTEMA DE CHAR500
-// ==============================================
-
-function createAdvancedCharEmbed(char, page, totalPages, totalChars) {
-  const lastSeen = char.last_seen ? new Date(char.last_seen) : new Date();
-  const timeDiff = Math.abs(new Date() - lastSeen);
-  const daysDiff = Math.ceil(timeDiff / (1000 * 60 * 60 * 24));
-  
-  let statusColor = '#3498db'; // Azul (Padrão)
-  let statusTitle = '🛡️ Jogador Neutro/Aliado';
-  let guildDisplay = char.guild || 'Sem Guild (Free Agent)';
-
-  // Lógica de Inteligência
-  if (char.relation_status === 'inimigo') {
-    statusColor = '#FF0000'; // Vermelho
-    statusTitle = '🚨 INIMIGO DETECTADO';
-  } else if (char.relation_status === 'sem_guild') {
-    statusColor = '#00FF00'; // Verde
-    statusTitle = '✨ Potencial Recruta (Sem Guild)';
-  }
-
-  // Userbar dinâmica
-  const userbarUrl = `https://www.mucabrasil.com.br/forum/userbar.php?n=${encodeURIComponent(char.name)}&size=small&t=${Date.now()}`;
+// Função para criar o Embed do Char500 (Estilo Carrossel de Lista)
+function createChar500Embed(data) {
+  const { chars, page, totalPages, totalChars } = data;
 
   const embed = new EmbedBuilder()
-    .setColor(statusColor)
-    .setTitle(`${statusTitle}`)
-    .setDescription(`**${char.name}**\nRanking: ${page}/${totalChars} (Filtrado)`)
-    .addFields(
-      { name: '🏰 Guild Atual', value: `\`${guildDisplay}\``, inline: true },
-      { name: '🔄 Resets', value: `**${char.last_resets}**`, inline: true },
-      { name: '⚔️ Level', value: `${char.last_level}`, inline: true },
-      { name: '📅 Dados do Banco', value: formatBrazilianDate(char.last_seen), inline: true },
-      { name: '🕵️ Status', value: daysDiff > 7 ? '💤 Dados Antigos (>7 dias)' : '✅ Dados Recentes', inline: true }
-    )
-    .setImage(userbarUrl)
-    .setFooter({ text: 'ToHeLL Intelligence System • Use "Atualizar" para checar a guild em tempo real' });
+    .setColor('#FFD700') // Gold
+    .setTitle(`🏆 Personagens com 500 Resets (${totalChars})`)
+    .setDescription(`Exibindo página ${page} de ${totalPages}\n*Guilds ToHeLL_, ToHeLL2 e ToHeLL10 filtradas.*`)
+    .setFooter({ text: 'Sistema de Monitoramento ToHeLL • Dados em tempo real' })
+    .setTimestamp();
+
+  if (chars.length === 0) {
+    embed.setDescription('Nenhum personagem com 500 resets encontrado com os filtros atuais.');
+    return embed;
+  }
+
+  // Adiciona os campos para os 5 personagens da página
+  chars.forEach(char => {
+    let statusIcon = '👤';
+    let statusText = 'Desconhecido no DB';
+    
+    // Lógica de Status baseada na tabela 'membros'
+    if (char.status_db === 'ativo') {
+        statusIcon = '✅';
+        statusText = 'Membro Ativo';
+    } else if (char.status_db === 'novo') {
+        statusIcon = '🆕';
+        statusText = 'Membro Novo';
+    } else if (char.status_db === 'saiu') {
+        statusIcon = '🚪';
+        statusText = 'Ex-Membro (Saiu)';
+    }
+
+    const cargo = char.cargo_db ? `| 🎖️ ${char.cargo_db}` : '';
+    const guildDisplay = char.guild ? `[${char.guild}]` : '[Sem Guild]';
+
+    // Link para a Userbar (Imagem)
+    // O Discord não permite imagem inline no field, então usamos Markdown de link no nome
+    const userbarUrl = `https://www.mucabrasil.com.br/forum/userbar.php?n=${encodeURIComponent(char.name)}`;
+    
+    embed.addFields({
+        name: `${statusIcon} ${char.name} ${guildDisplay}`,
+        value: `**Resets:** ${char.last_resets} | **Level:** ${char.last_level}\n**Status:** ${statusText} ${cargo}\n[Ver Userbar](${userbarUrl})`,
+        inline: false
+    });
+  });
+
+  // Define a imagem do Embed como a Userbar do PRIMEIRO da lista (para cumprir o requisito visual)
+  if (chars.length > 0) {
+      embed.setImage(`https://www.mucabrasil.com.br/forum/userbar.php?n=${encodeURIComponent(chars[0].name)}&t=${Date.now()}`);
+  }
 
   return embed;
 }
 
-function createPaginationButtons(page, totalPages, charName) {
-  const navRow = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`char500_prev_${page}`)
-      .setLabel('◀️ Anterior')
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(page <= 1),
-    new ButtonBuilder()
-      .setCustomId(`char500_update_${charName}_${page}`) // Botão Inteligente
-      .setLabel('🔄 Atualizar este Char')
-      .setStyle(ButtonStyle.Success),
-    new ButtonBuilder()
-      .setCustomId(`char500_next_${page}`)
-      .setLabel('Próxima ▶️')
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(page >= totalPages)
-  );
-  
-  const closeRow = new ActionRowBuilder().addComponents(
-     new ButtonBuilder()
-      .setCustomId('char500_close')
-      .setLabel('❌ Fechar Lista')
-      .setStyle(ButtonStyle.Danger)
-  );
-
-  return [navRow, closeRow];
+// Botões de navegação simplificados para o novo comando
+function createChar500Buttons(page, totalPages) {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`new500_prev_${page}`)
+          .setLabel('◀️ Anterior')
+          .setStyle(ButtonStyle.Primary)
+          .setDisabled(page <= 1),
+        new ButtonBuilder()
+          .setCustomId(`new500_refresh_${page}`)
+          .setLabel('🔄 Atualizar Lista')
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId(`new500_next_${page}`)
+          .setLabel('Próxima ▶️')
+          .setStyle(ButtonStyle.Primary)
+          .setDisabled(page >= totalPages)
+    );
 }
 
 // Função para configurar os comandos
@@ -973,7 +986,7 @@ module.exports = {
   setupCommands,
   createImageCarousel,
   processImageUrls,
-  // Exportando novas funções para serem usadas no events.js
-  createAdvancedCharEmbed,
-  createPaginationButtons
+  // Exportando novas funções para o comando char500
+  createChar500Embed,
+  createChar500Buttons
 };
