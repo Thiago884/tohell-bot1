@@ -17,8 +17,8 @@ const {
   calculateAdvancedStats, 
   createCharEmbed, 
   safeInteractionReply, 
-  isValidImageUrl, 
-  get500RCharacters 
+  isValidImageUrl
+  // Removido get500RCharacters pois não existe em utils.js
 } = require('./utils');
 const { safeExecuteQuery } = require('./database');
 
@@ -283,7 +283,7 @@ const slashCommands = [
   },
   {
     name: 'char500',
-    description: 'Lista personagens com exatos 500 resets (excluindo ToHeLL principal)',
+    description: 'Lista personagens com exatos 500 resets (com filtros ToHeLL)',
     options: [
       {
         name: 'pagina',
@@ -888,14 +888,14 @@ async function rejectApplication(context, applicationId, reason, user = null) {
   }
 }
 
-// Função para criar o Embed do Char500 (Estilo Carrossel de Lista)
+// Função para criar o Embed do Char500 (Estilo 1 Char por Página com Imagem Grande)
 function createChar500Embed(data) {
   const { chars, page, totalPages, totalChars } = data;
 
   const embed = new EmbedBuilder()
     .setColor('#FFD700') // Gold
     .setTitle(`🏆 Personagens com 500 Resets (${totalChars})`)
-    .setDescription(`Exibindo página ${page} de ${totalPages}\n*Guilds ToHeLL_, ToHeLL2 e ToHeLL10 filtradas.*`)
+    .setDescription(`Exibindo ${page} de ${totalPages}\n*Guilds ToHeLL só exibidas se membro saiu.*`)
     .setFooter({ text: 'Sistema de Monitoramento ToHeLL • Dados em tempo real' })
     .setTimestamp();
 
@@ -904,41 +904,40 @@ function createChar500Embed(data) {
     return embed;
   }
 
-  // Adiciona os campos para os 5 personagens da página
-  chars.forEach(char => {
-    let statusIcon = '👤';
-    let statusText = 'Desconhecido no DB';
+  // Como agora é 1 por página, pegamos o índice 0 sempre
+  const char = chars[0];
+
+  let statusIcon = '👤';
+  let statusText = 'Desconhecido no DB';
     
-    // Lógica de Status baseada na tabela 'membros'
-    if (char.status_db === 'ativo') {
-        statusIcon = '✅';
-        statusText = 'Membro Ativo';
-    } else if (char.status_db === 'novo') {
-        statusIcon = '🆕';
-        statusText = 'Membro Novo';
-    } else if (char.status_db === 'saiu') {
-        statusIcon = '🚪';
-        statusText = 'Ex-Membro (Saiu)';
-    }
-
-    const cargo = char.cargo_db ? `| 🎖️ ${char.cargo_db}` : '';
-    const guildDisplay = char.guild ? `[${char.guild}]` : '[Sem Guild]';
-
-    // Link para a Userbar (Imagem)
-    // O Discord não permite imagem inline no field, então usamos Markdown de link no nome
-    const userbarUrl = `https://www.mucabrasil.com.br/forum/userbar.php?n=${encodeURIComponent(char.name)}`;
-    
-    embed.addFields({
-        name: `${statusIcon} ${char.name} ${guildDisplay}`,
-        value: `**Resets:** ${char.last_resets} | **Level:** ${char.last_level}\n**Status:** ${statusText} ${cargo}\n[Ver Userbar](${userbarUrl})`,
-        inline: false
-    });
-  });
-
-  // Define a imagem do Embed como a Userbar do PRIMEIRO da lista (para cumprir o requisito visual)
-  if (chars.length > 0) {
-      embed.setImage(`https://www.mucabrasil.com.br/forum/userbar.php?n=${encodeURIComponent(chars[0].name)}&t=${Date.now()}`);
+  // Lógica de Status
+  if (char.status_db === 'ativo') {
+      statusIcon = '✅';
+      statusText = 'Membro Ativo';
+  } else if (char.status_db === 'novo') {
+      statusIcon = '🆕';
+      statusText = 'Membro Novo';
+  } else if (char.status_db === 'saiu') {
+      statusIcon = '🚪';
+      statusText = 'Ex-Membro (Saiu)';
   }
+
+  const cargo = char.cargo_db ? `| 🎖️ ${char.cargo_db}` : '';
+  const guildDisplay = char.guild ? `[${char.guild}]` : '[Sem Guild]';
+
+  // Campos principais
+  embed.addFields(
+      { name: 'Nome', value: `**${char.name}**`, inline: true },
+      { name: 'Guild', value: guildDisplay, inline: true },
+      { name: 'Status', value: `${statusIcon} ${statusText} ${cargo}`, inline: true },
+      { name: 'Resets', value: `${char.last_resets}`, inline: true },
+      { name: 'Level', value: `${char.last_level}`, inline: true }
+  );
+
+  // URL da Userbar transformada diretamente em Imagem do Embed
+  // Adicionei timestamp para evitar cache do Discord se a userbar mudar
+  const userbarUrl = `https://www.mucabrasil.com.br/forum/userbar.php?n=${encodeURIComponent(char.name)}&t=${Date.now()}`;
+  embed.setImage(userbarUrl);
 
   return embed;
 }
@@ -953,7 +952,7 @@ function createChar500Buttons(page, totalPages) {
           .setDisabled(page <= 1),
         new ButtonBuilder()
           .setCustomId(`new500_refresh_${page}`)
-          .setLabel('🔄 Atualizar Lista')
+          .setLabel('🔄 Atualizar')
           .setStyle(ButtonStyle.Secondary),
         new ButtonBuilder()
           .setCustomId(`new500_next_${page}`)

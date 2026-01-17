@@ -4,8 +4,7 @@ const {
     getCommandPermissions, addCommandPermission, removeCommandPermission, checkUserPermission, 
     formatBrazilianDate, processImageUrls, blockIP, unblockIP, queryIP, getIPInfo, 
     generateSecurityReport, getRecentAccess, manageWhitelist, checkPhoneNumber, 
-    // MODIFICADO: Importando a nova função de busca de lista 500 resets
-    getChar500List, 
+    getChar500List, // Função correta importada do utils.js
     addNotificationSubscription, removeNotificationSubscription, getNotificationSubscriptions, sendDmsToRoles,
     isValidImageUrl
 } = require('./utils');
@@ -18,7 +17,6 @@ const {
   rejectApplication, 
   showHelp, 
   createImageCarousel,
-  // MODIFICADO: Importando os novos helpers visuais para o comando char500
   createChar500Embed, 
   createChar500Buttons 
 } = require('./commands');
@@ -638,14 +636,14 @@ function setupEvents(client) {
               }
               break;
 
-          // MODIFICADO: Comando Char500 atualizado com nova lógica
           case 'char500':
             const pageOpt = interaction.options.getInteger('pagina') || 1;
             await interaction.deferReply();
             
             try {
-                // Chama a nova função de lista direta do DB
+                // Chama a função de busca importada do utils.js
                 const data = await getChar500List(pageOpt);
+                // Helpers visuais importados do commands.js
                 const embed = createChar500Embed(data);
                 const row = createChar500Buttons(data.page, data.totalPages);
                 
